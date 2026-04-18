@@ -196,6 +196,8 @@ class AppDelegate: NSObject,
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        localizeMainMenu()
+
         // System settings overrides
         UserDefaults.ghostty.register(defaults: [
             // Disable this so that repeated key events make it through to our terminal views.
@@ -1097,12 +1099,29 @@ extension AppDelegate {
     }
 
     private func reloadDockMenu() {
-        let newWindow = NSMenuItem(title: "New Window", action: #selector(newWindow), keyEquivalent: "")
-        let newTab = NSMenuItem(title: "New Tab", action: #selector(newTab), keyEquivalent: "")
+        let newWindow = NSMenuItem(title: LocalizedString.text("New Window"), action: #selector(newWindow), keyEquivalent: "")
+        let newTab = NSMenuItem(title: LocalizedString.text("New Tab"), action: #selector(newTab), keyEquivalent: "")
 
         dockMenu.removeAllItems()
         dockMenu.addItem(newWindow)
         dockMenu.addItem(newTab)
+    }
+
+    private func localizeMainMenu() {
+        guard let menu = NSApp.mainMenu else { return }
+        localizeMenu(menu)
+    }
+
+    private func localizeMenu(_ menu: NSMenu) {
+        menu.title = LocalizedString.text(menu.title)
+        for item in menu.items {
+            if !item.isSeparatorItem {
+                item.title = LocalizedString.text(item.title)
+            }
+            if let submenu = item.submenu {
+                localizeMenu(submenu)
+            }
+        }
     }
 
     /// Setup all the images for our menu items.
@@ -1292,17 +1311,17 @@ extension AppDelegate: NSMenuItemValidation {
 
         case #selector(undo(_:)):
             if undoManager.canUndo {
-                item.title = "Undo \(undoManager.undoActionName)"
+                item.title = LocalizedString.format("Undo %@", undoManager.undoActionName)
             } else {
-                item.title = "Undo"
+                item.title = LocalizedString.text("Undo")
             }
             return undoManager.canUndo
 
         case #selector(redo(_:)):
             if undoManager.canRedo {
-                item.title = "Redo \(undoManager.redoActionName)"
+                item.title = LocalizedString.format("Redo %@", undoManager.redoActionName)
             } else {
-                item.title = "Redo"
+                item.title = LocalizedString.text("Redo")
             }
             return undoManager.canRedo
 
