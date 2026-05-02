@@ -16,6 +16,8 @@ from typing import Optional
 
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+SESSION_BACKLOG_LIMIT = 256 * 1024
+SESSION_BACKLOG_FRAME_LIMIT = 512
 
 
 @dataclasses.dataclass
@@ -30,6 +32,24 @@ class Session:
     last_seen_at: float = dataclasses.field(default_factory=lambda: time.time())
     agent_writer: Optional[asyncio.StreamWriter] = None
     clients: set[asyncio.StreamWriter] = dataclasses.field(default_factory=set)
+    backlog: list[tuple[int, bytes]] = dataclasses.field(default_factory=list)
+    backlog_size: int = 0
+
+    def append_backlog(self, opcode: int, payload: bytes) -> None:
+        if opcode not in (0x1, 0x2) or not payload:
+            return
+
+        entry = (opcode, bytes(payload))
+        self.backlog.append(entry)
+        self.backlog_size += len(payload)
+
+        while (
+            self.backlog_size > SESSION_BACKLOG_LIMIT
+            or len(self.backlog) > SESSION_BACKLOG_FRAME_LIMIT
+        ):
+            stale_opcode, stale_payload = self.backlog.pop(0)
+            if stale_opcode in (0x1, 0x2):
+                self.backlog_size -= len(stale_payload)
 
 
 class RelayState:
@@ -273,6 +293,7 @@ async def handle_sessions(
 
 
 async def forward_to_clients(session: Session, opcode: int, payload: bytes) -> None:
+    session.append_backlog(opcode, payload)
     stale: list[asyncio.StreamWriter] = []
     for client in list(session.clients):
         try:
@@ -341,6 +362,14 @@ async def ws_client_loop(
         await ws_close(writer)
 
 
+async def replay_backlog(session: Session, writer: asyncio.StreamWriter) -> None:
+    for opcode, payload in session.backlog:
+        if opcode == 0x1:
+            await ws_send_text(writer, payload.decode("utf-8", "replace"))
+        elif opcode == 0x2:
+            await ws_send_binary(writer, payload)
+
+
 async def handle_ws_agent(
     state: RelayState,
     reader: asyncio.StreamReader,
@@ -394,6 +423,7 @@ async def handle_ws_client(
         session.last_seen_at = time.time()
 
     await websocket_handshake(writer, headers)
+    await replay_backlog(session, writer)
     await ws_client_loop(session, reader, writer)
 
 
