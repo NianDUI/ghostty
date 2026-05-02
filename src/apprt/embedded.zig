@@ -903,6 +903,13 @@ pub const Surface = struct {
         };
     }
 
+    pub fn sendBytesCallback(self: *Surface, bytes: []const u8) void {
+        _ = self.core_surface.sendBytesCallback(bytes) catch |err| {
+            log.err("error in byte callback err={}", .{err});
+            return;
+        };
+    }
+
     pub fn focusCallback(self: *Surface, focused: bool) void {
         self.core_surface.focusCallback(focused) catch |err| {
             log.err("error in focus callback err={}", .{err});
@@ -1802,6 +1809,25 @@ pub const CAPI = struct {
         len: usize,
     ) void {
         surface.textCallback(ptr[0..len]);
+    }
+
+    export fn ghostty_surface_send_bytes(
+        surface: *Surface,
+        ptr: [*]const u8,
+        len: usize,
+    ) void {
+        surface.sendBytesCallback(ptr[0..len]);
+    }
+
+    export fn ghostty_surface_set_output_callback(
+        surface: *Surface,
+        callback: ?*const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
+        userdata: ?*anyopaque,
+    ) void {
+        surface.core_surface.setTermioOutputCallback(.{
+            .callback = callback,
+            .userdata = userdata,
+        });
     }
 
     /// Set the preedit text for the surface. This is used for IME

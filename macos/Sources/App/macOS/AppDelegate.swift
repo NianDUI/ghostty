@@ -75,6 +75,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuQuickTerminal: NSMenuItem?
     @IBOutlet private var menuTerminalInspector: NSMenuItem?
     @IBOutlet private var menuCommandPalette: NSMenuItem?
+    private var menuToggleSessionSharing: NSMenuItem?
 
     @IBOutlet private var menuEqualizeSplits: NSMenuItem?
     @IBOutlet private var menuMoveSplitDividerUp: NSMenuItem?
@@ -307,6 +308,7 @@ class AppDelegate: NSObject,
         }
 
         // Setup our menu
+        installSessionSharingMenuItemIfNeeded()
         setupMenuImages()
 
         // Setup signal handlers
@@ -1149,6 +1151,7 @@ extension AppDelegate {
         self.menuChangeTabTitle?.setImageIfDesired(systemSymbolName: "pencil.line")
         self.menuTerminalInspector?.setImageIfDesired(systemSymbolName: "scope")
         self.menuReadonly?.setImageIfDesired(systemSymbolName: "eye.fill")
+        self.menuToggleSessionSharing?.setImageIfDesired(systemSymbolName: "shared.with.you")
         self.menuSetAsDefaultTerminal?.setImageIfDesired(systemSymbolName: "star.fill")
         self.menuToggleFullScreen?.setImageIfDesired(systemSymbolName: "square.arrowtriangle.4.outward")
         self.menuToggleVisibility?.setImageIfDesired(systemSymbolName: "eye")
@@ -1229,6 +1232,11 @@ extension AppDelegate {
 
         syncMenuShortcut(config, action: "toggle_secure_input", menuItem: self.menuSecureInput)
 
+        if let menuToggleSessionSharing {
+            menuToggleSessionSharing.keyEquivalent = "s"
+            menuToggleSessionSharing.keyEquivalentModifierMask = [.control, .shift]
+        }
+
         // This menu item is NOT synced with the configuration because it disables macOS
         // global fullscreen keyboard shortcut. The shortcut in the Ghostty config will continue
         // to work but it won't be reflected in the menu item.
@@ -1241,6 +1249,22 @@ extension AppDelegate {
 
     @MainActor private func syncMenuShortcut(_ config: Ghostty.Config, action: String, menuItem: NSMenuItem?) {
         menuShortcutManager.syncMenuShortcut(config, action: action, menuItem: menuItem)
+    }
+
+    @MainActor private func installSessionSharingMenuItemIfNeeded() {
+        guard menuToggleSessionSharing == nil else { return }
+        guard let parentMenu = menuChangeTitle?.menu else { return }
+        guard let anchor = menuChangeTitle, let anchorIndex = parentMenu.items.firstIndex(of: anchor) else { return }
+
+        let item = NSMenuItem(
+            title: LocalizedString.text("共享此会话"),
+            action: #selector(BaseTerminalController.toggleSessionSharing(_:)),
+            keyEquivalent: "s"
+        )
+        item.target = nil
+        item.keyEquivalentModifierMask = [.control, .shift]
+        parentMenu.insertItem(item, at: anchorIndex)
+        menuToggleSessionSharing = item
     }
 
     @MainActor func performGhosttyBindingMenuKeyEquivalent(with event: NSEvent) -> Bool {

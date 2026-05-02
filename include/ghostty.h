@@ -59,6 +59,8 @@ typedef void* ghostty_config_t;
 typedef void* ghostty_surface_t;
 typedef void* ghostty_inspector_t;
 
+typedef void (*ghostty_surface_output_cb)(void*, const char*, uintptr_t);
+
 // All the types below are fully defined and must be kept in sync with
 // their Zig counterparts. Any changes to these types MUST have an associated
 // Zig change.
@@ -1124,6 +1126,10 @@ GHOSTTY_API bool ghostty_surface_key_is_binding(ghostty_surface_t,
                                                    ghostty_input_key_s,
                                                    ghostty_binding_flags_e*);
 GHOSTTY_API void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
+GHOSTTY_API void ghostty_surface_send_bytes(ghostty_surface_t, const char*, uintptr_t);
+GHOSTTY_API void ghostty_surface_set_output_callback(ghostty_surface_t,
+                                                        ghostty_surface_output_cb,
+                                                        void*);
 GHOSTTY_API void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
 GHOSTTY_API bool ghostty_surface_mouse_captured(ghostty_surface_t);
 GHOSTTY_API bool ghostty_surface_mouse_button(ghostty_surface_t,

@@ -3,6 +3,7 @@ import Combine
 import SwiftUI
 import CoreText
 import UserNotifications
+import Security
 import GhosttyKit
 
 extension Ghostty {
@@ -173,6 +174,8 @@ extension Ghostty {
 
         // Notification identifiers associated with this surface
         var notificationIdentifiers: Set<String> = []
+
+        private lazy var sessionSharing = SessionSharingController(surfaceView: self)
 
         private var markedText: NSMutableAttributedString
         private(set) var focused: Bool = true
@@ -363,6 +366,8 @@ extension Ghostty {
         }
 
         deinit {
+            sessionSharing.prepareForSurfaceShutdown()
+
             // Remove all of our notificationcenter subscriptions
             let center = NotificationCenter.default
             center.removeObserver(self)
@@ -387,6 +392,22 @@ extension Ghostty {
 
             // Cancel progress report timer
             progressReportTimer?.invalidate()
+        }
+
+        func toggleSessionSharing(from parentWindow: NSWindow?) {
+            sessionSharing.toggle(from: parentWindow)
+        }
+
+        func stopSessionSharing() {
+            sessionSharing.stopSharing(userInitiated: true)
+        }
+
+        fileprivate func sendSharedBytes(_ data: Data) {
+            guard let surface else { return }
+            data.withUnsafeBytes { rawBuffer in
+                guard let ptr = rawBuffer.bindMemory(to: CChar.self).baseAddress else { return }
+                ghostty_surface_send_bytes(surface, ptr, UInt(rawBuffer.count))
+            }
         }
 
         override func focusDidChange(_ focused: Bool) {
@@ -1741,6 +1762,703 @@ extension Ghostty {
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
+        }
+    }
+}
+
+private func sessionSharingOutputCallback(
+    _ context: UnsafeMutableRawPointer?,
+    _ bytes: UnsafePointer<CChar>?,
+    _ length: UInt
+) {
+    guard let context, let bytes, length > 0 else { return }
+    let controller = Unmanaged<SessionSharingController>.fromOpaque(context).takeUnretainedValue()
+    let data = Data(bytes: bytes, count: Int(length))
+    controller.enqueueOutgoing(data)
+}
+
+private final class SessionSharingController {
+    private weak var surfaceView: Ghostty.SurfaceView?
+    private let session = URLSession(configuration: .default)
+    private let outgoingQueue = DispatchQueue(label: "com.mitchellh.ghostty.session-sharing.outgoing")
+    private let store = SessionSharingConfigStore()
+
+    private var webSocket: URLSessionWebSocketTask?
+    private var reconnectWorkItem: DispatchWorkItem?
+    private var relayAddress = ""
+    private var userToken = ""
+    private var sessionID = ""
+    private var sessionName = ""
+    private var shouldReconnect = false
+    private var reconnectPolicy = SessionSharingReconnectPolicy()
+    private var isStopping = false
+    private var didPersistConfig = false
+
+    init(surfaceView: Ghostty.SurfaceView) {
+        self.surfaceView = surfaceView
+    }
+
+    func prepareForSurfaceShutdown() {
+        stopSharing(userInitiated: true)
+    }
+
+    func toggle(from parentWindow: NSWindow?) {
+        guard let surfaceView else { return }
+        if surfaceView.sharingState.isActive {
+            stopSharing(userInitiated: true)
+            return
+        }
+
+        presentSettingsSheet(on: parentWindow)
+    }
+
+    func stopSharing(userInitiated: Bool) {
+        shouldReconnect = false
+        isStopping = true
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        setState(.stopping)
+        detachOutputCallback()
+        webSocket?.cancel(with: .goingAway, reason: nil)
+        webSocket = nil
+        reconnectPolicy.reset()
+        isStopping = false
+        setState(SessionSharingLifecycle.stateAfterStop(userInitiated: userInitiated))
+    }
+
+    func enqueueOutgoing(_ data: Data) {
+        outgoingQueue.async { [weak self] in
+            guard let self, let webSocket = self.webSocket else { return }
+            webSocket.send(.data(data)) { [weak self] error in
+                guard let self else { return }
+                if let error {
+                    self.handleDisconnect(error: error)
+                }
+            }
+        }
+    }
+
+    private func presentSettingsSheet(on parentWindow: NSWindow?) {
+        let persisted = store.load()
+        let defaults = SessionSharingSheetDefaults(
+            name: persisted.lastSessionName ?? Self.defaultSessionName(),
+            relay: persisted.relay ?? persisted.relayHistory.first ?? "",
+            token: persisted.token ?? store.readKeychainToken(forRelay: persisted.relay ?? ""),
+            relayHistory: persisted.relayHistory
+        )
+
+        let alert = NSAlert()
+        alert.messageText = "共享设置"
+        alert.informativeText = "将当前终端会话共享到中转服务器。"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "启动共享")
+        alert.addButton(withTitle: "取消")
+
+        let content = SessionSharingSheetContentView(defaults: defaults)
+        alert.accessoryView = content.container
+
+        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            let relay = content.relayField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let token = content.tokenField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let name = content.nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let saveConfig = content.saveCheckbox.state == .on
+
+            guard !relay.isEmpty, !token.isEmpty, !name.isEmpty else {
+                self.presentError("共享配置不完整", on: parentWindow)
+                return
+            }
+
+            if saveConfig {
+                self.store.save(.init(
+                    relay: relay,
+                    token: token,
+                    relayHistory: self.store.updatedHistory(relay, existing: defaults.relayHistory),
+                    lastSessionName: name
+                ))
+            }
+
+            self.startSharing(
+                relay: relay,
+                userToken: token,
+                sessionName: name,
+                persistConfig: saveConfig
+            )
+        }
+
+        if let parentWindow {
+            alert.beginSheetModal(for: parentWindow, completionHandler: completion)
+        } else {
+            completion(alert.runModal())
+        }
+    }
+
+    private func startSharing(relay: String, userToken: String, sessionName: String, persistConfig: Bool) {
+        stopActiveConnectionForRestart()
+        self.relayAddress = relay
+        self.userToken = userToken
+        self.sessionName = sessionName
+        self.didPersistConfig = persistConfig
+        self.sessionID = UUID().uuidString.lowercased()
+        self.shouldReconnect = true
+        self.reconnectPolicy.reset()
+        self.isStopping = false
+        attachOutputCallback()
+        setState(.connecting)
+
+        Task { [weak self] in
+            await self?.registerAndConnect(initialAttempt: true)
+        }
+    }
+
+    private func stopActiveConnectionForRestart() {
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+        webSocket?.cancel(with: .goingAway, reason: nil)
+        webSocket = nil
+        detachOutputCallback()
+    }
+
+    private func registerAndConnect(initialAttempt: Bool) async {
+        do {
+            let request = try SessionSharingRequestBuilder.registerRequest(
+                relayAddress: relayAddress,
+                payload: SessionSharingRegisterRequest(
+                sessionID: sessionID,
+                name: sessionName,
+                token: userToken
+            ))
+
+            let (data, response) = try await session.data(for: request)
+            let registerResponse = try SessionSharingResponseParser.parseRegisterResponse(
+                data: data,
+                response: response,
+                expectedSessionID: sessionID
+            )
+            try connectWebSocket(agentToken: registerResponse.agentToken)
+        } catch {
+            handleConnectFailure(error, initialAttempt: initialAttempt)
+        }
+    }
+
+    private func connectWebSocket(agentToken: String) throws {
+        let request = try SessionSharingRequestBuilder.agentWebSocketRequest(
+            relayAddress: relayAddress,
+            sessionID: sessionID,
+            agentToken: agentToken
+        )
+        let webSocket = session.webSocketTask(with: request)
+        self.webSocket = webSocket
+        webSocket.resume()
+        setState(.sharing)
+        sendHelloIfPossible()
+        receiveNextMessage()
+    }
+
+    private func sendHelloIfPossible() {
+        guard let webSocket, let surface = surfaceView?.surface else { return }
+        let size = ghostty_surface_size(surface)
+        let payload = SessionSharingControlFrame.hello(
+            id: sessionID,
+            name: sessionName,
+            cols: Int(size.columns),
+            rows: Int(size.rows)
+        )
+        guard let data = try? JSONEncoder().encode(payload),
+              let text = String(data: data, encoding: .utf8) else { return }
+        webSocket.send(.string(text)) { [weak self] error in
+            if let error {
+                self?.handleDisconnect(error: error)
+            }
+        }
+    }
+
+    private func receiveNextMessage() {
+        guard let webSocket else { return }
+        webSocket.receive { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.handleDisconnect(error: error)
+            case .success(let message):
+                self.handleIncoming(message)
+                self.receiveNextMessage()
+            }
+        }
+    }
+
+    private func handleIncoming(_ message: URLSessionWebSocketTask.Message) {
+        switch message {
+        case .data(let data):
+            DispatchQueue.main.async { [weak self] in
+                self?.surfaceView?.sendSharedBytes(data)
+            }
+
+        case .string(let text):
+            if handleControlFrame(text) {
+                return
+            }
+
+            guard let data = text.data(using: .utf8) else { return }
+            DispatchQueue.main.async { [weak self] in
+                self?.surfaceView?.sendSharedBytes(data)
+            }
+
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleControlFrame(_ text: String) -> Bool {
+        switch SessionSharingInboundFrameAction.parse(text: text, sessionID: sessionID) {
+        case .forwardToTerminal:
+            return false
+
+        case .ignore:
+            return true
+
+        case .sendPong(let pong):
+            guard let webSocket else { return true }
+            guard let pongData = try? JSONEncoder().encode(pong),
+                  let pongText = String(data: pongData, encoding: .utf8) else { return true }
+            webSocket.send(.string(pongText)) { _ in }
+            return true
+        }
+    }
+
+    private func handleConnectFailure(_ error: Error, initialAttempt: Bool) {
+        if SessionSharingLifecycle.shouldPresentConnectFailure(initialAttempt: initialAttempt) {
+            presentError("启动共享失败：\(error.localizedDescription)", on: surfaceView?.window)
+        }
+        handleDisconnect(error: error)
+    }
+
+    private func handleDisconnect(error: Error) {
+        webSocket = nil
+        switch SessionSharingLifecycle.transitionAfterDisconnect(
+            shouldReconnect: shouldReconnect,
+            isStopping: isStopping
+        ) {
+        case .idle:
+            setState(.idle)
+            return
+        case .reconnect:
+            scheduleReconnect()
+        }
+    }
+
+    private func scheduleReconnect() {
+        setState(.reconnecting)
+
+        let seconds = reconnectPolicy.nextDelay()
+        let workItem = DispatchWorkItem { [weak self] in
+            Task { [weak self] in
+                await self?.registerAndConnect(initialAttempt: false)
+            }
+        }
+        reconnectWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: workItem)
+    }
+
+    private func attachOutputCallback() {
+        guard let surface = surfaceView?.surface else { return }
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        ghostty_surface_set_output_callback(surface, sessionSharingOutputCallback, context)
+    }
+
+    private func detachOutputCallback() {
+        guard let surface = surfaceView?.surface else { return }
+        ghostty_surface_set_output_callback(surface, nil, nil)
+    }
+
+    private func setState(_ state: Ghostty.OSSurfaceView.SharingState) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let surfaceView = self.surfaceView else { return }
+            surfaceView.sharingState = state
+            surfaceView.sharingWindowTitleSuffix = state.titleSuffix
+        }
+    }
+
+    private func presentError(_ message: String, on parentWindow: NSWindow?) {
+        DispatchQueue.main.async {
+            let alert = NSAlert()
+            alert.messageText = "会话共享"
+            alert.informativeText = message
+            alert.alertStyle = .warning
+            if let parentWindow {
+                alert.beginSheetModal(for: parentWindow)
+            } else {
+                alert.runModal()
+            }
+        }
+    }
+
+    private static func defaultSessionName() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return "Ghostty-\(formatter.string(from: Date()))"
+    }
+}
+
+struct SessionSharingReconnectPolicy {
+    private(set) var attempt: Int = 0
+
+    mutating func reset() {
+        attempt = 0
+    }
+
+    mutating func nextDelay() -> TimeInterval {
+        attempt += 1
+        return min(pow(2.0, Double(max(0, attempt - 1))), 30.0)
+    }
+}
+
+enum SessionSharingInboundFrameAction: Equatable {
+    case forwardToTerminal
+    case ignore
+    case sendPong(SessionSharingControlFrame)
+
+    static func parse(text: String, sessionID: String) -> Self {
+        guard let data = text.data(using: .utf8),
+              let frame = try? JSONDecoder().decode(SessionSharingInboundControlFrame.self, from: data) else {
+            return .forwardToTerminal
+        }
+
+        switch frame.type {
+        case "ping":
+            return .sendPong(.pong(id: sessionID))
+        case "resize", "hello", "pong":
+            return .ignore
+        default:
+            return .forwardToTerminal
+        }
+    }
+}
+
+enum SessionSharingRelayURLBuilder {
+    static func url(
+        for relay: String,
+        scheme: String,
+        path: String,
+        queryItems: [URLQueryItem] = []
+    ) throws -> URL {
+        let trimmed = relay.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw SessionSharingError.invalidRelayAddress }
+        let raw = trimmed.contains("://") ? trimmed : "\(scheme)://\(trimmed)"
+        guard var components = URLComponents(string: raw) else {
+            throw SessionSharingError.invalidRelayAddress
+        }
+        components.scheme = scheme
+        components.path = path
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+        guard components.host?.isEmpty == false else {
+            throw SessionSharingError.invalidRelayAddress
+        }
+        guard let url = components.url else {
+            throw SessionSharingError.invalidRelayAddress
+        }
+        return url
+    }
+}
+
+enum SessionSharingRequestBuilder {
+    static func registerRequest(
+        relayAddress: String,
+        payload: SessionSharingRegisterRequest
+    ) throws -> URLRequest {
+        let registerURL = try SessionSharingRelayURLBuilder.url(
+            for: relayAddress,
+            scheme: "https",
+            path: "/api/register"
+        )
+        var request = URLRequest(url: registerURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(payload)
+        return request
+    }
+
+    static func agentWebSocketRequest(
+        relayAddress: String,
+        sessionID: String,
+        agentToken: String
+    ) throws -> URLRequest {
+        let wsURL = try SessionSharingRelayURLBuilder.url(
+            for: relayAddress,
+            scheme: "wss",
+            path: "/ws/agent",
+            queryItems: [URLQueryItem(name: "id", value: sessionID)]
+        )
+        var request = URLRequest(url: wsURL)
+        request.setValue("Bearer \(agentToken)", forHTTPHeaderField: "Authorization")
+        return request
+    }
+}
+
+enum SessionSharingResponseParser {
+    static func parseRegisterResponse(
+        data: Data,
+        response: URLResponse,
+        expectedSessionID: String
+    ) throws -> SessionSharingRegisterResponse {
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw SessionSharingError.invalidResponse
+        }
+
+        let registerResponse = try JSONDecoder().decode(SessionSharingRegisterResponse.self, from: data)
+        guard !registerResponse.agentToken.isEmpty else {
+            throw SessionSharingError.invalidResponse
+        }
+        if let responseSessionID = registerResponse.sessionID, responseSessionID != expectedSessionID {
+            throw SessionSharingError.invalidResponse
+        }
+
+        return registerResponse
+    }
+}
+
+enum SessionSharingDisconnectTransition: Equatable {
+    case idle
+    case reconnect
+}
+
+enum SessionSharingLifecycle {
+    static func stateAfterStop(userInitiated: Bool) -> Ghostty.OSSurfaceView.SharingState {
+        userInitiated ? .idle : .error("共享已停止")
+    }
+
+    static func shouldPresentConnectFailure(initialAttempt: Bool) -> Bool {
+        initialAttempt
+    }
+
+    static func transitionAfterDisconnect(
+        shouldReconnect: Bool,
+        isStopping: Bool
+    ) -> SessionSharingDisconnectTransition {
+        guard shouldReconnect, !isStopping else { return .idle }
+        return .reconnect
+    }
+}
+
+private struct SessionSharingSheetDefaults {
+    let name: String
+    let relay: String
+    let token: String
+    let relayHistory: [String]
+}
+
+private final class SessionSharingSheetContentView {
+    let container: NSView
+    let nameField: NSTextField
+    let relayField: NSComboBox
+    let tokenField: NSSecureTextField
+    let saveCheckbox: NSButton
+
+    init(defaults: SessionSharingSheetDefaults) {
+        nameField = NSTextField(string: defaults.name)
+        relayField = NSComboBox()
+        tokenField = NSSecureTextField(string: defaults.token)
+        saveCheckbox = NSButton(checkboxWithTitle: "保存配置", target: nil, action: nil)
+        saveCheckbox.state = .on
+
+        relayField.isEditable = true
+        relayField.addItems(withObjectValues: defaults.relayHistory)
+        relayField.stringValue = defaults.relay
+        nameField.placeholderString = "Ghostty-时间戳"
+        relayField.placeholderString = "relay.example.com:443"
+        tokenField.placeholderString = "认证令牌"
+
+        let grid = NSGridView(views: [
+            [Self.label("会话名称"), nameField],
+            [Self.label("中转服务器"), relayField],
+            [Self.label("认证令牌"), tokenField],
+            [NSView(), saveCheckbox],
+        ])
+        grid.rowSpacing = 10
+        grid.columnSpacing = 12
+        grid.translatesAutoresizingMaskIntoConstraints = false
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 142))
+        container.addSubview(grid)
+        NSLayoutConstraint.activate([
+            grid.topAnchor.constraint(equalTo: container.topAnchor),
+            grid.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            grid.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            grid.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            relayField.widthAnchor.constraint(equalToConstant: 260),
+        ])
+        self.container = container
+    }
+
+    private static func label(_ text: String) -> NSTextField {
+        let label = NSTextField(labelWithString: text)
+        label.alignment = .right
+        return label
+    }
+}
+
+struct SessionSharingPersistedConfig: Codable, Equatable {
+    var relay: String?
+    var token: String?
+    var relayHistory: [String]
+    var lastSessionName: String?
+
+    init(
+        relay: String? = nil,
+        token: String? = nil,
+        relayHistory: [String] = [],
+        lastSessionName: String? = nil
+    ) {
+        self.relay = relay
+        self.token = token
+        self.relayHistory = relayHistory
+        self.lastSessionName = lastSessionName
+    }
+}
+
+struct SessionSharingConfigStore {
+    private let fileManager: FileManager
+    private let keychainService: String
+    private let fileURL: URL
+    private let keychainTokenReader: (String, String) -> String?
+    private let logError: (String) -> Void
+
+    init(
+        fileManager: FileManager = .default,
+        fileURL: URL? = nil,
+        keychainService: String = "com.mitchellh.ghostty.session-sharing",
+        keychainTokenReader: @escaping (String, String) -> String? = SessionSharingConfigStore.defaultKeychainTokenReader,
+        logError: @escaping (String) -> Void = { message in
+            AppDelegate.logger.error("\(message)")
+        }
+    ) {
+        self.fileManager = fileManager
+        self.fileURL = fileURL ?? Self.defaultFileURL(fileManager: fileManager)
+        self.keychainService = keychainService
+        self.keychainTokenReader = keychainTokenReader
+        self.logError = logError
+    }
+
+    func load() -> SessionSharingPersistedConfig {
+        guard let data = try? Data(contentsOf: fileURL) else { return .init() }
+
+        let attributes = (try? fileManager.attributesOfItem(atPath: fileURL.path)) ?? [:]
+        let permissions = attributes[.posixPermissions] as? NSNumber
+        var config = (try? JSONDecoder().decode(SessionSharingPersistedConfig.self, from: data)) ?? .init()
+        if permissions?.intValue != 0o600 {
+            config.token = nil
+        }
+        return config
+    }
+
+    @discardableResult
+    func save(_ config: SessionSharingPersistedConfig) -> Bool {
+        do {
+            let dir = fileURL.deletingLastPathComponent()
+            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+            let data = try JSONEncoder().encode(config)
+            try data.write(to: fileURL, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+            return true
+        } catch {
+            logError("failed to save session sharing config: \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    func updatedHistory(_ relay: String, existing: [String]) -> [String] {
+        var history = existing.filter { $0 != relay }
+        history.insert(relay, at: 0)
+        return Array(history.prefix(8))
+    }
+
+    func readKeychainToken(forRelay relay: String) -> String {
+        guard !relay.isEmpty else { return "" }
+        return keychainTokenReader(keychainService, relay) ?? ""
+    }
+
+    static func defaultFileURL(fileManager: FileManager = .default) -> URL {
+        fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config", isDirectory: true)
+            .appendingPathComponent("ghostty", isDirectory: true)
+            .appendingPathComponent("sharing.conf", isDirectory: false)
+    }
+
+    private static func defaultKeychainTokenReader(service: String, relay: String) -> String? {
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: relay,
+            kSecReturnData: true,
+            kSecMatchLimit: kSecMatchLimitOne,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let token = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return token
+    }
+}
+
+struct SessionSharingRegisterRequest: Codable, Equatable {
+    let sessionID: String
+    let name: String
+    let token: String
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case name
+        case token
+    }
+}
+
+struct SessionSharingRegisterResponse: Codable, Equatable {
+    let sessionID: String?
+    let agentToken: String
+    let clientToken: String?
+    let expiresAt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "session_id"
+        case agentToken = "agent_token"
+        case clientToken = "client_token"
+        case expiresAt = "expires_at"
+    }
+}
+
+struct SessionSharingControlFrame: Codable, Equatable {
+    let type: String
+    let id: String
+    let name: String?
+    let cols: Int?
+    let rows: Int?
+
+    static func hello(id: String, name: String, cols: Int, rows: Int) -> Self {
+        .init(type: "hello", id: id, name: name, cols: cols, rows: rows)
+    }
+
+    static func pong(id: String) -> Self {
+        .init(type: "pong", id: id, name: nil, cols: nil, rows: nil)
+    }
+}
+
+private struct SessionSharingInboundControlFrame: Codable {
+    let type: String
+}
+
+enum SessionSharingError: LocalizedError {
+    case invalidRelayAddress
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidRelayAddress:
+            return "中转服务器地址无效"
+        case .invalidResponse:
+            return "中转服务器返回了无效响应"
         }
     }
 }

@@ -117,6 +117,26 @@ extension Ghostty {
                     .transition(.opacity)
                 }
 
+                #if canImport(AppKit)
+                if let sharingStatus = surfaceView.sharingState.statusText {
+                    VStack {
+                        HStack {
+                            Spacer()
+                            SessionSharingBadge(
+                                statusText: sharingStatus,
+                                state: surfaceView.sharingState,
+                                stopAction: {
+                                    surfaceView.stopSessionSharing()
+                                }
+                            )
+                        }
+                        Spacer()
+                    }
+                    .padding(10)
+                    .zIndex(2)
+                }
+                #endif
+
 #if canImport(AppKit)
                 // Readonly indicator badge
                 if surfaceView.readonly {
@@ -256,6 +276,47 @@ extension Ghostty {
             .padding()
         }
     }
+
+#if canImport(AppKit)
+    struct SessionSharingBadge: View {
+        let statusText: String
+        let state: Ghostty.OSSurfaceView.SharingState
+        let stopAction: () -> Void
+
+        private var tint: Color {
+            switch state {
+            case .sharing:
+                return .green.opacity(0.9)
+            case .reconnecting, .connecting:
+                return .orange.opacity(0.9)
+            case .stopping:
+                return .gray.opacity(0.9)
+            case .error:
+                return .red.opacity(0.9)
+            case .idle:
+                return .clear
+            }
+        }
+
+        var body: some View {
+            Menu {
+                if state.isActive {
+                    Button("停止共享", action: stopAction)
+                }
+            } label: {
+                Text(statusText)
+                    .font(.system(size: 11, weight: .semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        Capsule().fill(tint)
+                    )
+                    .foregroundStyle(.white)
+            }
+            .menuStyle(.borderlessButton)
+        }
+    }
+#endif
 
     // This is the resize overlay that shows on top of a surface to show the current
     // size during a resize operation.

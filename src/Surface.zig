@@ -3263,6 +3263,18 @@ pub fn textCallback(self: *Surface, text: []const u8) !void {
     try self.completeClipboardPaste(text, true);
 }
 
+/// Sends raw bytes directly to the PTY without paste-specific transformations.
+pub fn sendBytesCallback(self: *Surface, bytes: []const u8) !void {
+    if (bytes.len == 0) return;
+    self.queueIo(try termio.Message.writeReq(self.alloc, bytes), .unlocked);
+}
+
+pub fn setTermioOutputCallback(self: *Surface, callback: termio.Termio.OutputCallback) void {
+    self.renderer_state.mutex.lock();
+    defer self.renderer_state.mutex.unlock();
+    self.io.setOutputCallback(callback);
+}
+
 /// Callback for when the surface is fully visible or not, regardless
 /// of focus state. This is used to pause rendering when the surface
 /// is not visible, and also re-render when it becomes visible again.

@@ -6,6 +6,11 @@ const renderer = @import("../renderer.zig");
 const Config = @import("../config.zig").Config;
 const termio = @import("../termio.zig");
 
+pub const OutputCallback = struct {
+    callback: ?*const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void = null,
+    userdata: ?*anyopaque = null,
+};
+
 /// All size metrics for the terminal.
 size: renderer.Size,
 
@@ -39,3 +44,6 @@ renderer_mailbox: *renderer.Thread.Mailbox,
 
 /// The mailbox for sending the surface messages.
 surface_mailbox: apprt.surface.Mailbox,
+
+/// Optional callback notified whenever raw PTY output is read.
+output_callback: OutputCallback = .{},

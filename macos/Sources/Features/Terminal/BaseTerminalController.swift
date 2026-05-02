@@ -819,6 +819,9 @@ class BaseTerminalController: NSWindowController,
                 .map { [weak self] in self?.computeTitle(title: $0, bell: $1) ?? "" }
                 .sink { [weak self] in self?.titleDidChange(to: $0) }
                 .store(in: &focusedSurfaceCancellables)
+            titleSurface.$sharingWindowTitleSuffix
+                .sink { [weak self] _ in self?.applyTitleToWindow() }
+                .store(in: &focusedSurfaceCancellables)
         } else {
             // There is no surface to listen to titles for.
             titleDidChange(to: "👻")
@@ -845,11 +848,11 @@ class BaseTerminalController: NSWindowController,
         if let titleOverride {
             window.title = computeTitle(
                 title: titleOverride,
-                bell: focusedSurface?.bell ?? false)
+                bell: focusedSurface?.bell ?? false) + (focusedSurface?.sharingWindowTitleSuffix ?? "")
             return
         }
 
-        window.title = lastComputedTitle
+        window.title = lastComputedTitle + (focusedSurface?.sharingWindowTitleSuffix ?? "")
     }
 
     func pwdDidChange(to: URL?) {
@@ -1398,6 +1401,10 @@ class BaseTerminalController: NSWindowController,
         commandPaletteIsShowing.toggle()
     }
 
+    @IBAction func toggleSessionSharing(_ sender: Any?) {
+        focusedSurface?.toggleSessionSharing(from: window)
+    }
+
     @IBAction func find(_ sender: Any) {
         focusedSurface?.find(sender)
     }
@@ -1455,6 +1462,15 @@ extension BaseTerminalController: NSMenuItemValidation {
         case #selector(findHide):
             return focusedSurface?.searchState != nil
 
+        case #selector(toggleSessionSharing(_:)):
+            let presentation = SessionSharingMenuPresentation(
+                hasFocusedSurface: focusedSurface != nil,
+                hasLiveSurface: focusedSurface?.surface != nil,
+                sharingState: focusedSurface?.sharingState ?? .idle
+            )
+            item.title = presentation.title
+            return presentation.isEnabled
+
         default:
             return true
         }
@@ -1489,6 +1505,20 @@ extension BaseTerminalController: NSMenuItemValidation {
             }
         }
         appliedColorScheme = scheme
+    }
+}
+
+struct SessionSharingMenuPresentation: Equatable {
+    let title: String
+    let isEnabled: Bool
+
+    init(
+        hasFocusedSurface: Bool,
+        hasLiveSurface: Bool,
+        sharingState: Ghostty.OSSurfaceView.SharingState
+    ) {
+        title = sharingState.isActive ? "停止共享" : "共享此会话"
+        isEnabled = hasFocusedSurface && hasLiveSurface
     }
 }
 

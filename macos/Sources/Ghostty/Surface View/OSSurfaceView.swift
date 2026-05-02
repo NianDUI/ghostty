@@ -54,6 +54,12 @@ extension Ghostty {
         /// A message sent from `ghostty_surface_t` when a child process exited
         @Published private(set) var childExitedMessage: ChildExitedMessage?
 
+        /// Session sharing state for this surface.
+        @Published var sharingState: SharingState = .idle
+
+        /// Title suffix that should be appended to the window title for sharing status.
+        @Published var sharingWindowTitleSuffix: String = ""
+
         var surface: ghostty_surface_t? {
             nil
         }
@@ -104,6 +110,48 @@ extension Ghostty {
         func focusDidChange(_ focused: Bool) {}
 
         func sizeDidChange(_ size: CGSize) {}
+    }
+}
+
+extension Ghostty.OSSurfaceView {
+    enum SharingState: Equatable {
+        case idle
+        case connecting
+        case sharing
+        case reconnecting
+        case stopping
+        case error(String)
+
+        var statusText: String? {
+            switch self {
+            case .idle:
+                return nil
+            case .connecting:
+                return "连接中"
+            case .sharing:
+                return "共享中"
+            case .reconnecting:
+                return "重连中..."
+            case .stopping:
+                return "停止中"
+            case .error:
+                return "共享错误"
+            }
+        }
+
+        var titleSuffix: String {
+            guard let statusText else { return "" }
+            return " [\(statusText)]"
+        }
+
+        var isActive: Bool {
+            switch self {
+            case .idle, .error:
+                return false
+            case .connecting, .sharing, .reconnecting, .stopping:
+                return true
+            }
+        }
     }
 }
 

@@ -20,6 +20,7 @@ const internal_os = @import("../os/main.zig");
 const windows = internal_os.windows;
 const configpkg = @import("../config.zig");
 const ProcessInfo = @import("../pty.zig").ProcessInfo;
+pub const OutputCallback = termio.Options.OutputCallback;
 
 const log = std.log.scoped(.io_exec);
 
@@ -70,6 +71,9 @@ last_cursor_reset: ?std.time.Instant = null,
 /// State we have for thread enter. This may be null if we don't need
 /// to keep track of any state or if its already been freed.
 thread_enter_state: ?*ThreadEnterState = null,
+
+/// Optional raw PTY output tap for host integrations.
+output_callback: OutputCallback = .{},
 
 /// The state we need to keep around only until we enter the IO
 /// thread. Then we can throw it all away.
@@ -308,6 +312,7 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         .mailbox = opts.mailbox,
         .terminal_stream = .initAlloc(alloc, handler),
         .thread_enter_state = thread_enter_state,
+        .output_callback = opts.output_callback,
     };
 }
 
@@ -415,6 +420,10 @@ pub inline fn queueWrite(
     linefeed: bool,
 ) !void {
     try self.backend.queueWrite(self.alloc, td, data, linefeed);
+}
+
+pub fn setOutputCallback(self: *Termio, callback: OutputCallback) void {
+    self.output_callback = callback;
 }
 
 /// Update the configuration.
@@ -650,6 +659,10 @@ pub fn processOutput(self: *Termio, buf: []const u8) void {
 
 /// Process output from readdata but the lock is already held.
 fn processOutputLocked(self: *Termio, buf: []const u8) void {
+    if (self.output_callback.callback) |callback| {
+        callback(self.output_callback.userdata, buf.ptr, buf.len);
+    }
+
     // Schedule a render. We can call this first because we have the lock.
     self.terminal_stream.handler.queueRender() catch unreachable;
 
