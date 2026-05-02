@@ -157,6 +157,24 @@ struct SessionSharingTests {
     }
 
     @Test
+    func relayURLBuilderPreservesExplicitInsecureSchemeForLocalDevelopment() throws {
+        let registerURL = try SessionSharingRelayURLBuilder.url(
+            for: "http://127.0.0.1:8080",
+            scheme: "https",
+            path: "/api/register"
+        )
+        let webSocketURL = try SessionSharingRelayURLBuilder.url(
+            for: "http://127.0.0.1:8080",
+            scheme: "wss",
+            path: "/ws/agent",
+            queryItems: [URLQueryItem(name: "id", value: "abc-123")]
+        )
+
+        #expect(registerURL.absoluteString == "http://127.0.0.1:8080/api/register")
+        #expect(webSocketURL.absoluteString == "ws://127.0.0.1:8080/ws/agent?id=abc-123")
+    }
+
+    @Test
     func relayURLBuilderRejectsEmptyRelay() {
         #expect(throws: SessionSharingError.invalidRelayAddress) {
             _ = try SessionSharingRelayURLBuilder.url(
@@ -348,6 +366,27 @@ struct SessionSharingTests {
 
         #expect(request.url?.absoluteString == "wss://relay.example.com:8443/ws/agent?id=session-123")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer agent-token")
+    }
+
+    @Test
+    func requestsRespectExplicitHttpRelayForLocalDevelopment() throws {
+        let payload = SessionSharingRegisterRequest(
+            sessionID: "session-123",
+            name: "Ghostty-20260502-120000",
+            token: "user-token"
+        )
+        let registerRequest = try SessionSharingRequestBuilder.registerRequest(
+            relayAddress: "http://127.0.0.1:8080",
+            payload: payload
+        )
+        let webSocketRequest = try SessionSharingRequestBuilder.agentWebSocketRequest(
+            relayAddress: "http://127.0.0.1:8080",
+            sessionID: "session-123",
+            agentToken: "agent-token"
+        )
+
+        #expect(registerRequest.url?.absoluteString == "http://127.0.0.1:8080/api/register")
+        #expect(webSocketRequest.url?.absoluteString == "ws://127.0.0.1:8080/ws/agent?id=session-123")
     }
 
     @Test

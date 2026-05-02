@@ -6,18 +6,19 @@ Run it with:
 
 ```bash
 zig build -Demit-lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall
-python3 contrib/session-sharing/relay/server.py --host 127.0.0.1 --port 8080
+python3 contrib/session-sharing/relay/server.py --port 18080
 ```
 
 Then open:
 
-`http://127.0.0.1:8080/`
+`http://<your-lan-ip>:18080/`
 
 Notes:
 
 - This prototype is plain HTTP/WS and is meant for local development.
 - For real deployment, place it behind an HTTPS/WSS reverse proxy.
 - If `zig-out/bin/ghostty-vt.wasm` exists, the relay also serves it at `/ghostty-vt.wasm` for the browser client.
+- The relay now binds to `0.0.0.0` by default so phones on the same LAN can connect without passing `--host`.
 
 ## REST
 

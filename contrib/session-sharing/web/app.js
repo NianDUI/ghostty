@@ -338,6 +338,26 @@ function createWasmApi(exports, layouts) {
     return memoryView().getInt32(ptr, true);
   }
 
+  function writeUnsigned(ptr, size, value) {
+    const view = memoryView();
+    switch (size) {
+      case 1:
+        view.setUint8(ptr, Number(value));
+        break;
+      case 2:
+        view.setUint16(ptr, Number(value), true);
+        break;
+      case 4:
+        view.setUint32(ptr, Number(value), true);
+        break;
+      case 8:
+        view.setBigUint64(ptr, BigInt(value), true);
+        break;
+      default:
+        throw new Error(`unsupported integer size: ${size}`);
+    }
+  }
+
   function readColor(ptr) {
     const view = memoryView();
     return {
@@ -348,18 +368,17 @@ function createWasmApi(exports, layouts) {
   }
 
   function writeTerminalOptions(ptr, cols, rows, scrollback) {
-    const view = memoryView();
     const fields = layouts.GhosttyTerminalOptions.fields;
-    view.setUint16(ptr + fields.cols.offset, cols, true);
-    view.setUint16(ptr + fields.rows.offset, rows, true);
-    view.setBigUint64(ptr + fields.max_scrollback.offset, BigInt(scrollback), true);
+    writeUnsigned(ptr + fields.cols.offset, fields.cols.size, cols);
+    writeUnsigned(ptr + fields.rows.offset, fields.rows.size, rows);
+    writeUnsigned(ptr + fields.max_scrollback.offset, fields.max_scrollback.size, scrollback);
   }
 
   function initSizedStruct(ptr, typeName) {
     const layout = layouts[typeName];
     const view = uint8View();
     view.fill(0, ptr, ptr + layout.size);
-    memoryView().setBigUint64(ptr, BigInt(layout.size), true);
+    writeUnsigned(ptr, layout.fields.size.size, layout.size);
   }
 
   return {
@@ -376,6 +395,7 @@ function createWasmApi(exports, layouts) {
     readU64,
     readBool,
     readEnum,
+    writeUnsigned,
     readColor,
     writeTerminalOptions,
     initSizedStruct,
@@ -483,7 +503,7 @@ class GhosttyBrowserTerminal {
     this.check(exports.ghostty_render_state_get(this.renderStateHandle, RENDER_STATE_DATA.COLS, this.u16Ptr));
     this.check(exports.ghostty_render_state_get(this.renderStateHandle, RENDER_STATE_DATA.ROWS, this.u16Ptr + 2));
     const cols = readU16(this.u16Ptr);
-    const rows = readU16(this.u16Ptr + 0);
+    const rows = readU16(this.u16Ptr + 2);
 
     this.ensureRows(rows);
 

@@ -2136,19 +2136,40 @@ enum SessionSharingInboundFrameAction: Equatable {
 }
 
 enum SessionSharingRelayURLBuilder {
+    private enum Transport {
+        case http
+        case websocket
+    }
+
     static func url(
         for relay: String,
         scheme: String,
         path: String,
         queryItems: [URLQueryItem] = []
     ) throws -> URL {
+        try url(
+            for: relay,
+            transport: scheme == "wss" || scheme == "ws" ? .websocket : .http,
+            defaultScheme: scheme,
+            path: path,
+            queryItems: queryItems
+        )
+    }
+
+    private static func url(
+        for relay: String,
+        transport: Transport,
+        defaultScheme: String,
+        path: String,
+        queryItems: [URLQueryItem]
+    ) throws -> URL {
         let trimmed = relay.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw SessionSharingError.invalidRelayAddress }
-        let raw = trimmed.contains("://") ? trimmed : "\(scheme)://\(trimmed)"
+        let raw = trimmed.contains("://") ? trimmed : "\(defaultScheme)://\(trimmed)"
         guard var components = URLComponents(string: raw) else {
             throw SessionSharingError.invalidRelayAddress
         }
-        components.scheme = scheme
+        components.scheme = try scheme(for: components.scheme, transport: transport, defaultScheme: defaultScheme)
         components.path = path
         components.queryItems = queryItems.isEmpty ? nil : queryItems
         guard components.host?.isEmpty == false else {
@@ -2158,6 +2179,30 @@ enum SessionSharingRelayURLBuilder {
             throw SessionSharingError.invalidRelayAddress
         }
         return url
+    }
+
+    private static func scheme(
+        for explicitScheme: String?,
+        transport: Transport,
+        defaultScheme: String
+    ) throws -> String {
+        guard let explicitScheme else { return defaultScheme }
+        switch (transport, explicitScheme.lowercased()) {
+        case (.http, "http"), (.http, "https"):
+            return explicitScheme.lowercased()
+        case (.http, "ws"):
+            return "http"
+        case (.http, "wss"):
+            return "https"
+        case (.websocket, "ws"), (.websocket, "wss"):
+            return explicitScheme.lowercased()
+        case (.websocket, "http"):
+            return "ws"
+        case (.websocket, "https"):
+            return "wss"
+        default:
+            throw SessionSharingError.invalidRelayAddress
+        }
     }
 }
 
