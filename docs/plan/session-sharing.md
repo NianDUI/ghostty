@@ -13,7 +13,7 @@ Section dashboard:
 | ------------------------- | ---------------------------------------------- | ----- |
 | 1. Desktop Host (macOS)   | shippable for LAN, polish remains              | macOS |
 | 1. Desktop Host (GTK)     | not started; trigger-gated                     | Linux |
-| 2. Core Bridge / Terminal | shipped, low-coverage tests                    | Zig   |
+| 2. Core Bridge / Terminal | smoke coverage in place; threading review TODO | Zig   |
 | 3. Relay Service          | production-shaped; see `relay-production.md`   | Relay |
 | 4. Mobile Web Client      | usable on desktop browser, mobile UX gaps      | Web   |
 | 5. Security & Storage     | server-side covered, client-side gaps          | Mixed |
@@ -162,7 +162,8 @@ Until triggered, do not begin GTK work; macOS ships first.
 
 ### 2. Core Bridge and Terminal Plumbing
 
-Status: shipped, low test coverage.
+Status: shipped with smoke coverage on the bridge primitives;
+threading review and end-to-end resize still TODO.
 
 Done:
 
@@ -171,13 +172,15 @@ Done:
 - PTY output bridged to host callback without changing render
   behavior
 - WebSocket input bridged back to PTY as raw bytes
+- `OutputCallback.invoke` method consolidates the dispatch and is
+  covered by Zig tests (default no-op, byte + userdata forwarding,
+  empty payload still fires the callback)
+- `Message.writeReq` Zig tests cover the small / empty / alloc paths
+  and propagate `OutOfMemory` for the large-write path that
+  `Surface.sendBytesCallback` runs through
 
 Remaining:
 
-- **P0** Zig tests for the raw byte bridge hooks (input ingestion,
-  output callback lifetime, error path). Today the bridge is only
-  exercised through the macOS app; a regression here breaks every
-  consumer silently.
 - **P1** Threading-assumption review: confirm the output callback is
   called only on the read thread, document it, and add a debug
   assertion.
@@ -374,11 +377,9 @@ In priority order:
    side when the relay closes the agent's WS with 4401. The browser
    side now polls patiently for the host to come back; the host has
    to actually come back for the loop to close.
-4. **Section 2 P0**: Zig raw-byte bridge smoke. Cheap, removes a
-   silent-regression risk for every consumer.
-5. **Section 6 browser P0**: only after Section 4 P0 (mobile IME)
+4. **Section 6 browser P0**: only after Section 4 P0 (mobile IME)
    stabilizes; otherwise the smoke encodes broken behavior.
-6. GTK and persistence remain trigger-gated; do not start them ahead
+5. GTK and persistence remain trigger-gated; do not start them ahead
    of P0 work.
 
 The previous "decide whether the relay should be rewritten in Zig"
