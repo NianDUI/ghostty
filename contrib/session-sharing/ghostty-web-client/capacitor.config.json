@@ -1,0 +1,8 @@
+{
+  "appId": "com.ghostty.sessionsharing",
+  "appName": "Ghostty Sharing",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

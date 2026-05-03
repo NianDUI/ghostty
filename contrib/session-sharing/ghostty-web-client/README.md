@@ -35,6 +35,44 @@ npm run build
 python3 contrib/session-sharing/relay/server.py --static-root contrib/session-sharing/ghostty-web-client/dist
 ```
 
+## Android 打包
+
+这个目录已经接入 `Capacitor`，并生成了 Android 壳工程：
+
+- 配置文件：[capacitor.config.json](/Users/lyd/WorkSpace/MyProjects/ghostty/contrib/session-sharing/ghostty-web-client/capacitor.config.json)
+- Android 工程目录：[android](/Users/lyd/WorkSpace/MyProjects/ghostty/contrib/session-sharing/ghostty-web-client/android)
+
+首次准备：
+
+```bash
+cd contrib/session-sharing/ghostty-web-client
+npm install
+```
+
+同步前端产物到 Android：
+
+```bash
+npm run android:build
+```
+
+打开 Android Studio：
+
+```bash
+npm run cap:open
+```
+
+如果只想手动同步原生工程：
+
+```bash
+npm run cap:sync
+```
+
+说明：
+
+- `Backend URL Base` 默认使用当前页面自身；如果 APK 里的静态页和 relay 不在同一个地址，需要在主页面里手动改成你的 relay 地址。
+- Android 打包仍然依赖本机安装 `Android Studio`、`Android SDK` 和可用的 `JDK`。
+- 这套壳当前是 `WebView + Capacitor` 路线，不是原生终端控件。
+
 ## 当前边界
 
 这个版本当前只完成最小接线：
