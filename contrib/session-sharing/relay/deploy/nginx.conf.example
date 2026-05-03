@@ -5,6 +5,20 @@ server {
     ssl_certificate /etc/letsencrypt/live/relay.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/relay.example.com/privkey.pem;
 
+    # Each location below sets X-Forwarded-For. For that header to actually
+    # drive per-client rate limits and access logs, the relay must be started
+    # with GHOSTTY_RELAY_TRUSTED_PROXIES=127.0.0.1 (the address Nginx connects
+    # from). Without that, the relay treats every request as coming from this
+    # Nginx instance and the rate limit collapses into one global bucket.
+
+    # Admin endpoints are served on a separate loopback listener
+    # (GHOSTTY_RELAY_ADMIN_PORT). Belt-and-suspenders: refuse them here too,
+    # so operator state never leaks even if the relay is later started without
+    # the dedicated admin listener.
+    location ~ ^/(healthz|readyz|metrics)$ {
+        return 404;
+    }
+
     location / {
         proxy_pass http://127.0.0.1:18080;
         proxy_http_version 1.1;

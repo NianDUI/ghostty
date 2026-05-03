@@ -136,6 +136,30 @@ This currently applies to:
 - `/ws/agent`
 - `/ws/client`
 
+### Reverse-Proxy Client IP Trust
+
+When the relay is fronted by Nginx or Caddy, every request the relay sees
+arrives from the reverse proxy's address. Without further configuration, the
+per-IP rate limiter treats the entire fleet of real clients as one bucket
+keyed on the proxy IP — effectively disabling rate limiting in production.
+
+Set `GHOSTTY_RELAY_TRUSTED_PROXIES` to the reverse proxy's address (or a
+CIDR covering it). Only requests whose socket peer is in this list have
+their `X-Forwarded-For` header honored; everything else continues to use the
+socket peer IP, so an untrusted source cannot spoof its IP.
+
+```bash
+# Loopback Nginx/Caddy in front of the relay:
+GHOSTTY_RELAY_TRUSTED_PROXIES=127.0.0.1
+
+# Multiple trusted proxies / CIDRs are comma-separated:
+# GHOSTTY_RELAY_TRUSTED_PROXIES=10.0.0.0/24,2001:db8::/32
+```
+
+Both `nginx.conf.example` and `Caddyfile.example` already forward
+`X-Forwarded-For`. Without `GHOSTTY_RELAY_TRUSTED_PROXIES`, that header is
+ignored and the rate limit only sees the proxy IP.
+
 ## systemd
 
 Install the unit:
@@ -155,12 +179,23 @@ journalctl -u ghostty-relay -f
 
 ## Health Checks
 
-Local checks:
+For production, run a dedicated admin listener so operator endpoints are not
+part of the public attack surface:
 
 ```bash
-curl http://127.0.0.1:18080/healthz
-curl http://127.0.0.1:18080/readyz
-curl http://127.0.0.1:18080/metrics
+GHOSTTY_RELAY_ADMIN_HOST=127.0.0.1
+GHOSTTY_RELAY_ADMIN_PORT=18081
+```
+
+When the admin port is non-zero, the public listener returns `404` for
+`/healthz`, `/readyz`, and `/metrics`; only the admin listener serves them.
+
+Local checks (admin listener):
+
+```bash
+curl http://127.0.0.1:18081/healthz
+curl http://127.0.0.1:18081/readyz
+curl http://127.0.0.1:18081/metrics
 ```
 
 Expected:
@@ -168,6 +203,36 @@ Expected:
 - `/healthz` returns `{ "ok": true }`
 - `/readyz` returns process readiness and current session count
 - `/metrics` returns Prometheus-style plaintext metrics
+
+For backwards compatibility, leaving `GHOSTTY_RELAY_ADMIN_PORT=0` keeps the
+admin endpoints on the main listener — useful for development, but in a
+public deployment you should always run the dedicated admin listener and
+also block `/healthz`, `/readyz`, `/metrics` at the reverse proxy as a
+belt-and-suspenders measure (the example Nginx config does this already).
+
+## Long-Lived WebSocket Lifecycle
+
+The relay closes long-lived WebSocket connections in three production-grade
+scenarios. All thresholds are configurable; defaults shown:
+
+```bash
+# Mid-connection token expiry. The relay re-checks session.expires_at every
+# N seconds; on expiry the connection is closed with WS code 4401 so the
+# client knows to refresh and reconnect.
+GHOSTTY_RELAY_TOKEN_EXPIRY_CHECK_SECONDS=30
+
+# Heartbeat. Server-initiated ping every interval; if no pong arrives within
+# the timeout, the connection is closed with WS code 4408. Catches silent
+# NAT drops and idle middleboxes.
+GHOSTTY_RELAY_PING_INTERVAL_SECONDS=30
+GHOSTTY_RELAY_PING_TIMEOUT_SECONDS=60
+
+# Slow-consumer guard. Each client has a per-connection send buffer with a
+# byte cap. When the cap is exceeded, that client is dropped (close code
+# 4408 "slow_consumer") so it cannot stall fan-out to other clients. Tracked
+# by the `ghostty_relay_slow_consumer_drop_total` metric.
+GHOSTTY_RELAY_CLIENT_SEND_BUFFER_BYTES=1048576
+```
 
 ## Reverse Proxy
 
