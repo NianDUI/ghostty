@@ -2143,7 +2143,10 @@ private final class SessionSharingController {
             reconnectPolicy: &reconnectPolicy
         )
         if plan.shouldPresentError {
-            presentError("启动共享失败：\(error.localizedDescription)", on: surfaceView?.window)
+            presentError(
+                "启动共享失败：\(SessionSharingTokenRedaction.redact(error: error))",
+                on: surfaceView?.window
+            )
         }
         applyRecoveryAction(plan.action)
     }
@@ -2825,7 +2828,7 @@ struct SessionSharingConfigStore {
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
             return true
         } catch {
-            logError("failed to save session sharing config: \(error.localizedDescription)")
+            logError("failed to save session sharing config: \(SessionSharingTokenRedaction.redact(error: error))")
             return false
         }
     }
@@ -2929,6 +2932,56 @@ enum SessionSharingError: LocalizedError {
         case .insecureRelayAddress:
             return "远程中转服务器必须使用 https:// 或 wss://；仅 localhost 或局域网开发地址允许使用 http://"
         }
+    }
+}
+
+/// Scrubs session-sharing tokens out of strings that are about to hit a
+/// user-visible surface (NSAlert, log line, status field). The session
+/// sharing protocol carries tokens in `Authorization: Bearer …` headers
+/// and as `?token=` / `?client_token=` / `?agent_token=` query params,
+/// and an `Error` from URLSession or URLSessionWebSocketTask can include
+/// the URL it failed against. We don't construct user-facing strings
+/// from token state ourselves, but `error.localizedDescription` is a
+/// black box, so we run it through this scrubber as a defensive layer.
+///
+/// Mirrors the browser-side `redactSensitiveText` in
+/// `contrib/session-sharing/ghostty-web-client/src/redaction.js`.
+enum SessionSharingTokenRedaction {
+    private static let bearerRegex: NSRegularExpression = {
+        // Static patterns; force-try is safe.
+        // swiftlint:disable:next force_try
+        try! NSRegularExpression(pattern: "Bearer\\s+\\S+", options: [.caseInsensitive])
+    }()
+
+    private static let queryRegexes: [NSRegularExpression] = ["token", "client_token", "agent_token"].map { key in
+        let pattern = "([?&]\(NSRegularExpression.escapedPattern(for: key))=)[^&\\s]+"
+        // swiftlint:disable:next force_try
+        return try! NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    }
+
+    static func redact(_ value: String) -> String {
+        var result = value
+        let bearerRange = NSRange(result.startIndex..<result.endIndex, in: result)
+        result = bearerRegex.stringByReplacingMatches(
+            in: result,
+            options: [],
+            range: bearerRange,
+            withTemplate: "Bearer [REDACTED]"
+        )
+        for regex in queryRegexes {
+            let range = NSRange(result.startIndex..<result.endIndex, in: result)
+            result = regex.stringByReplacingMatches(
+                in: result,
+                options: [],
+                range: range,
+                withTemplate: "$1[REDACTED]"
+            )
+        }
+        return result
+    }
+
+    static func redact(error: Error) -> String {
+        redact(error.localizedDescription)
     }
 }
 

@@ -815,6 +815,43 @@ struct SessionSharingTests {
             )
         }
     }
+
+    @Test
+    func tokenRedactionScrubsBearerHeader() {
+        #expect(
+            SessionSharingTokenRedaction.redact("Authorization: Bearer abc-123_def")
+                == "Authorization: Bearer [REDACTED]"
+        )
+    }
+
+    @Test
+    func tokenRedactionScrubsSensitiveQueryParams() {
+        #expect(
+            SessionSharingTokenRedaction.redact("ws://r/ws/client?id=foo&token=secret")
+                == "ws://r/ws/client?id=foo&token=[REDACTED]"
+        )
+        #expect(
+            SessionSharingTokenRedaction.redact("/api?client_token=AAAA&agent_token=BBBB&other=keep")
+                == "/api?client_token=[REDACTED]&agent_token=[REDACTED]&other=keep"
+        )
+    }
+
+    @Test
+    func tokenRedactionLeavesNonSensitiveTextUnchanged() {
+        let input = "ws://r/ws/client?id=foo"
+        #expect(SessionSharingTokenRedaction.redact(input) == input)
+    }
+
+    @Test
+    func tokenRedactionExtractsErrorLocalizedDescription() {
+        struct LeakingError: LocalizedError {
+            var errorDescription: String? { "fetch failed: ?token=secret&id=1" }
+        }
+        #expect(
+            SessionSharingTokenRedaction.redact(error: LeakingError())
+                == "fetch failed: ?token=[REDACTED]&id=1"
+        )
+    }
 }
 
 private struct TestSandbox {
