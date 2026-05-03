@@ -1231,7 +1231,8 @@ extension Ghostty {
             // Let AppKit text inputs keep their normal edit shortcuts when a sheet
             // or panel field editor owns focus, such as the session sharing dialog.
             if SessionSharingKeyEquivalentPolicy.shouldUseStandardResponderChain(
-                firstResponder: NSApp.keyWindow?.firstResponder
+                firstResponder: NSApp.keyWindow?.firstResponder,
+                hasAttachedSheet: window?.attachedSheet != nil
             ) {
                 return false
             }
@@ -2327,7 +2328,13 @@ enum SessionSharingResponseParser {
 }
 
 enum SessionSharingKeyEquivalentPolicy {
-    static func shouldUseStandardResponderChain(firstResponder: NSResponder?) -> Bool {
+    static func shouldUseStandardResponderChain(
+        firstResponder: NSResponder?,
+        hasAttachedSheet: Bool = false
+    ) -> Bool {
+        if hasAttachedSheet {
+            return true
+        }
         guard let textView = firstResponder as? NSTextView else { return false }
         return textView.isFieldEditor
     }

@@ -275,6 +275,12 @@ struct SessionSharingTests {
         )
         #expect(
             SessionSharingKeyEquivalentPolicy.shouldUseStandardResponderChain(
+                firstResponder: NSView(),
+                hasAttachedSheet: true
+            ) == true
+        )
+        #expect(
+            SessionSharingKeyEquivalentPolicy.shouldUseStandardResponderChain(
                 firstResponder: NSView()
             ) == false
         )
