@@ -178,12 +178,16 @@ Done:
 - `Message.writeReq` Zig tests cover the small / empty / alloc paths
   and propagate `OutOfMemory` for the large-write path that
   `Surface.sendBytesCallback` runs through
+- Output callback concurrency contract is documented on
+  `Termio.output_callback` and on `Termio.processOutput`, and
+  `processOutputLocked` asserts the first-seen thread ID matches on
+  every subsequent call (debug builds only). Under the exec backend
+  that thread is always the IO read thread set up in
+  `Exec.threadMain` / `threadMainWindows`; manual callers must pick
+  one dedicated thread.
 
 Remaining:
 
-- **P1** Threading-assumption review: confirm the output callback is
-  called only on the read thread, document it, and add a debug
-  assertion.
 - **P1** End-to-end resize + control-channel verification (macOS
   surface size change → relay → browser size update and back).
 
