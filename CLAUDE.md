@@ -16,6 +16,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Update translations:** `zig build update-translations`
 - **Run under Valgrind:** `zig build run-valgrind`
 - **Build libghostty-vt (WASM):** `zig build -Demit-lib-vt -Dtarget=wasm32-freestanding -Doptimize=ReleaseSmall`
+- **Source tarball:** `zig build dist` / `zig build distcheck`
+
+### Build Dependencies (from a Git checkout)
+
+- **Linux:** `blueprint-compiler` ≥ 0.16.0 is required (in addition to the deps for tarball builds).
+- **macOS:** building the macOS app requires Xcode 26 with the macOS 26 SDK, the iOS SDK, and the Metal Toolchain. You can still run on macOS 15.
 
 ## Architecture
 
@@ -39,6 +45,7 @@ Ghostty is a cross-platform terminal emulator with a shared Zig core and platfor
 ### Threading Model
 
 Each terminal surface runs three dedicated threads:
+
 1. **Read thread** — Reads from the pty, runs the SIMD-optimized VT parser
 2. **Write thread** — Handles keyboard/mouse input to the pty
 3. **Render thread** — Renders the terminal screen via Metal/OpenGL
@@ -56,6 +63,13 @@ Each terminal surface runs three dedicated threads:
 - Font discovery and shaping in `src/font/`
 - Input handling (key encoding, bindings, IME) in `src/input/`
 - Logging is controlled by `GHOSTTY_LOG` env var (destinations: `stderr`, `macos`) and compile-time optimization level (debug builds log to stderr by default)
+- Input-stack changes (key event → pty encoding) require manual IME testing on Linux: Wayland/X11 × ibus/fcitx/none × dead key / CJK / Emoji / Unicode hex. See `HACKING.md` "Input Stack Testing" for the full matrix — there is no automated coverage.
+
+## Agent Rules
+
+- Never open a GitHub issue or pull request. If the user explicitly asks for one, follow `AGENTS.md` ("Issue and PR Guidelines") rather than running `gh issue create` / `gh pr create`.
+- AI-assisted contributions must be disclosed per `AI_POLICY.md`. The human contributor must understand and be able to explain every change.
+- Vetted prompts for common tasks live in `.agents/commands/` (e.g. `/gh-issue` for diagnosing a GitHub issue). Prefer them over ad-hoc prompting when applicable.
 
 ## Git Notes
 
