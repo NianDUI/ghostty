@@ -219,6 +219,20 @@ async def client_consume(
             await writer.wait_closed()
 
 
+def read_active_clients(port: int) -> int:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+    try:
+        conn.request("GET", "/metrics")
+        response = conn.getresponse()
+        body = response.read().decode("utf-8")
+    finally:
+        conn.close()
+    for line in body.splitlines():
+        if line.startswith("ghostty_relay_active_clients "):
+            return int(line.split()[-1])
+    return -1
+
+
 def measure_rss_kb(pid: int) -> int:
     try:
         result = subprocess.run(
@@ -250,6 +264,251 @@ def raise_fd_limit(target: int = 4096) -> None:
         resource.setrlimit(resource.RLIMIT_NOFILE, (new_soft, hard))
     except (ValueError, OSError):
         pass
+
+
+async def run_reconnect(args) -> dict:
+    """Measure end-to-end MTTR after an agent socket disconnects.
+
+    Timer starts when we close the agent socket and stops when a freshly
+    reconnected client receives the first marker frame from a freshly
+    reconnected agent. The relay's ws_agent_loop teardown closes the
+    session's clients too, so this models the user-visible recovery
+    after a transient agent-side network blip: agent reopens, client
+    reopens, first frame delivered.
+    """
+    port = free_port()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVER),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--token-ttl",
+            "3600",
+            "--max-sessions",
+            "8",
+            "--ping-interval-seconds",
+            "0",
+            "--ping-timeout-seconds",
+            "0",
+            "--token-expiry-check-seconds",
+            "0",
+            "--rate-limit-requests",
+            "0",
+            "--static-root",
+            str(STATIC_ROOT),
+        ],
+        env={**os.environ, "GHOSTTY_RELAY_USER_TOKENS": USER_TOKEN},
+        cwd=str(ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    wait_for_server(port)
+    try:
+        session_id = secrets.token_hex(8)
+        reg = register(port, session_id, "ReconnectTest")
+        agent_token = reg["agent_token"]
+        client_token = reg["client_token"]
+
+        a_reader, a_writer = await ws_open(
+            port,
+            f"/ws/agent?id={session_id}",
+            {"Authorization": f"Bearer {agent_token}"},
+        )
+        c_reader, c_writer = await ws_open(
+            port, f"/ws/client?id={session_id}&token={client_token}", {}
+        )
+
+        # Warm-up: confirm fan-out before measuring teardown.
+        await ws_send_binary(
+            a_writer, struct.pack("!Q", time.monotonic_ns()) + b"warmup"
+        )
+        opcode, _ = await asyncio.wait_for(ws_read_frame(c_reader, 1 << 22), 2.0)
+        assert opcode == 0x2
+
+        disconnect_at = time.monotonic_ns()
+        a_writer.close()
+        with contextlib.suppress(Exception):
+            await a_writer.wait_closed()
+        # The relay closes the client socket too; drain it so resources free.
+        with contextlib.suppress(Exception):
+            c_writer.close()
+            await c_writer.wait_closed()
+
+        # Reopen agent. Session is still in sessions{} (offline_ttl 300s),
+        # so the same agent_token continues to authenticate.
+        a_reader2, a_writer2 = await ws_open(
+            port,
+            f"/ws/agent?id={session_id}",
+            {"Authorization": f"Bearer {agent_token}"},
+        )
+        c_reader2, c_writer2 = await ws_open(
+            port, f"/ws/client?id={session_id}&token={client_token}", {}
+        )
+
+        await ws_send_binary(
+            a_writer2, struct.pack("!Q", time.monotonic_ns()) + b"reconnect-marker"
+        )
+        # Skip backlog replay frames (text/binary from before): we wait for
+        # the marker payload specifically.
+        deadline = time.time() + 5.0
+        recovery_at = None
+        while time.time() < deadline:
+            opcode, payload = await asyncio.wait_for(
+                ws_read_frame(c_reader2, 1 << 22), max(0.1, deadline - time.time())
+            )
+            if opcode == 0x2 and payload[8:].startswith(b"reconnect-marker"):
+                recovery_at = time.monotonic_ns()
+                break
+        assert recovery_at is not None, "reconnect marker not seen within 5s"
+
+        for w in (a_writer2, c_writer2):
+            w.close()
+            with contextlib.suppress(Exception):
+                await w.wait_closed()
+
+        return {
+            "scenario": "reconnect",
+            "reconnect_mttr_ms": round((recovery_at - disconnect_at) / 1e6, 2),
+        }
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+
+
+async def run_silent_drop(args) -> dict:
+    """Measure heartbeat-driven MTTD for an idle client that never pongs.
+
+    Configures the relay with a short ping interval/timeout, attaches one
+    busy agent + one busy client to provide steady-state load context,
+    then attaches an idle client that never reads or sends a pong. The
+    test polls /metrics until ``ghostty_relay_active_clients`` drops back
+    to its baseline, meaning the heartbeat watcher closed the idle
+    socket.
+    """
+    port = free_port()
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVER),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--token-ttl",
+            "3600",
+            "--max-sessions",
+            "8",
+            "--max-clients-per-session",
+            "8",
+            "--ping-interval-seconds",
+            str(args.ping_interval),
+            "--ping-timeout-seconds",
+            str(args.ping_timeout),
+            "--token-expiry-check-seconds",
+            "0",
+            "--rate-limit-requests",
+            "0",
+            "--static-root",
+            str(STATIC_ROOT),
+        ],
+        env={**os.environ, "GHOSTTY_RELAY_USER_TOKENS": USER_TOKEN},
+        cwd=str(ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    wait_for_server(port)
+    try:
+        session_id = secrets.token_hex(8)
+        reg = register(port, session_id, "SilentDropTest")
+        agent_token = reg["agent_token"]
+        client_token = reg["client_token"]
+
+        a_reader, a_writer = await ws_open(
+            port,
+            f"/ws/agent?id={session_id}",
+            {"Authorization": f"Bearer {agent_token}"},
+        )
+        b_reader, b_writer = await ws_open(
+            port, f"/ws/client?id={session_id}&token={client_token}", {}
+        )
+
+        async def busy_pump(stop_event: asyncio.Event) -> None:
+            while not stop_event.is_set():
+                try:
+                    await ws_send_binary(
+                        a_writer, struct.pack("!Q", time.monotonic_ns()) + b"x"
+                    )
+                except Exception:
+                    return
+                await asyncio.sleep(0.1)
+
+        async def busy_consume(stop_event: asyncio.Event) -> None:
+            while not stop_event.is_set():
+                try:
+                    await ws_read_frame(b_reader, 1 << 22)
+                except Exception:
+                    return
+
+        stop_event = asyncio.Event()
+        pump_task = asyncio.create_task(busy_pump(stop_event))
+        consume_task = asyncio.create_task(busy_consume(stop_event))
+        await asyncio.sleep(0.3)
+
+        baseline = read_active_clients(port)
+
+        idle_reader, idle_writer = await ws_open(
+            port, f"/ws/client?id={session_id}&token={client_token}", {}
+        )
+        await asyncio.sleep(0.1)
+        elevated = read_active_clients(port)
+        assert elevated > baseline, (baseline, elevated)
+
+        silent_at = time.monotonic_ns()
+        deadline_ns = silent_at + int((args.ping_timeout + args.ping_interval) * 5 * 1e9)
+        detected_at: int | None = None
+        while time.monotonic_ns() < deadline_ns:
+            await asyncio.sleep(0.1)
+            if read_active_clients(port) <= baseline:
+                detected_at = time.monotonic_ns()
+                break
+
+        stop_event.set()
+        for task in (pump_task, consume_task):
+            task.cancel()
+        await asyncio.gather(pump_task, consume_task, return_exceptions=True)
+        for w in (a_writer, b_writer, idle_writer):
+            with contextlib.suppress(Exception):
+                w.close()
+                await w.wait_closed()
+
+        if detected_at is None:
+            return {
+                "scenario": "silent-drop",
+                "ping_interval_seconds": args.ping_interval,
+                "ping_timeout_seconds": args.ping_timeout,
+                "error": "active_clients did not drop within 5 × (interval + timeout)",
+            }
+
+        return {
+            "scenario": "silent-drop",
+            "ping_interval_seconds": args.ping_interval,
+            "ping_timeout_seconds": args.ping_timeout,
+            "silent_drop_mttd_ms": round((detected_at - silent_at) / 1e6, 2),
+        }
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
 
 async def run_once(args) -> dict:
@@ -383,11 +642,41 @@ async def run_once(args) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Relay load harness")
+    parser.add_argument(
+        "--scenario",
+        choices=("steady", "reconnect", "silent-drop"),
+        default="steady",
+        help="Which workload to drive. steady = throughput/latency baseline,"
+        " reconnect = end-to-end MTTR after agent disconnect,"
+        " silent-drop = heartbeat-driven MTTD for an idle client.",
+    )
     parser.add_argument("--sessions", type=int, default=10)
     parser.add_argument("--fan-out", type=int, default=2)
-    parser.add_argument("--frame-size", type=int, default=256, help="Bytes per frame, including the 8-byte timestamp prefix.")
-    parser.add_argument("--send-interval", type=float, default=0.1, help="Seconds between agent sends.")
+    parser.add_argument(
+        "--frame-size",
+        type=int,
+        default=256,
+        help="Bytes per frame, including the 8-byte timestamp prefix.",
+    )
+    parser.add_argument(
+        "--send-interval",
+        type=float,
+        default=0.1,
+        help="Seconds between agent sends.",
+    )
     parser.add_argument("--duration", type=float, default=15.0)
+    parser.add_argument(
+        "--ping-interval",
+        type=float,
+        default=1.0,
+        help="silent-drop scenario: GHOSTTY_RELAY_PING_INTERVAL_SECONDS for the relay under test.",
+    )
+    parser.add_argument(
+        "--ping-timeout",
+        type=float,
+        default=2.0,
+        help="silent-drop scenario: GHOSTTY_RELAY_PING_TIMEOUT_SECONDS for the relay under test.",
+    )
     args = parser.parse_args()
 
     if args.frame_size < 8:
@@ -398,7 +687,12 @@ def main() -> int:
         return 1
 
     raise_fd_limit()
-    result = asyncio.run(run_once(args))
+    if args.scenario == "reconnect":
+        result = asyncio.run(run_reconnect(args))
+    elif args.scenario == "silent-drop":
+        result = asyncio.run(run_silent_drop(args))
+    else:
+        result = asyncio.run(run_once(args))
     print(json.dumps(result, indent=2))
     return 0
 
