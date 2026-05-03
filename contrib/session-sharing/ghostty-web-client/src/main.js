@@ -131,9 +131,10 @@ async function refreshSessions() {
       return;
     }
 
-    const sessions = await response.json();
+    const sessions = sortSessions(await response.json());
     cachedSessions = sessions;
-    sessionMeta.textContent = `${sessions.length} 个会话`;
+    const onlineCount = sessions.filter((session) => session.online).length;
+    sessionMeta.textContent = `${onlineCount} 在线 / ${sessions.length} 个会话`;
     for (const session of sessions) {
       sessionList.append(renderSession(session));
     }
@@ -175,6 +176,7 @@ function scheduleSessionRefresh() {
 
 function renderSession(session) {
   const activityText = formatLastSeen(session.last_seen_at);
+  const displayName = displaySessionName(session);
   const item = document.createElement("button");
   item.type = "button";
   item.className = [
@@ -183,8 +185,8 @@ function renderSession(session) {
     session.id === activeSessionId ? "active" : "",
   ].filter(Boolean).join(" ");
   item.innerHTML = `
-    <div><strong>${escapeHtml(session.name)}</strong></div>
-    <div style="margin-top: 6px; font-size: 12px; color: #6d655c;">${escapeHtml(session.id)}</div>
+    <div style="font-size: 12px; color: #6d655c;">会话名称：${escapeHtml(displayName)}</div>
+    <div style="margin-top: 6px; font-size: 12px; color: #6d655c;">会话 ID：${escapeHtml(session.id)}</div>
     <div style="margin-top: 4px; font-size: 12px; color: #6d655c;">最近活动：${escapeHtml(activityText)}</div>
     <div class="status ${session.online ? "online" : "offline"}">${session.online ? "在线" : "离线"}</div>
   `;
@@ -194,6 +196,33 @@ function renderSession(session) {
     item.disabled = true;
   }
   return item;
+}
+
+function sortSessions(sessions) {
+  return [...sessions].sort((left, right) => {
+    if (left.online !== right.online) {
+      return left.online ? -1 : 1;
+    }
+
+    const rightTime = timestampForSort(right.last_seen_at);
+    const leftTime = timestampForSort(left.last_seen_at);
+    if (rightTime !== leftTime) {
+      return rightTime - leftTime;
+    }
+
+    return displaySessionName(left).localeCompare(displaySessionName(right), "zh-CN");
+  });
+}
+
+function displaySessionName(session) {
+  const name = typeof session.name === "string" ? session.name.trim() : "";
+  return name || "未命名会话";
+}
+
+function timestampForSort(value) {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
 }
 
 async function connectToSession(session, { updateHistory = true } = {}) {

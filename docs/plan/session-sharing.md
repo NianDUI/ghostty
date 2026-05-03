@@ -152,16 +152,19 @@ Completed:
 - Added macOS unit tests for register request and WebSocket request construction
 - Added macOS unit tests for register response parsing and invalid-response rejection paths
 - Added macOS unit tests for disconnect, stop, and reconnect lifecycle decisions
+- Added macOS unit tests for controller-level connect-failure presentation and reconnect backoff orchestration
+- Added macOS unit tests for pending reconnect replacement and cancellation coordination
+- Added injectable network/output-bridge/reconnect-scheduler collaborators with macOS unit tests for wiring
 
 Remaining:
 
-- Add higher-level tests around `SessionSharingController` scheduling and dependency wiring
+- Add higher-level tests that drive `SessionSharingController` directly against fake network and output-bridge collaborators
 - Add Zig tests for the raw byte bridge hooks
 - Add browser smoke test automation
 
 ## Recommended Next Steps
 
-1. Add higher-level tests around `SessionSharingController` network scheduling and reconnect orchestration.
+1. Add higher-level tests that drive `SessionSharingController` directly against fake network and output-bridge collaborators.
 2. Decide whether the relay should remain a prototype or be rewritten as an in-repo Zig service.
 3. Complete browser IME handling and validate reconnect/resize behavior on real mobile devices.
 4. If cross-platform support matters, start the GTK implementation instead of deepening macOS-only polish.

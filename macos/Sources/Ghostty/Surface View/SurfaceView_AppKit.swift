@@ -1810,24 +1810,35 @@ private final class SessionSharingController {
     }
 
     private weak var surfaceView: Ghostty.SurfaceView?
-    private let session = URLSession(configuration: .default)
+    private let networkClient: any SessionSharingNetworkClient
+    private let outputBridge: SessionSharingOutputBridge
+    private let reconnectScheduler: SessionSharingReconnectScheduler
     private let outgoingQueue = DispatchQueue(label: "com.mitchellh.ghostty.session-sharing.outgoing")
-    private let store = SessionSharingConfigStore()
+    private let store: SessionSharingConfigStore
 
     private var webSocket: URLSessionWebSocketTask?
-    private var reconnectWorkItem: DispatchWorkItem?
+    private var reconnectTask: SessionSharingScheduledTask?
     private var relayAddress = ""
     private var userToken = ""
     private var sessionID = ""
     private var sessionName = ""
     private var shouldReconnect = false
     private var reconnectPolicy = SessionSharingReconnectPolicy()
+    private var reconnectCoordinator = SessionSharingReconnectCoordinator()
     private var isStopping = false
     private var didPersistConfig = false
     private var originalSharedResizeCheckpoint: SharedResizeCheckpoint?
 
-    init(surfaceView: Ghostty.SurfaceView) {
+    init(
+        surfaceView: Ghostty.SurfaceView,
+        dependencies: SessionSharingControllerDependencies = .live(),
+        store: SessionSharingConfigStore = SessionSharingConfigStore()
+    ) {
         self.surfaceView = surfaceView
+        networkClient = dependencies.networkClient
+        outputBridge = dependencies.outputBridge
+        reconnectScheduler = dependencies.reconnectScheduler
+        self.store = store
     }
 
     func prepareForSurfaceShutdown() {
@@ -1847,8 +1858,7 @@ private final class SessionSharingController {
     func stopSharing(userInitiated: Bool) {
         shouldReconnect = false
         isStopping = true
-        reconnectWorkItem?.cancel()
-        reconnectWorkItem = nil
+        cancelPendingReconnectIfNeeded()
         setState(.stopping)
         detachOutputCallback()
         webSocket?.cancel(with: .goingAway, reason: nil)
@@ -1958,8 +1968,7 @@ private final class SessionSharingController {
     }
 
     private func stopActiveConnectionForRestart() {
-        reconnectWorkItem?.cancel()
-        reconnectWorkItem = nil
+        cancelPendingReconnectIfNeeded()
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
         detachOutputCallback()
@@ -1975,7 +1984,7 @@ private final class SessionSharingController {
                 token: userToken
             ))
 
-            let (data, response) = try await session.data(for: request)
+            let (data, response) = try await networkClient.data(for: request)
             let registerResponse = try SessionSharingResponseParser.parseRegisterResponse(
                 data: data,
                 response: response,
@@ -1993,7 +2002,7 @@ private final class SessionSharingController {
             sessionID: sessionID,
             agentToken: agentToken
         )
-        let webSocket = session.webSocketTask(with: request)
+        let webSocket = networkClient.webSocketTask(with: request)
         self.webSocket = webSocket
         webSocket.resume()
         setState(.sharing)
@@ -2083,48 +2092,67 @@ private final class SessionSharingController {
     }
 
     private func handleConnectFailure(_ error: Error, initialAttempt: Bool) {
-        if SessionSharingLifecycle.shouldPresentConnectFailure(initialAttempt: initialAttempt) {
+        let plan = SessionSharingControllerRecovery.connectFailurePlan(
+            initialAttempt: initialAttempt,
+            shouldReconnect: shouldReconnect,
+            isStopping: isStopping,
+            reconnectPolicy: &reconnectPolicy
+        )
+        if plan.shouldPresentError {
             presentError("启动共享失败：\(error.localizedDescription)", on: surfaceView?.window)
         }
-        handleDisconnect(error: error)
+        applyRecoveryAction(plan.action)
     }
 
     private func handleDisconnect(error: Error) {
         webSocket = nil
-        switch SessionSharingLifecycle.transitionAfterDisconnect(
+        let action = SessionSharingControllerRecovery.disconnectAction(
             shouldReconnect: shouldReconnect,
-            isStopping: isStopping
-        ) {
+            isStopping: isStopping,
+            reconnectPolicy: &reconnectPolicy
+        )
+        applyRecoveryAction(action)
+    }
+
+    private func applyRecoveryAction(_ action: SessionSharingRecoveryAction) {
+        switch action {
         case .idle:
             setState(.idle)
             return
-        case .reconnect:
-            scheduleReconnect()
+        case .reconnect(let seconds):
+            scheduleReconnect(after: seconds)
         }
     }
 
-    private func scheduleReconnect() {
+    private func scheduleReconnect(after seconds: TimeInterval) {
         setState(.reconnecting)
 
-        let seconds = reconnectPolicy.nextDelay()
-        let workItem = DispatchWorkItem { [weak self] in
+        let plan = reconnectCoordinator.prepareToSchedule(after: seconds)
+        if plan.shouldCancelExisting {
+            reconnectTask?.cancel()
+        }
+        reconnectTask = reconnectScheduler.schedule(after: plan.delay) { [weak self] in
+            self?.reconnectCoordinator.markReconnectFired()
             Task { [weak self] in
                 await self?.registerAndConnect(initialAttempt: false)
             }
         }
-        reconnectWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: workItem)
+    }
+
+    private func cancelPendingReconnectIfNeeded() {
+        if reconnectCoordinator.cancelScheduledReconnect() {
+            reconnectTask?.cancel()
+        }
+        reconnectTask = nil
     }
 
     private func attachOutputCallback() {
-        guard let surface = surfaceView?.surface else { return }
         let context = Unmanaged.passUnretained(self).toOpaque()
-        ghostty_surface_set_output_callback(surface, sessionSharingOutputCallback, context)
+        outputBridge.attach(surface: surfaceView?.surface, context: context)
     }
 
     private func detachOutputCallback() {
-        guard let surface = surfaceView?.surface else { return }
-        ghostty_surface_set_output_callback(surface, nil, nil)
+        outputBridge.detach(surface: surfaceView?.surface)
     }
 
     private func setState(_ state: Ghostty.OSSurfaceView.SharingState) {
@@ -2343,6 +2371,153 @@ enum SessionSharingKeyEquivalentPolicy {
 enum SessionSharingDisconnectTransition: Equatable {
     case idle
     case reconnect
+}
+
+enum SessionSharingRecoveryAction: Equatable {
+    case idle
+    case reconnect(after: TimeInterval)
+}
+
+struct SessionSharingConnectFailurePlan: Equatable {
+    let shouldPresentError: Bool
+    let action: SessionSharingRecoveryAction
+}
+
+struct SessionSharingReconnectSchedulePlan: Equatable {
+    let delay: TimeInterval
+    let shouldCancelExisting: Bool
+}
+
+protocol SessionSharingNetworkClient {
+    func data(for request: URLRequest) async throws -> (Data, URLResponse)
+    func webSocketTask(with request: URLRequest) -> URLSessionWebSocketTask
+}
+
+extension URLSession: SessionSharingNetworkClient {}
+
+final class SessionSharingScheduledTask {
+    private let cancelHandler: @Sendable () -> Void
+
+    init(cancelHandler: @escaping @Sendable () -> Void) {
+        self.cancelHandler = cancelHandler
+    }
+
+    func cancel() {
+        cancelHandler()
+    }
+}
+
+struct SessionSharingReconnectScheduler {
+    let schedule: @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> SessionSharingScheduledTask
+
+    static func live(queue: DispatchQueue = .main) -> Self {
+        .init { delay, action in
+            let workItem = DispatchWorkItem(block: action)
+            queue.asyncAfter(deadline: .now() + delay, execute: workItem)
+            return SessionSharingScheduledTask {
+                workItem.cancel()
+            }
+        }
+    }
+
+    func schedule(after delay: TimeInterval, _ action: @escaping @Sendable () -> Void) -> SessionSharingScheduledTask {
+        schedule(delay, action)
+    }
+}
+
+struct SessionSharingOutputBridge {
+    let attach: (_ surface: ghostty_surface_t?, _ context: UnsafeMutableRawPointer?) -> Void
+    let detach: (_ surface: ghostty_surface_t?) -> Void
+
+    static let live = Self(
+        attach: { surface, context in
+            guard let surface else { return }
+            ghostty_surface_set_output_callback(surface, sessionSharingOutputCallback, context)
+        },
+        detach: { surface in
+            guard let surface else { return }
+            ghostty_surface_set_output_callback(surface, nil, nil)
+        }
+    )
+
+    func attach(surface: ghostty_surface_t?, context: UnsafeMutableRawPointer?) {
+        attach(surface, context)
+    }
+
+    func detach(surface: ghostty_surface_t?) {
+        detach(surface)
+    }
+}
+
+struct SessionSharingControllerDependencies {
+    let networkClient: any SessionSharingNetworkClient
+    let outputBridge: SessionSharingOutputBridge
+    let reconnectScheduler: SessionSharingReconnectScheduler
+
+    static func live(session: URLSession = URLSession(configuration: .default)) -> Self {
+        .init(
+            networkClient: session,
+            outputBridge: .live,
+            reconnectScheduler: .live()
+        )
+    }
+}
+
+struct SessionSharingReconnectCoordinator {
+    private(set) var hasScheduledReconnect = false
+
+    mutating func prepareToSchedule(after delay: TimeInterval) -> SessionSharingReconnectSchedulePlan {
+        let plan = SessionSharingReconnectSchedulePlan(
+            delay: delay,
+            shouldCancelExisting: hasScheduledReconnect
+        )
+        hasScheduledReconnect = true
+        return plan
+    }
+
+    mutating func cancelScheduledReconnect() -> Bool {
+        let didCancel = hasScheduledReconnect
+        hasScheduledReconnect = false
+        return didCancel
+    }
+
+    mutating func markReconnectFired() {
+        hasScheduledReconnect = false
+    }
+}
+
+enum SessionSharingControllerRecovery {
+    static func connectFailurePlan(
+        initialAttempt: Bool,
+        shouldReconnect: Bool,
+        isStopping: Bool,
+        reconnectPolicy: inout SessionSharingReconnectPolicy
+    ) -> SessionSharingConnectFailurePlan {
+        .init(
+            shouldPresentError: SessionSharingLifecycle.shouldPresentConnectFailure(initialAttempt: initialAttempt),
+            action: disconnectAction(
+                shouldReconnect: shouldReconnect,
+                isStopping: isStopping,
+                reconnectPolicy: &reconnectPolicy
+            )
+        )
+    }
+
+    static func disconnectAction(
+        shouldReconnect: Bool,
+        isStopping: Bool,
+        reconnectPolicy: inout SessionSharingReconnectPolicy
+    ) -> SessionSharingRecoveryAction {
+        switch SessionSharingLifecycle.transitionAfterDisconnect(
+            shouldReconnect: shouldReconnect,
+            isStopping: isStopping
+        ) {
+        case .idle:
+            return .idle
+        case .reconnect:
+            return .reconnect(after: reconnectPolicy.nextDelay())
+        }
+    }
 }
 
 enum SessionSharingLifecycle {

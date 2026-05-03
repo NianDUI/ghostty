@@ -5,6 +5,19 @@ import Testing
 
 @Suite
 struct SessionSharingTests {
+    private struct StubNetworkClient: SessionSharingNetworkClient {
+        let dataHandler: @Sendable (URLRequest) async throws -> (Data, URLResponse)
+        let webSocketHandler: @Sendable (URLRequest) -> URLSessionWebSocketTask
+
+        func data(for request: URLRequest) async throws -> (Data, URLResponse) {
+            try await dataHandler(request)
+        }
+
+        func webSocketTask(with request: URLRequest) -> URLSessionWebSocketTask {
+            webSocketHandler(request)
+        }
+    }
+
     @Test
     func reconnectPolicyBackoffSequence() {
         var policy = SessionSharingReconnectPolicy()
@@ -237,6 +250,218 @@ struct SessionSharingTests {
     func lifecycleOnlyPresentsInitialConnectFailure() {
         #expect(SessionSharingLifecycle.shouldPresentConnectFailure(initialAttempt: true) == true)
         #expect(SessionSharingLifecycle.shouldPresentConnectFailure(initialAttempt: false) == false)
+    }
+
+    @Test
+    func controllerRecoveryInitialConnectFailurePresentsErrorAndSchedulesReconnect() {
+        var policy = SessionSharingReconnectPolicy()
+        let plan = SessionSharingControllerRecovery.connectFailurePlan(
+            initialAttempt: true,
+            shouldReconnect: true,
+            isStopping: false,
+            reconnectPolicy: &policy
+        )
+
+        #expect(plan.shouldPresentError == true)
+        #expect(plan.action == .reconnect(after: 1))
+        #expect(policy.attempt == 1)
+    }
+
+    @Test
+    func controllerRecoveryReconnectFailureSkipsErrorAndAdvancesBackoff() {
+        var policy = SessionSharingReconnectPolicy()
+        _ = SessionSharingControllerRecovery.connectFailurePlan(
+            initialAttempt: true,
+            shouldReconnect: true,
+            isStopping: false,
+            reconnectPolicy: &policy
+        )
+
+        let plan = SessionSharingControllerRecovery.connectFailurePlan(
+            initialAttempt: false,
+            shouldReconnect: true,
+            isStopping: false,
+            reconnectPolicy: &policy
+        )
+
+        #expect(plan.shouldPresentError == false)
+        #expect(plan.action == .reconnect(after: 2))
+        #expect(policy.attempt == 2)
+    }
+
+    @Test
+    func controllerRecoveryDoesNotScheduleReconnectWhenDisabled() {
+        var policy = SessionSharingReconnectPolicy()
+        let plan = SessionSharingControllerRecovery.connectFailurePlan(
+            initialAttempt: true,
+            shouldReconnect: false,
+            isStopping: false,
+            reconnectPolicy: &policy
+        )
+
+        #expect(plan.shouldPresentError == true)
+        #expect(plan.action == .idle)
+        #expect(policy.attempt == 0)
+    }
+
+    @Test
+    func controllerRecoveryDisconnectActionAdvancesBackoffOnlyWhenReconnects() {
+        var policy = SessionSharingReconnectPolicy()
+        let first = SessionSharingControllerRecovery.disconnectAction(
+            shouldReconnect: true,
+            isStopping: false,
+            reconnectPolicy: &policy
+        )
+        let second = SessionSharingControllerRecovery.disconnectAction(
+            shouldReconnect: true,
+            isStopping: false,
+            reconnectPolicy: &policy
+        )
+        let stopped = SessionSharingControllerRecovery.disconnectAction(
+            shouldReconnect: true,
+            isStopping: true,
+            reconnectPolicy: &policy
+        )
+
+        #expect(first == .reconnect(after: 1))
+        #expect(second == .reconnect(after: 2))
+        #expect(stopped == .idle)
+        #expect(policy.attempt == 2)
+    }
+
+    @Test
+    func reconnectCoordinatorFirstScheduleDoesNotCancelExistingWork() {
+        var coordinator = SessionSharingReconnectCoordinator()
+        let plan = coordinator.prepareToSchedule(after: 4)
+
+        #expect(plan == .init(delay: 4, shouldCancelExisting: false))
+        #expect(coordinator.hasScheduledReconnect == true)
+    }
+
+    @Test
+    func reconnectCoordinatorSecondScheduleReplacesExistingWork() {
+        var coordinator = SessionSharingReconnectCoordinator()
+        _ = coordinator.prepareToSchedule(after: 1)
+
+        let plan = coordinator.prepareToSchedule(after: 8)
+
+        #expect(plan == .init(delay: 8, shouldCancelExisting: true))
+        #expect(coordinator.hasScheduledReconnect == true)
+    }
+
+    @Test
+    func reconnectCoordinatorCancelOnlySucceedsWhenPendingReconnectExists() {
+        var coordinator = SessionSharingReconnectCoordinator()
+        #expect(coordinator.cancelScheduledReconnect() == false)
+
+        _ = coordinator.prepareToSchedule(after: 2)
+
+        #expect(coordinator.cancelScheduledReconnect() == true)
+        #expect(coordinator.hasScheduledReconnect == false)
+        #expect(coordinator.cancelScheduledReconnect() == false)
+    }
+
+    @Test
+    func reconnectCoordinatorMarksReconnectAsFired() {
+        var coordinator = SessionSharingReconnectCoordinator()
+        _ = coordinator.prepareToSchedule(after: 2)
+
+        coordinator.markReconnectFired()
+
+        #expect(coordinator.hasScheduledReconnect == false)
+    }
+
+    @Test
+    func reconnectSchedulerUsesInjectedScheduleClosureAndCancelableTask() {
+        let lock = NSLock()
+        var recordedDelay: TimeInterval?
+        var cancelCount = 0
+        let scheduler = SessionSharingReconnectScheduler { delay, _ in
+            lock.lock()
+            recordedDelay = delay
+            lock.unlock()
+            return SessionSharingScheduledTask {
+                lock.lock()
+                cancelCount += 1
+                lock.unlock()
+            }
+        }
+
+        let task = scheduler.schedule(after: 5) {}
+        task.cancel()
+
+        lock.lock()
+        defer { lock.unlock() }
+        #expect(recordedDelay == 5)
+        #expect(cancelCount == 1)
+    }
+
+    @Test
+    func outputBridgeUsesInjectedAttachAndDetachClosures() {
+        let lock = NSLock()
+        var attachCalls = 0
+        var detachCalls = 0
+        let bridge = SessionSharingOutputBridge(
+            attach: { _, _ in
+                lock.lock()
+                attachCalls += 1
+                lock.unlock()
+            },
+            detach: { _ in
+                lock.lock()
+                detachCalls += 1
+                lock.unlock()
+            }
+        )
+
+        bridge.attach(surface: nil, context: nil)
+        bridge.detach(surface: nil)
+
+        lock.lock()
+        defer { lock.unlock() }
+        #expect(attachCalls == 1)
+        #expect(detachCalls == 1)
+    }
+
+    @Test
+    func controllerDependenciesCarryInjectedCollaborators() async throws {
+        let expectedURL = try #require(URL(string: "https://relay.example.com/api/register"))
+        let expectedResponse = try #require(HTTPURLResponse(
+            url: expectedURL,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        ))
+        let expectedData = Data("ok".utf8)
+        let request = URLRequest(url: expectedURL)
+        let webSocketTask = URLSession(configuration: .ephemeral).webSocketTask(with: URL(string: "wss://relay.example.com/ws/agent")!)
+        let network = StubNetworkClient(
+            dataHandler: { incomingRequest in
+                #expect(incomingRequest.url == expectedURL)
+                return (expectedData, expectedResponse)
+            },
+            webSocketHandler: { incomingRequest in
+                #expect(incomingRequest.url?.absoluteString == "wss://relay.example.com/ws/agent")
+                return webSocketTask
+            }
+        )
+        let dependencies = SessionSharingControllerDependencies(
+            networkClient: network,
+            outputBridge: SessionSharingOutputBridge(
+                attach: { _, _ in },
+                detach: { _ in }
+            ),
+            reconnectScheduler: .live()
+        )
+
+        let (data, response) = try await dependencies.networkClient.data(for: request)
+        let task = dependencies.networkClient.webSocketTask(
+            with: URLRequest(url: try #require(URL(string: "wss://relay.example.com/ws/agent")))
+        )
+
+        #expect(data == expectedData)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        #expect(task == webSocketTask)
     }
 
     @Test
