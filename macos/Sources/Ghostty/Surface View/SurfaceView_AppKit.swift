@@ -2822,6 +2822,7 @@ struct SessionSharingConfigStore {
     private let keychainService: String
     private let fileURL: URL
     private let keychainTokenReader: (String, String) -> String?
+    private let keychainTokenWriter: (String, String, String) -> Bool
     private let logError: (String) -> Void
 
     init(
@@ -2829,6 +2830,7 @@ struct SessionSharingConfigStore {
         fileURL: URL? = nil,
         keychainService: String = "com.mitchellh.ghostty.session-sharing",
         keychainTokenReader: @escaping (String, String) -> String? = SessionSharingConfigStore.defaultKeychainTokenReader,
+        keychainTokenWriter: @escaping (String, String, String) -> Bool = SessionSharingConfigStore.defaultKeychainTokenWriter,
         logError: @escaping (String) -> Void = { message in
             AppDelegate.logger.error("\(message)")
         }
@@ -2837,6 +2839,7 @@ struct SessionSharingConfigStore {
         self.fileURL = fileURL ?? Self.defaultFileURL(fileManager: fileManager)
         self.keychainService = keychainService
         self.keychainTokenReader = keychainTokenReader
+        self.keychainTokenWriter = keychainTokenWriter
         self.logError = logError
     }
 
@@ -2854,17 +2857,29 @@ struct SessionSharingConfigStore {
 
     @discardableResult
     func save(_ config: SessionSharingPersistedConfig) -> Bool {
+        let fileSucceeded: Bool
         do {
             let dir = fileURL.deletingLastPathComponent()
             try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
             let data = try JSONEncoder().encode(config)
             try data.write(to: fileURL, options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
-            return true
+            fileSucceeded = true
         } catch {
             logError("failed to save session sharing config: \(SessionSharingTokenRedaction.redact(error: error))")
-            return false
+            fileSucceeded = false
         }
+
+        // Best-effort Keychain mirror so the token survives a 0o600
+        // permission breakage on the on-disk config (the load path
+        // already drops the in-file token in that case and falls back
+        // to the Keychain reader). Keychain failure does not fail save.
+        if let token = config.token, !token.isEmpty,
+           let relay = config.relay, !relay.isEmpty {
+            _ = writeKeychainToken(token, forRelay: relay)
+        }
+
+        return fileSucceeded
     }
 
     func updatedHistory(_ relay: String, existing: [String]) -> [String] {
@@ -2876,6 +2891,12 @@ struct SessionSharingConfigStore {
     func readKeychainToken(forRelay relay: String) -> String {
         guard !relay.isEmpty else { return "" }
         return keychainTokenReader(keychainService, relay) ?? ""
+    }
+
+    @discardableResult
+    func writeKeychainToken(_ token: String, forRelay relay: String) -> Bool {
+        guard !relay.isEmpty, !token.isEmpty else { return false }
+        return keychainTokenWriter(keychainService, relay, token)
     }
 
     static func defaultFileURL(fileManager: FileManager = .default) -> URL {
@@ -2901,6 +2922,32 @@ struct SessionSharingConfigStore {
             return nil
         }
         return token
+    }
+
+    private static func defaultKeychainTokenWriter(service: String, relay: String, token: String) -> Bool {
+        guard let data = token.data(using: .utf8) else { return false }
+
+        // Try update first so we don't churn the Keychain item every save.
+        let lookup: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: relay,
+        ]
+        let updateAttrs: [CFString: Any] = [
+            kSecValueData: data,
+        ]
+        let updateStatus = SecItemUpdate(lookup as CFDictionary, updateAttrs as CFDictionary)
+        if updateStatus == errSecSuccess { return true }
+        if updateStatus != errSecItemNotFound { return false }
+
+        // No prior entry — insert a fresh one. WhenUnlocked matches the
+        // user-visible "active terminal session" lifetime; we don't want
+        // the token surviving a logout/reboot in clear text.
+        var insertAttrs = lookup
+        insertAttrs[kSecValueData] = data
+        insertAttrs[kSecAttrAccessible] = kSecAttrAccessibleWhenUnlocked
+        let addStatus = SecItemAdd(insertAttrs as CFDictionary, nil)
+        return addStatus == errSecSuccess
     }
 }
 

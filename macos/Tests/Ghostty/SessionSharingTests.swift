@@ -148,6 +148,113 @@ struct SessionSharingTests {
     }
 
     @Test
+    func configStoreWriteKeychainTokenForwardsServiceAccountAndValue() {
+        var captured: [(service: String, account: String, token: String)] = []
+        let store = SessionSharingConfigStore(
+            fileURL: URL(fileURLWithPath: "/tmp/ghostty-sharing-test"),
+            keychainTokenReader: { _, _ in nil },
+            keychainTokenWriter: { service, account, token in
+                captured.append((service: service, account: account, token: token))
+                return true
+            },
+            logError: { _ in }
+        )
+
+        let result = store.writeKeychainToken("opaque-bearer", forRelay: "relay.example.com:443")
+
+        #expect(result == true)
+        #expect(captured.count == 1)
+        #expect(captured.first?.service == "com.mitchellh.ghostty.session-sharing")
+        #expect(captured.first?.account == "relay.example.com:443")
+        #expect(captured.first?.token == "opaque-bearer")
+    }
+
+    @Test
+    func configStoreWriteKeychainTokenSkipsEmptyTokenOrRelay() {
+        var calls = 0
+        let store = SessionSharingConfigStore(
+            fileURL: URL(fileURLWithPath: "/tmp/ghostty-sharing-test"),
+            keychainTokenReader: { _, _ in nil },
+            keychainTokenWriter: { _, _, _ in
+                calls += 1
+                return true
+            },
+            logError: { _ in }
+        )
+
+        #expect(store.writeKeychainToken("", forRelay: "relay") == false)
+        #expect(store.writeKeychainToken("token", forRelay: "") == false)
+        #expect(store.writeKeychainToken("", forRelay: "") == false)
+        #expect(calls == 0)
+    }
+
+    @Test
+    func configStoreSaveMirrorsTokenToKeychain() throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.remove() }
+        var captured: [(service: String, account: String, token: String)] = []
+        let store = SessionSharingConfigStore(
+            fileURL: sandbox.root.appendingPathComponent("sharing.conf"),
+            keychainTokenReader: { _, _ in nil },
+            keychainTokenWriter: { service, account, token in
+                captured.append((service: service, account: account, token: token))
+                return true
+            },
+            logError: { _ in }
+        )
+
+        let saved = store.save(
+            SessionSharingPersistedConfig(
+                relay: "relay.example.com:443",
+                token: "opaque-bearer",
+                relayHistory: ["relay.example.com:443"],
+                lastSessionName: "demo"
+            )
+        )
+
+        #expect(saved == true)
+        #expect(captured.count == 1)
+        #expect(captured.first?.account == "relay.example.com:443")
+        #expect(captured.first?.token == "opaque-bearer")
+    }
+
+    @Test
+    func configStoreSaveSkipsKeychainWhenTokenOrRelayMissing() throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.remove() }
+        var calls = 0
+        let store = SessionSharingConfigStore(
+            fileURL: sandbox.root.appendingPathComponent("sharing.conf"),
+            keychainTokenReader: { _, _ in nil },
+            keychainTokenWriter: { _, _, _ in
+                calls += 1
+                return true
+            },
+            logError: { _ in }
+        )
+
+        // Missing token: don't write a row with an empty value.
+        _ = store.save(
+            SessionSharingPersistedConfig(
+                relay: "relay.example.com:443",
+                token: nil,
+                relayHistory: [],
+                lastSessionName: nil
+            )
+        )
+        // Missing relay: nothing to scope the Keychain account on.
+        _ = store.save(
+            SessionSharingPersistedConfig(
+                relay: nil,
+                token: "opaque-bearer",
+                relayHistory: [],
+                lastSessionName: nil
+            )
+        )
+        #expect(calls == 0)
+    }
+
+    @Test
     func relayURLBuilderAddsSchemeAndPath() throws {
         let url = try SessionSharingRelayURLBuilder.url(
             for: "relay.example.com:443",
