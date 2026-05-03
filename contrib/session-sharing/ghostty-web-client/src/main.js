@@ -1,4 +1,5 @@
 import { FitAddon, init, Terminal } from "ghostty-web";
+import { redactErrorMessage } from "./redaction.js";
 
 const DEFAULT_TITLE = "Ghostty Session Sharing";
 const SESSION_QUERY_KEY = "session";
@@ -171,7 +172,7 @@ async function refreshSessions() {
       }
     }
   } catch (error) {
-    console.error(error);
+    console.error(redactErrorMessage(error));
     sessionMeta.textContent = "请求失败";
   }
 }
@@ -306,8 +307,9 @@ async function connectToSession(session, { updateHistory = true } = {}) {
       }
     });
   } catch (error) {
-    console.error(error);
-    terminalMount.textContent = String(error);
+    const redacted = redactErrorMessage(error);
+    console.error(redacted);
+    terminalMount.textContent = redacted || "连接错误";
   }
 }
 
@@ -465,7 +467,7 @@ function scheduleReconnect(closeContext = null) {
 
       await connectToSession(session, { updateHistory: false });
     } catch (error) {
-      console.error(error);
+      console.error(redactErrorMessage(error));
       scheduleReconnect(closeContext);
     }
   }, delay);
