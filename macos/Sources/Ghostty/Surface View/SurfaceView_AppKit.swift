@@ -1534,6 +1534,7 @@ extension Ghostty {
         // MARK: Menu Handlers
 
         @IBAction func copy(_ sender: Any?) {
+            if forwardEditActionToAttachedSheet(#selector(NSText.copy(_:)), sender: sender) { return }
             guard let surface = self.surface else { return }
             let action = "copy_to_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1542,6 +1543,7 @@ extension Ghostty {
         }
 
         @IBAction func paste(_ sender: Any?) {
+            if forwardEditActionToAttachedSheet(#selector(NSText.paste(_:)), sender: sender) { return }
             guard let surface = self.surface else { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1550,6 +1552,7 @@ extension Ghostty {
         }
 
         @IBAction func pasteAsPlainText(_ sender: Any?) {
+            if forwardEditActionToAttachedSheet(#selector(NSText.paste(_:)), sender: sender) { return }
             guard let surface = self.surface else { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1558,6 +1561,7 @@ extension Ghostty {
         }
 
         @IBAction func pasteSelection(_ sender: Any?) {
+            if forwardEditActionToAttachedSheet(#selector(NSText.paste(_:)), sender: sender) { return }
             guard let surface = self.surface else { return }
             let action = "paste_from_selection"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1566,11 +1570,36 @@ extension Ghostty {
         }
 
         @IBAction override func selectAll(_ sender: Any?) {
+            if forwardEditActionToAttachedSheet(#selector(NSResponder.selectAll(_:)), sender: sender) { return }
             guard let surface = self.surface else { return }
             let action = "select_all"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
                 AppDelegate.logger.warning("action failed action=\(action)")
             }
+        }
+
+        /// Forwards a standard edit action to the attached sheet's responder chain when one is present.
+        ///
+        /// `NSApp.sendAction` walks the key window's responder chain first, then falls back to the
+        /// main window's chain. The session sharing settings sheet is the key window while the
+        /// terminal window remains main, so when the sheet's first responder is a non-text control
+        /// like the default button, edit actions cascade into the surface and hijack the dialog.
+        /// This redirects them back to the sheet so the field editor can handle them.
+        ///
+        /// - Returns: `true` when the action has been forwarded (or swallowed) for the sheet,
+        ///   so the caller should not run its terminal-side fallback.
+        @discardableResult
+        private func forwardEditActionToAttachedSheet(_ action: Selector, sender: Any?) -> Bool {
+            guard let sheet = window?.attachedSheet else { return false }
+            guard NSApp.keyWindow === sheet else { return false }
+            if let handler = SessionSharingEditActionPolicy.handler(
+                for: action,
+                startingAt: sheet.firstResponder,
+                excluding: self
+            ) {
+                _ = handler.perform(action, with: sender)
+            }
+            return true
         }
 
         @IBAction func find(_ sender: Any?) {
@@ -1954,6 +1983,11 @@ private final class SessionSharingController {
 
         if let parentWindow {
             alert.beginSheetModal(for: parentWindow, completionHandler: completion)
+            // Move initial focus to the relay field so common operations like
+            // pasting an authentication token work without first clicking.
+            DispatchQueue.main.async {
+                alert.window.makeFirstResponder(content.relayField)
+            }
         } else {
             completion(alert.runModal())
         }
@@ -2424,6 +2458,26 @@ enum SessionSharingKeyEquivalentPolicy {
         }
         guard let textView = firstResponder as? NSTextView else { return false }
         return textView.isFieldEditor
+    }
+}
+
+enum SessionSharingEditActionPolicy {
+    /// Walks the responder chain rooted at `firstResponder` to find the first responder
+    /// that handles `action`. `excluded` is skipped so the surface view never recurses
+    /// into itself when redispatching.
+    static func handler(
+        for action: Selector,
+        startingAt firstResponder: NSResponder?,
+        excluding excluded: NSResponder? = nil
+    ) -> NSResponder? {
+        var current = firstResponder
+        while let responder = current {
+            if responder !== excluded, responder.responds(to: action) {
+                return responder
+            }
+            current = responder.nextResponder
+        }
+        return nil
     }
 }
 

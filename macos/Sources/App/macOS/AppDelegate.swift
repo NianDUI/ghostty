@@ -1199,6 +1199,22 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "paste_from_clipboard", menuItem: self.menuPaste)
         syncMenuShortcut(config, action: "paste_from_selection", menuItem: self.menuPasteSelection)
         syncMenuShortcut(config, action: "select_all", menuItem: self.menuSelectAll)
+
+        // Ghostty marks the macOS Cmd+C/V/Z bindings as `performable` in the input
+        // core, which intentionally keeps them out of the reverse trigger map (see
+        // `src/input/Binding.zig`). That means `keyboardShortcut(for:)` returns
+        // nothing for these actions and `syncMenuShortcut` clears the shortcut on
+        // the menu items. The terminal still handles Cmd+C/V via the surface view
+        // directly, but in any other window — most visibly modal sheets like the
+        // session sharing settings dialog — the Edit menu items have no key
+        // equivalent so AppKit never routes Cmd+C/V to the focused field editor.
+        // Apply the platform-standard fallback only when the sync left the items
+        // empty so user re-bindings still take precedence.
+        EditMenuFallbackShortcut.applyIfMissing(menuUndo, equivalent: "z", modifiers: [.command])
+        EditMenuFallbackShortcut.applyIfMissing(menuRedo, equivalent: "Z", modifiers: [.command, .shift])
+        EditMenuFallbackShortcut.applyIfMissing(menuCopy, equivalent: "c", modifiers: [.command])
+        EditMenuFallbackShortcut.applyIfMissing(menuPaste, equivalent: "v", modifiers: [.command])
+        EditMenuFallbackShortcut.applyIfMissing(menuPasteSelection, equivalent: "V", modifiers: [.command, .shift])
         syncMenuShortcut(config, action: "start_search", menuItem: self.menuFind)
         syncMenuShortcut(config, action: "search_selection", menuItem: self.menuSelectionForFind)
         syncMenuShortcut(config, action: "scroll_to_selection", menuItem: self.menuScrollToSelection)

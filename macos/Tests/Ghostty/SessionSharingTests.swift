@@ -550,6 +550,39 @@ struct SessionSharingTests {
     }
 
     @Test
+    func editActionPolicyWalksTheResponderChain() {
+        let fieldEditor = NSTextView()
+        fieldEditor.isFieldEditor = true
+        let intermediate = NSView()
+        intermediate.nextResponder = fieldEditor
+        let excluded = NSView()
+        excluded.nextResponder = intermediate
+
+        // Starts from a non-text view, walks past it to the field editor that handles `paste:`.
+        let handler = SessionSharingEditActionPolicy.handler(
+            for: #selector(NSText.paste(_:)),
+            startingAt: excluded
+        )
+        #expect(handler === fieldEditor)
+
+        // The `excluding` parameter prevents the surface view from being re-entered.
+        let skipped = SessionSharingEditActionPolicy.handler(
+            for: #selector(NSText.paste(_:)),
+            startingAt: excluded,
+            excluding: excluded
+        )
+        #expect(skipped === fieldEditor)
+
+        // No handler exists when the chain is empty.
+        #expect(
+            SessionSharingEditActionPolicy.handler(
+                for: #selector(NSText.paste(_:)),
+                startingAt: nil
+            ) == nil
+        )
+    }
+
+    @Test
     func menuPresentationDisabledWithoutFocusedSurface() {
         let presentation = SessionSharingMenuPresentation(
             hasFocusedSurface: false,

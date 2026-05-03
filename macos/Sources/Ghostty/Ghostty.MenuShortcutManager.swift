@@ -98,6 +98,33 @@ private extension Ghostty.MenuShortcutManager {
     }
 }
 
+/// Applies macOS-standard key equivalents to Edit menu items as a fallback when
+/// the Ghostty configuration doesn't expose a usable trigger for the action.
+///
+/// Background: Ghostty's binding core treats Cmd+C / Cmd+V / Cmd+Z and friends
+/// as `performable`, which intentionally excludes them from the reverse trigger
+/// map (see `src/input/Binding.zig`). As a result `Ghostty.Config.keyboardShortcut`
+/// returns nil for these actions and the menu sync clears the menu item's
+/// `keyEquivalent`. The terminal still receives Cmd+C/V via the surface view's
+/// own binding pipeline, but any other window — most visibly modal sheets like
+/// the session sharing settings dialog — has no Edit-menu key equivalent, so
+/// AppKit never routes Cmd+C/V to the focused field editor. Falling back to the
+/// platform-standard shortcut only when the sync left the item empty preserves
+/// user re-bindings while restoring the expected Edit-menu shortcuts everywhere.
+enum EditMenuFallbackShortcut {
+    @MainActor
+    static func applyIfMissing(
+        _ menuItem: NSMenuItem?,
+        equivalent: String,
+        modifiers: NSEvent.ModifierFlags
+    ) {
+        guard let menuItem else { return }
+        guard menuItem.keyEquivalent.isEmpty else { return }
+        menuItem.keyEquivalent = equivalent
+        menuItem.keyEquivalentModifierMask = modifiers
+    }
+}
+
 extension Ghostty.MenuShortcutManager {
     /// Hashable key for a menu shortcut match, normalized for quick lookup.
     struct MenuShortcutKey: Hashable {

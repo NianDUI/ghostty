@@ -47,4 +47,22 @@ struct MenuShortcutManagerTests {
         #expect(goToLeftItem.keyEquivalent == "h")
         #expect(goToLeftItem.keyEquivalentModifierMask == .command)
     }
+
+    @Test
+    @MainActor
+    func editMenuFallbackOnlyAppliesWhenShortcutIsMissing() {
+        let cleared = NSMenuItem(title: "Copy", action: "copy:", keyEquivalent: "")
+        EditMenuFallbackShortcut.applyIfMissing(cleared, equivalent: "c", modifiers: [.command])
+        #expect(cleared.keyEquivalent == "c")
+        #expect(cleared.keyEquivalentModifierMask == .command)
+
+        let alreadySet = NSMenuItem(title: "Copy", action: "copy:", keyEquivalent: "x")
+        alreadySet.keyEquivalentModifierMask = [.command, .shift]
+        EditMenuFallbackShortcut.applyIfMissing(alreadySet, equivalent: "c", modifiers: [.command])
+        #expect(alreadySet.keyEquivalent == "x")
+        #expect(alreadySet.keyEquivalentModifierMask == [.command, .shift])
+
+        // A nil menu item should be a safe no-op.
+        EditMenuFallbackShortcut.applyIfMissing(nil, equivalent: "c", modifiers: [.command])
+    }
 }
