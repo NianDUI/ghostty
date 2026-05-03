@@ -118,7 +118,11 @@ extension Ghostty.OSSurfaceView {
         case idle
         case connecting
         case sharing
-        case reconnecting
+        /// `seconds` is the delay until the next reconnect attempt, so
+        /// the badge can show "重连中（5s 后）" instead of a static
+        /// "重连中...". Pass 0 for an immediate retry (e.g. the relay's
+        /// 4401 token-expired fast path).
+        case reconnecting(after: TimeInterval)
         case stopping
         case error(String)
 
@@ -130,8 +134,9 @@ extension Ghostty.OSSurfaceView {
                 return "连接中"
             case .sharing:
                 return "共享中"
-            case .reconnecting:
-                return "重连中..."
+            case .reconnecting(let seconds):
+                guard seconds > 0 else { return "重连中..." }
+                return "重连中（\(Int(seconds.rounded()))s 后）"
             case .stopping:
                 return "停止中"
             case .error:

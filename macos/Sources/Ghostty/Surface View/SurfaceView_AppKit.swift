@@ -2178,12 +2178,14 @@ private final class SessionSharingController {
     }
 
     private func scheduleReconnect(after seconds: TimeInterval) {
-        setState(.reconnecting)
-
         let plan = reconnectCoordinator.prepareToSchedule(after: seconds)
         if plan.shouldCancelExisting {
             reconnectTask?.cancel()
         }
+        // Surface the actual scheduled delay (which may differ from the
+        // requested one if the coordinator collapsed it), so the badge
+        // can show "重连中（${X}s 后）" instead of a constant "重连中...".
+        setState(.reconnecting(after: plan.delay))
         reconnectTask = reconnectScheduler.schedule(after: plan.delay) { [weak self] in
             self?.reconnectCoordinator.markReconnectFired()
             Task { [weak self] in

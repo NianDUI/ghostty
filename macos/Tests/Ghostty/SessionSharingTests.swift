@@ -49,7 +49,28 @@ struct SessionSharingTests {
         #expect(Ghostty.OSSurfaceView.SharingState.sharing.titleSuffix == " [共享中]")
         #expect(Ghostty.OSSurfaceView.SharingState.sharing.isActive == true)
 
-        #expect(Ghostty.OSSurfaceView.SharingState.reconnecting.statusText == "重连中...")
+        // Immediate retry (relay's 4401 token-expired fast-path passes 0)
+        // keeps the original "重连中..." label so we don't claim a delay
+        // that isn't there.
+        #expect(
+            Ghostty.OSSurfaceView.SharingState.reconnecting(after: 0).statusText == "重连中..."
+        )
+        // A scheduled reconnect surfaces the actual delay so the user
+        // can tell that nothing's hung — they're just waiting for the
+        // backoff window. Sub-second delays round to 0 and fall back
+        // to the "..." label.
+        #expect(
+            Ghostty.OSSurfaceView.SharingState.reconnecting(after: 5).statusText == "重连中（5s 后）"
+        )
+        #expect(
+            Ghostty.OSSurfaceView.SharingState.reconnecting(after: 30).statusText == "重连中（30s 后）"
+        )
+        #expect(
+            Ghostty.OSSurfaceView.SharingState.reconnecting(after: 0.4).statusText == "重连中..."
+        )
+        #expect(
+            Ghostty.OSSurfaceView.SharingState.reconnecting(after: 5).isActive == true
+        )
         #expect(Ghostty.OSSurfaceView.SharingState.error("x").isActive == false)
     }
 
