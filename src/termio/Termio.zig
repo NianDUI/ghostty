@@ -5,6 +5,7 @@
 pub const Termio = @This();
 
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = @import("../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -73,7 +74,27 @@ last_cursor_reset: ?std.time.Instant = null,
 thread_enter_state: ?*ThreadEnterState = null,
 
 /// Optional raw PTY output tap for host integrations.
+///
+/// Concurrency contract:
+/// - Invoked from `processOutputLocked`, which holds
+///   `renderer_state.mutex`. The callback must not re-enter Termio's
+///   public API (no calling `processOutput`, `queueWrite`, etc. from
+///   inside the callback) and must not block — it runs on the IO read
+///   thread under the exec backend, and stalling that thread stalls
+///   PTY reads.
+/// - Under the exec backend the callback always runs on the IO read
+///   thread (see `Exec.threadMain` / `threadMainWindows`). Other
+///   backends are required to invoke `processOutput` from a single
+///   dedicated thread; that invariant is debug-tracked by
+///   `processOutput_thread_id` below.
 output_callback: OutputCallback = .{},
+
+/// Debug-only: thread ID of the first `processOutputLocked` invocation.
+/// All subsequent invocations must come from the same thread, otherwise
+/// the host callback can race against itself even though the renderer
+/// mutex is held (a callback that observes wall-clock or thread-local
+/// state expects a stable thread).
+processOutput_thread_id: ?std.Thread.Id = null,
 
 /// The state we need to keep around only until we enter the IO
 /// thread. Then we can throw it all away.
@@ -649,6 +670,13 @@ pub fn focusGained(self: *Termio, td: *ThreadData, focused: bool) !void {
 /// Process output from the pty. This is the manual API that users can
 /// call with pty data but it is also called by the read thread when using
 /// an exec subprocess.
+///
+/// Threading: must be invoked from a single dedicated thread for the
+/// lifetime of the Termio. Under the exec backend that is the IO read
+/// thread set up by `Exec.threadMain` / `threadMainWindows`. Manual
+/// callers (test harnesses, other backends) must pick one thread and
+/// stick to it; a debug-only assertion in `processOutputLocked` will
+/// trip otherwise.
 pub fn processOutput(self: *Termio, buf: []const u8) void {
     // We are modifying terminal state from here on out and we need
     // the lock to grab our read data.
@@ -658,7 +686,22 @@ pub fn processOutput(self: *Termio, buf: []const u8) void {
 }
 
 /// Process output from readdata but the lock is already held.
+///
+/// Caller must hold `renderer_state.mutex` (the public `processOutput`
+/// wrapper does this). Under the exec backend this is always invoked
+/// on the IO read thread; other backends must funnel `processOutput`
+/// through a single thread. The debug-only thread-ID check below
+/// fails fast if that invariant is broken.
 fn processOutputLocked(self: *Termio, buf: []const u8) void {
+    if (comptime builtin.mode == .Debug) {
+        const tid = std.Thread.getCurrentId();
+        if (self.processOutput_thread_id) |existing| {
+            std.debug.assert(existing == tid);
+        } else {
+            self.processOutput_thread_id = tid;
+        }
+    }
+
     self.output_callback.invoke(buf);
 
     // Schedule a render. We can call this first because we have the lock.
