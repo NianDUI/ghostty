@@ -71,7 +71,7 @@ tweaks:
 8. Browser reconnects after a network blip; sees the buffered backlog — ✅ works (relay backlog replay verified by smoke)
 9. macOS host network blips; both ends recover within 10 s — ⚠️ relay-side MTTR ≤ 1 ms measured; client-side backoff still has rough edges in the macOS sheet UI
 10. Mobile user opens the same URL on iOS Safari, types via the soft keyboard, sees output — ❌ IME path is broken / unverified
-11. macOS host token expires mid-connection; browser is told to refresh — ⚠️ relay sends WS 4401 close, browser now classifies it, switches to a steady 2-10 s polling cadence, and shows a "session expired, waiting for host" status; the missing half is the macOS host auto-re-registering (Section 1 macOS P0)
+11. macOS host token expires mid-connection; browser is told to refresh — ✅ relay sends WS 4401 close. Browser slow-polls `/api/sessions` with a "session expired, waiting for host" status. macOS host recognizes the 4401 close code, resets the reconnect backoff, and immediately re-runs `registerAndConnect` to fetch a fresh agent token + expires_at without user action.
 
 Steps 9-11 are the gap to "GA-shippable on macOS + LAN."
 
@@ -130,13 +130,18 @@ Done:
 - Raw byte bridge APIs for Ghostty surface IO
 - LAN-trusted scheme handling (http/ws for RFC1918, loopback,
   link-local; https/wss enforced for public)
+- Token refresh / re-register on relay-side expiry: `handleDisconnect`
+  reads `URLSessionWebSocketTask.closeCode` before tearing the task
+  down; `SessionSharingControllerRecovery.disconnectAction` recognizes
+  4401 (`SessionSharingCloseCode.tokenExpired`), resets the
+  reconnect backoff, and reconnects immediately so the next
+  `registerAndConnect` fetches a fresh `agent_token` and
+  `expires_at` without user action. 4408 (timeout / slow consumer)
+  still uses the standard exponential backoff. Covered by the
+  `controllerRecoveryDisconnectAction*` Swift Testing cases.
 
 Remaining:
 
-- **P0** Token refresh / re-register flow when a long-lived session
-  approaches its TTL. The relay already closes the WS with 4401 on
-  expiry; the macOS controller must obtain a fresh token and reopen
-  without user action.
 - **P1** Move the sharing shortcut into the standard configurable
   shortcut system instead of a bespoke binding.
 - **P1** Improve sheet error presentation (network failure, invalid
@@ -332,9 +337,21 @@ Remaining:
 
 - **P0** Higher-level tests that drive `SessionSharingController`
   directly against fake network and output-bridge collaborators
-  (component-level, not unit-of-component).
-- **P0** Token-redaction assertion across the error surface (shared
-  with Section 5 client-side).
+  (component-level, not unit-of-component). **Currently blocked on
+  visibility / NSView coupling**: `SessionSharingController` is
+  file-private and constructs through `Ghostty.SurfaceView`, an
+  NSView subclass that requires a real `ghostty_app_t` opaque
+  pointer. Doing this properly needs splitting the controller into
+  an internal `SessionSharingControllerCore` (state machine +
+  collaborator orchestration, no NSView dependency) wrapped by the
+  current SessionSharingController. Until that refactor lands, the
+  existing unit tests on
+  `SessionSharingControllerRecovery` /
+  `SessionSharingReconnectPolicy` /
+  `SessionSharingReconnectCoordinator` cover the controller's
+  decision logic at the helper level and the
+  `controllerRecoveryDisconnectAction*` cases cover the close-code
+  fast-paths.
 
 #### Zig core / bridge
 
@@ -381,16 +398,14 @@ In priority order:
    close-code handling already landed; the remaining macOS + LAN
    GA blocker on the browser side is the IME path on iOS Safari
    and Android Chrome.
-2. **Section 6 macOS P0**: `SessionSharingController` fake-driven
-   tests. Keeps the desktop side regression-safe as the host
-   token-refresh work below moves through.
-3. **Section 1 macOS P0**: token refresh / re-register on the host
-   side when the relay closes the agent's WS with 4401. The browser
-   side now polls patiently for the host to come back; the host has
-   to actually come back for the loop to close.
-4. **Section 6 browser P0**: only after Section 4 P0 (mobile IME)
+2. **Controller core refactor** (precondition for Section 6 macOS P0):
+   split `SessionSharingController` into an internal
+   `SessionSharingControllerCore` (no NSView dependency) wrapped by
+   the current AppKit-bound class, then build the fake-driven
+   component-level test suite on top.
+3. **Section 6 browser P0**: only after Section 4 P0 (mobile IME)
    stabilizes; otherwise the smoke encodes broken behavior.
-5. GTK and persistence remain trigger-gated; do not start them ahead
+4. GTK and persistence remain trigger-gated; do not start them ahead
    of P0 work.
 
 The previous "decide whether the relay should be rewritten in Zig"
