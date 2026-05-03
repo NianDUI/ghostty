@@ -36,11 +36,15 @@ let isMobileComposing = false;
 let mobileFocusTimer = null;
 let sessionPollTimer = null;
 
-backendBaseInput.value = localStorage.getItem("ghostty-sharing-backend-base") ?? location.origin;
+backendBaseInput.value =
+  localStorage.getItem("ghostty-sharing-backend-base") ?? location.origin;
 tokenInput.value = localStorage.getItem("ghostty-sharing-token") ?? "";
 
 saveTokenButton.addEventListener("click", async () => {
-  localStorage.setItem("ghostty-sharing-backend-base", backendBaseInput.value.trim());
+  localStorage.setItem(
+    "ghostty-sharing-backend-base",
+    backendBaseInput.value.trim(),
+  );
   localStorage.setItem("ghostty-sharing-token", tokenInput.value.trim());
   await refreshSessions();
   scheduleSessionRefresh();
@@ -103,7 +107,12 @@ async function ensureTerminal() {
     }
   });
   terminal.onResize(({ cols, rows }) => {
-    sendControlFrame({ type: "resize", id: activeSession?.id ?? "", cols, rows });
+    sendControlFrame({
+      type: "resize",
+      id: activeSession?.id ?? "",
+      cols,
+      rows,
+    });
   });
   resizeObserver = new ResizeObserver(() => {
     if (!fitAddon) return;
@@ -140,7 +149,9 @@ async function refreshSessions() {
     }
 
     if (activeSessionId) {
-      const updatedActiveSession = sessions.find((session) => session.id === activeSessionId);
+      const updatedActiveSession = sessions.find(
+        (session) => session.id === activeSessionId,
+      );
       if (updatedActiveSession) {
         activeSession = updatedActiveSession;
       }
@@ -148,7 +159,9 @@ async function refreshSessions() {
 
     const requestedSessionID = currentRequestedSessionID();
     if (requestedSessionID && !activeSessionId) {
-      const requestedSession = sessions.find((session) => session.id === requestedSessionID);
+      const requestedSession = sessions.find(
+        (session) => session.id === requestedSessionID,
+      );
       if (requestedSession?.online) {
         await connectToSession(requestedSession, { updateHistory: false });
       } else if (requestedSession) {
@@ -183,7 +196,9 @@ function renderSession(session) {
     "session",
     session.online ? "" : "offline",
     session.id === activeSessionId ? "active" : "",
-  ].filter(Boolean).join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
   item.innerHTML = `
     <div style="font-size: 12px; color: #6d655c;">会话名称：${escapeHtml(displayName)}</div>
     <div style="margin-top: 6px; font-size: 12px; color: #6d655c;">会话 ID：${escapeHtml(session.id)}</div>
@@ -210,7 +225,10 @@ function sortSessions(sessions) {
       return rightTime - leftTime;
     }
 
-    return displaySessionName(left).localeCompare(displaySessionName(right), "zh-CN");
+    return displaySessionName(left).localeCompare(
+      displaySessionName(right),
+      "zh-CN",
+    );
   });
 }
 
@@ -308,18 +326,28 @@ function handleControlFrame(data) {
         activeSession = { ...activeSession, name: frame.name };
       }
       updateDocumentTitle();
-      if (Number.isInteger(frame.cols) && Number.isInteger(frame.rows) && terminal) {
+      if (
+        Number.isInteger(frame.cols) &&
+        Number.isInteger(frame.rows) &&
+        terminal
+      ) {
         terminal.resize(frame.cols, frame.rows);
       }
       return;
     case "resize":
-      if (Number.isInteger(frame.cols) && Number.isInteger(frame.rows) && terminal) {
+      if (
+        Number.isInteger(frame.cols) &&
+        Number.isInteger(frame.rows) &&
+        terminal
+      ) {
         terminal.resize(frame.cols, frame.rows);
       }
       return;
     case "ping":
       if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({ type: "pong", id: activeSession?.id ?? "" }));
+        socket.send(
+          JSON.stringify({ type: "pong", id: activeSession?.id ?? "" }),
+        );
       }
       return;
     case "pong":
@@ -400,8 +428,9 @@ function scheduleReconnect(closeContext = null) {
     delay = Math.min(2000 + 1000 * (reconnectAttempt - 1), 10000);
     statusText = closeContext.statusText;
   } else {
-    delay = Math.min(1000 * (2 ** Math.max(0, reconnectAttempt - 1)), 30000);
-    const fallback = delay >= 1000 ? `重连中（${Math.round(delay / 1000)}s）` : "重连中";
+    delay = Math.min(1000 * 2 ** Math.max(0, reconnectAttempt - 1), 30000);
+    const fallback =
+      delay >= 1000 ? `重连中（${Math.round(delay / 1000)}s）` : "重连中";
     statusText = closeContext?.statusText ?? fallback;
   }
   reconnectStatusText = statusText;
@@ -426,7 +455,9 @@ function scheduleReconnect(closeContext = null) {
 
       const sessions = await response.json();
       cachedSessions = sessions;
-      const session = sessions.find((candidate) => candidate.id === activeSessionId);
+      const session = sessions.find(
+        (candidate) => candidate.id === activeSessionId,
+      );
       if (!session?.online) {
         scheduleReconnect(closeContext);
         return;
@@ -530,8 +561,10 @@ function formatLastSeen(value) {
 
   const diff = Date.now() - date.getTime();
   if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.max(1, Math.floor(diff / 60_000))} 分钟前`;
-  if (diff < 86_400_000) return `${Math.max(1, Math.floor(diff / 3_600_000))} 小时前`;
+  if (diff < 3_600_000)
+    return `${Math.max(1, Math.floor(diff / 60_000))} 分钟前`;
+  if (diff < 86_400_000)
+    return `${Math.max(1, Math.floor(diff / 3_600_000))} 小时前`;
 
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
@@ -574,7 +607,12 @@ function scheduleMobileRefocus() {
 
 function setTerminalStatus(text, kind = null) {
   terminalStatus.textContent = text;
-  terminalStatus.classList.remove("hidden", "connected", "reconnecting", "error");
+  terminalStatus.classList.remove(
+    "hidden",
+    "connected",
+    "reconnecting",
+    "error",
+  );
   if (kind) {
     terminalStatus.classList.add(kind);
   }
@@ -586,7 +624,10 @@ function hideTerminalStatus() {
 }
 
 function shouldUseMobileInput() {
-  return window.matchMedia("(pointer: coarse)").matches || window.matchMedia("(max-width: 860px)").matches;
+  return (
+    window.matchMedia("(pointer: coarse)").matches ||
+    window.matchMedia("(max-width: 860px)").matches
+  );
 }
 
 function sendInput(data) {
@@ -597,8 +638,9 @@ function sendInput(data) {
 function syncModifierButtons() {
   for (const button of mobileToolbar.querySelectorAll("[data-modifier]")) {
     const modifier = button.dataset.modifier;
-    const active = (modifier === "ctrl" && pendingCtrlModifier)
-      || (modifier === "alt" && pendingAltModifier);
+    const active =
+      (modifier === "ctrl" && pendingCtrlModifier) ||
+      (modifier === "alt" && pendingAltModifier);
     button.classList.toggle("mod-active", active);
   }
 }
@@ -679,22 +721,37 @@ function sendToolbarKeyEvent(name) {
 
 function syncMobileViewportInsets() {
   const mobile = shouldUseMobileInput();
-  const viewportHeight = mobile && window.visualViewport
-    ? `${window.visualViewport.height}px`
-    : `${window.innerHeight}px`;
-  document.documentElement.style.setProperty("--mobile-viewport-height", viewportHeight);
+  const viewportHeight =
+    mobile && window.visualViewport
+      ? `${window.visualViewport.height}px`
+      : `${window.innerHeight}px`;
+  document.documentElement.style.setProperty(
+    "--mobile-viewport-height",
+    viewportHeight,
+  );
 
-  const toolbarHeight = mobile && !mobileToolbarCollapsed ? `${mobileToolbar.offsetHeight || 112}px` : "0px";
-  document.documentElement.style.setProperty("--mobile-toolbar-height", toolbarHeight);
+  const toolbarHeight =
+    mobile && !mobileToolbarCollapsed
+      ? `${mobileToolbar.offsetHeight || 112}px`
+      : "0px";
+  document.documentElement.style.setProperty(
+    "--mobile-toolbar-height",
+    toolbarHeight,
+  );
 
   let keyboardOffset = 0;
   if (mobile && window.visualViewport) {
     keyboardOffset = Math.max(
       0,
-      window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop
+      window.innerHeight -
+        window.visualViewport.height -
+        window.visualViewport.offsetTop,
     );
   }
-  document.documentElement.style.setProperty("--mobile-toolbar-offset", `${keyboardOffset}px`);
+  document.documentElement.style.setProperty(
+    "--mobile-toolbar-offset",
+    `${keyboardOffset}px`,
+  );
 
   if (fitAddon) {
     window.requestAnimationFrame(() => {
@@ -826,7 +883,9 @@ window.addEventListener("popstate", async () => {
     return;
   }
 
-  const session = cachedSessions.find((candidate) => candidate.id === requestedSessionID);
+  const session = cachedSessions.find(
+    (candidate) => candidate.id === requestedSessionID,
+  );
   if (session?.online) {
     await connectToSession(session, { updateHistory: false });
   }
