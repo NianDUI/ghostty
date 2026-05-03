@@ -56,3 +56,9 @@ Each terminal surface runs three dedicated threads:
 - Font discovery and shaping in `src/font/`
 - Input handling (key encoding, bindings, IME) in `src/input/`
 - Logging is controlled by `GHOSTTY_LOG` env var (destinations: `stderr`, `macos`) and compile-time optimization level (debug builds log to stderr by default)
+
+## Git Notes
+
+- Do not run multiple Git write operations in parallel in this repository.
+- Parallel `git add` / `git commit` / `git push` attempts can leave or contend on `.git/index.lock`.
+- If an `index.lock` error appears, first confirm there is no active Git process, then retry the Git operation serially.
