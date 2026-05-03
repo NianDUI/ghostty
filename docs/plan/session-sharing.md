@@ -9,15 +9,15 @@ This is the top-level plan. Relay-side work has its own subplan in
 
 Section dashboard:
 
-| Section                   | State                                          | Owner |
-| ------------------------- | ---------------------------------------------- | ----- |
-| 1. Desktop Host (macOS)   | shippable for LAN, polish remains              | macOS |
-| 1. Desktop Host (GTK)     | not started; trigger-gated                     | Linux |
-| 2. Core Bridge / Terminal | smoke coverage in place; threading review TODO | Zig   |
-| 3. Relay Service          | production-shaped; see `relay-production.md`   | Relay |
-| 4. Mobile Web Client      | usable on desktop browser, mobile UX gaps      | Web   |
-| 5. Security & Storage     | server-side covered, client-side gaps          | Mixed |
-| 6. Test & Validation      | relay covered, controller / Zig / browser thin | Mixed |
+| Section                   | State                                             | Owner |
+| ------------------------- | ------------------------------------------------- | ----- |
+| 1. Desktop Host (macOS)   | shippable for LAN, polish remains                 | macOS |
+| 1. Desktop Host (GTK)     | not started; trigger-gated                        | Linux |
+| 2. Core Bridge / Terminal | smoke coverage in place; threading review TODO    | Zig   |
+| 3. Relay Service          | production-shaped; see `relay-production.md`      | Relay |
+| 4. Mobile Web Client      | usable on desktop browser, mobile UX gaps         | Web   |
+| 5. Security & Storage     | redaction covered both sides, Keychain still TODO | macOS |
+| 6. Test & Validation      | relay covered, controller / Zig / browser thin    | Mixed |
 
 The single biggest blocker for "GA-shippable on macOS + LAN" is
 mobile IME / soft keyboard handling (Section 4 P0). The single
@@ -137,9 +137,6 @@ Remaining:
   approaches its TTL. The relay already closes the WS with 4401 on
   expiry; the macOS controller must obtain a fresh token and reopen
   without user action.
-- **P0** End-to-end token redaction guarantee: every error path that
-  surfaces a relay response must be checked for token leakage. Today
-  the audit is informal; this needs an automated assertion in tests.
 - **P1** Move the sharing shortcut into the standard configurable
   shortcut system instead of a bespoke binding.
 - **P1** Improve sheet error presentation (network failure, invalid
@@ -289,12 +286,15 @@ Done:
   before they hit `console.error` or `terminalMount.textContent`.
   Covered by `node --test` unit tests in
   `ghostty-web-client/test/redaction.test.mjs` (run via `npm test`).
+- macOS error surfaces (NSAlert "启动共享失败" path,
+  `logError("failed to save session sharing config…")`) run through
+  `SessionSharingTokenRedaction.redact(error:)`, which mirrors the
+  browser scrubber on `Bearer …` headers and the three sensitive
+  query parameters. Covered by Swift Testing cases in
+  `SessionSharingTests` (`tokenRedaction*`).
 
 Remaining:
 
-- **P0** Same automated token-redaction assertion on the macOS
-  Swift side. Browser side is now covered by unit tests; macOS
-  Sources still rely on informal review.
 - **P1** Finish the macOS Keychain write path (currently read-only
   fallback).
 
