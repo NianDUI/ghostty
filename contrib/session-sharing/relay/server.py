@@ -44,6 +44,13 @@ class RelayConfig:
     max_frame_bytes: int
     rate_limit_requests: int
     rate_limit_window_seconds: float
+    trusted_proxies: tuple = ()
+    token_expiry_check_seconds: float = 30.0
+    ping_interval_seconds: float = 30.0
+    ping_timeout_seconds: float = 60.0
+    client_send_buffer_bytes: int = 1024 * 1024
+    admin_host: str = "127.0.0.1"
+    admin_port: int = 0
 
 
 @dataclasses.dataclass
@@ -75,6 +82,56 @@ def env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_trusted_proxies(value: str) -> tuple:
+    """Parse a comma-separated list of IPs/CIDRs into ip_network objects.
+
+    Empty / unparseable entries are dropped silently so the env can be left
+    unset by default and never accidentally trust a real client.
+    """
+    items: list = []
+    for raw in (value or "").split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            items.append(ipaddress.ip_network(raw, strict=False))
+        except ValueError:
+            log_event("trusted_proxy_invalid", value=raw)
+            continue
+    return tuple(items)
+
+
+def resolve_client_ip(
+    peer_host: Optional[str],
+    headers: dict[str, str],
+    trusted_proxies: tuple,
+) -> str:
+    """Return the real client IP, honoring X-Forwarded-For only when the socket
+    peer itself is a trusted proxy. Anything else returns the socket peer.
+    """
+    if not peer_host:
+        return "unknown"
+    if not trusted_proxies:
+        return peer_host
+    try:
+        peer_ip = ipaddress.ip_address(peer_host)
+    except ValueError:
+        return peer_host
+    if not any(peer_ip in net for net in trusted_proxies):
+        return peer_host
+    forwarded = headers.get("x-forwarded-for", "").strip()
+    if not forwarded:
+        return peer_host
+    first_hop = forwarded.split(",", 1)[0].strip()
+    if not first_hop:
+        return peer_host
+    try:
+        ipaddress.ip_address(first_hop)
+    except ValueError:
+        return peer_host
+    return first_hop
 
 
 def load_allowed_user_tokens() -> frozenset[str]:
@@ -118,6 +175,43 @@ def host_requires_public_bind_ack(host: str) -> bool:
     return not ip.is_loopback
 
 
+class ClientChannel:
+    """Per-client send buffer with a byte cap.
+
+    Frames produced by the agent (or backlog replay) are enqueued via
+    ``try_enqueue``. A dedicated sender task drains the queue. When a client
+    cannot keep up and the queue exceeds ``max_bytes``, the channel marks
+    itself dropped and signals the sender, which closes the underlying socket
+    with the slow-consumer close code so other clients are not delayed by it.
+    """
+
+    def __init__(self, writer: asyncio.StreamWriter, max_bytes: int) -> None:
+        self.writer = writer
+        self.queue: asyncio.Queue = asyncio.Queue()
+        self.queued_bytes = 0
+        self.max_bytes = max_bytes
+        self.dropped = False
+
+    def try_enqueue(self, opcode: int, payload: bytes) -> bool:
+        if self.dropped:
+            return False
+        if self.max_bytes > 0 and self.queued_bytes + len(payload) > self.max_bytes:
+            self.dropped = True
+            try:
+                self.queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+            return False
+        self.queued_bytes += len(payload)
+        try:
+            self.queue.put_nowait((opcode, payload))
+        except asyncio.QueueFull:
+            self.queued_bytes -= len(payload)
+            self.dropped = True
+            return False
+        return True
+
+
 @dataclasses.dataclass
 class Session:
     session_id: str
@@ -129,7 +223,7 @@ class Session:
     online: bool = False
     last_seen_at: float = dataclasses.field(default_factory=lambda: time.time())
     agent_writer: Optional[asyncio.StreamWriter] = None
-    clients: set[asyncio.StreamWriter] = dataclasses.field(default_factory=set)
+    clients: dict[asyncio.StreamWriter, ClientChannel] = dataclasses.field(default_factory=dict)
     backlog: list[tuple[int, bytes]] = dataclasses.field(default_factory=list)
     backlog_size: int = 0
 
@@ -169,6 +263,7 @@ class RelayState:
             "auth_rejected_total": 0,
             "expired_session_rejected_total": 0,
             "rate_limited_total": 0,
+            "slow_consumer_drop_total": 0,
         }
 
     def is_valid_user_token(self, token: str) -> bool:
@@ -395,6 +490,53 @@ async def ws_close(writer: asyncio.StreamWriter) -> None:
     await writer.wait_closed()
 
 
+async def ws_close_with_code(writer: asyncio.StreamWriter, code: int, reason: str = "") -> None:
+    payload = struct.pack("!H", code) + reason.encode("utf-8")
+    try:
+        await ws_send_frame(writer, 0x8, payload)
+    except Exception:
+        pass
+    writer.close()
+    try:
+        await writer.wait_closed()
+    except Exception:
+        pass
+
+
+async def watch_token_expiry(
+    session: Session,
+    writer: asyncio.StreamWriter,
+    interval: float,
+) -> None:
+    if interval <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval)
+        if session.expires_at <= time.time():
+            await ws_close_with_code(writer, 4401, "token_expired")
+            return
+
+
+async def watch_heartbeat(
+    writer: asyncio.StreamWriter,
+    last_pong_at: dict,
+    interval: float,
+    timeout: float,
+) -> None:
+    if interval <= 0 or timeout <= 0:
+        return
+    while True:
+        await asyncio.sleep(interval)
+        now = time.time()
+        if now - last_pong_at["value"] > timeout:
+            await ws_close_with_code(writer, 4408, "ping_timeout")
+            return
+        try:
+            await ws_send_frame(writer, 0x9, b"")
+        except Exception:
+            return
+
+
 async def handle_register(
     state: RelayState,
     writer: asyncio.StreamWriter,
@@ -498,17 +640,45 @@ async def handle_sessions(
 
 async def forward_to_clients(session: Session, opcode: int, payload: bytes) -> None:
     session.append_backlog(opcode, payload)
-    stale: list[asyncio.StreamWriter] = []
-    for client in list(session.clients):
-        try:
-            if opcode == 0x1:
-                await ws_send_text(client, payload.decode("utf-8", "replace"))
-            elif opcode == 0x2:
-                await ws_send_binary(client, payload)
-        except Exception:
-            stale.append(client)
-    for client in stale:
-        session.clients.discard(client)
+    if opcode not in (0x1, 0x2):
+        return
+    for channel in list(session.clients.values()):
+        channel.try_enqueue(opcode, payload)
+
+
+async def client_sender(channel: ClientChannel, state: RelayState, session_id: str) -> None:
+    """Drain ``channel.queue`` to the underlying socket.
+
+    A queued ``None`` indicates that the channel was dropped for exceeding
+    its byte cap; the sender closes the socket with the slow-consumer close
+    code and exits, so the client read loop unwinds and removes itself from
+    the session.
+    """
+    try:
+        while True:
+            item = await channel.queue.get()
+            if item is None:
+                state.increment_metric("slow_consumer_drop_total")
+                log_event(
+                    "slow_consumer_drop",
+                    session_id=session_id,
+                    queued_bytes=channel.queued_bytes,
+                    max_bytes=channel.max_bytes,
+                )
+                await ws_close_with_code(channel.writer, 4408, "slow_consumer")
+                return
+            opcode, payload = item
+            try:
+                if opcode == 0x1:
+                    await ws_send_text(channel.writer, payload.decode("utf-8", "replace"))
+                elif opcode == 0x2:
+                    await ws_send_binary(channel.writer, payload)
+            except Exception:
+                return
+            finally:
+                channel.queued_bytes = max(0, channel.queued_bytes - len(payload))
+    except asyncio.CancelledError:
+        return
 
 
 async def ws_agent_loop(
@@ -516,6 +686,7 @@ async def ws_agent_loop(
     session: Session,
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
+    last_pong_at: dict,
 ) -> None:
     try:
         while True:
@@ -526,6 +697,9 @@ async def ws_agent_loop(
             if opcode == 0x9:
                 await ws_send_frame(writer, 0xA, payload)
                 continue
+            if opcode == 0xA:
+                last_pong_at["value"] = time.time()
+                continue
             if opcode in (0x1, 0x2):
                 await forward_to_clients(session, opcode, payload)
     finally:
@@ -533,7 +707,7 @@ async def ws_agent_loop(
             session.online = False
             session.agent_writer = None
             session.last_seen_at = time.time()
-            clients = list(session.clients)
+            clients = list(session.clients.keys())
             session.clients.clear()
         state.increment_metric("agent_disconnect_total")
         log_event("agent_disconnected", session_id=session.session_id, client_count=len(clients))
@@ -547,6 +721,7 @@ async def ws_client_loop(
     session: Session,
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
+    last_pong_at: dict,
 ) -> None:
     try:
         while True:
@@ -557,6 +732,9 @@ async def ws_client_loop(
             if opcode == 0x9:
                 await ws_send_frame(writer, 0xA, payload)
                 continue
+            if opcode == 0xA:
+                last_pong_at["value"] = time.time()
+                continue
             agent_writer = session.agent_writer
             if not agent_writer:
                 continue
@@ -565,7 +743,7 @@ async def ws_client_loop(
             elif opcode == 0x2:
                 await ws_send_binary(agent_writer, payload)
     finally:
-        session.clients.discard(writer)
+        session.clients.pop(writer, None)
         state.increment_metric("client_disconnect_total")
         log_event("client_disconnected", session_id=session.session_id, remaining_clients=len(session.clients))
         if not session.clients and session.agent_writer:
@@ -576,12 +754,10 @@ async def ws_client_loop(
         await ws_close(writer)
 
 
-async def replay_backlog(session: Session, writer: asyncio.StreamWriter) -> None:
+async def replay_backlog(session: Session, channel: ClientChannel) -> None:
     for opcode, payload in session.backlog:
-        if opcode == 0x1:
-            await ws_send_text(writer, payload.decode("utf-8", "replace"))
-        elif opcode == 0x2:
-            await ws_send_binary(writer, payload)
+        if opcode in (0x1, 0x2):
+            channel.try_enqueue(opcode, payload)
 
 
 async def handle_ws_agent(
@@ -616,7 +792,30 @@ async def handle_ws_agent(
     await websocket_handshake(writer, headers)
     state.increment_metric("agent_connect_total")
     log_event("agent_connected", session_id=session.session_id)
-    await ws_agent_loop(state, session, reader, writer)
+    last_pong_at = {"value": time.time()}
+    background_tasks = [
+        asyncio.create_task(
+            watch_token_expiry(session, writer, state.config.token_expiry_check_seconds)
+        ),
+        asyncio.create_task(
+            watch_heartbeat(
+                writer,
+                last_pong_at,
+                state.config.ping_interval_seconds,
+                state.config.ping_timeout_seconds,
+            )
+        ),
+    ]
+    try:
+        await ws_agent_loop(state, session, reader, writer, last_pong_at)
+    finally:
+        for task in background_tasks:
+            task.cancel()
+        for task in background_tasks:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 async def handle_ws_client(
@@ -661,14 +860,40 @@ async def handle_ws_client(
         if len(session.clients) >= state.config.max_clients_per_session:
             await send_response(writer, 503, json_bytes({"error": "client capacity reached"}))
             return
-        session.clients.add(writer)
+        channel = ClientChannel(writer, state.config.client_send_buffer_bytes)
+        session.clients[writer] = channel
         session.last_seen_at = time.time()
 
     await websocket_handshake(writer, headers)
     state.increment_metric("client_connect_total")
     log_event("client_connected", session_id=session.session_id, client_count=len(session.clients))
-    await replay_backlog(session, writer)
-    await ws_client_loop(state, session, reader, writer)
+    sender_task = asyncio.create_task(client_sender(channel, state, session.session_id))
+    await replay_backlog(session, channel)
+    last_pong_at = {"value": time.time()}
+    background_tasks = [
+        asyncio.create_task(
+            watch_token_expiry(session, writer, state.config.token_expiry_check_seconds)
+        ),
+        asyncio.create_task(
+            watch_heartbeat(
+                writer,
+                last_pong_at,
+                state.config.ping_interval_seconds,
+                state.config.ping_timeout_seconds,
+            )
+        ),
+    ]
+    try:
+        await ws_client_loop(state, session, reader, writer, last_pong_at)
+    finally:
+        for task in background_tasks:
+            task.cancel()
+        sender_task.cancel()
+        for task in background_tasks + [sender_task]:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 def resolve_static_path(static_root: pathlib.Path, target_path: str) -> Optional[pathlib.Path]:
@@ -702,11 +927,15 @@ async def serve_static(static_root: pathlib.Path, writer: asyncio.StreamWriter, 
     await send_response(writer, 200, resolved.read_bytes(), content_type)
 
 
+ADMIN_PATHS = {"/healthz", "/readyz", "/metrics"}
+
+
 async def handle_connection(
     state: RelayState,
     static_root: pathlib.Path,
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
+    admin: bool = False,
 ) -> None:
     peer = writer.get_extra_info("peername")
     peer_host = peer[0] if isinstance(peer, tuple) and peer else None
@@ -728,6 +957,40 @@ async def handle_connection(
     path = parsed.path
     query = urllib.parse.parse_qs(parsed.query)
     upgrade = headers.get("upgrade", "").lower()
+    client_ip = resolve_client_ip(peer_host, headers, state.config.trusted_proxies)
+    admin_listener_enabled = state.config.admin_port > 0
+
+    if admin:
+        # Admin listener serves only health/readiness/metrics. Everything
+        # else is rejected so the operator surface is small and predictable.
+        if path == "/healthz":
+            await send_response(writer, 200, json_bytes({"ok": True}))
+            return
+        if path == "/readyz":
+            async with state.lock:
+                await send_response(writer, 200, json_bytes({
+                    "ok": not state.shutting_down,
+                    "sessions": len(state.sessions),
+                    "uptime_seconds": int(time.time() - state.started_at),
+                }))
+            return
+        if path == "/metrics":
+            async with state.lock:
+                await send_response(
+                    writer,
+                    200,
+                    state.metrics_text().encode("utf-8"),
+                    "text/plain; version=0.0.4; charset=utf-8",
+                )
+            return
+        await send_response(writer, 404, b"not found", "text/plain; charset=utf-8")
+        return
+
+    # When the dedicated admin listener is enabled, the public listener must
+    # never expose the operator-only endpoints.
+    if path in ADMIN_PATHS and admin_listener_enabled:
+        await send_response(writer, 404, b"not found", "text/plain; charset=utf-8")
+        return
 
     if path == "/healthz":
         await send_response(writer, 200, json_bytes({"ok": True}))
@@ -752,12 +1015,12 @@ async def handle_connection(
 
     if path in {"/api/register", "/api/sessions", "/ws/agent", "/ws/client"}:
         async with state.lock:
-            limited, retry_after = state.should_rate_limit(peer_host or "unknown")
+            limited, retry_after = state.should_rate_limit(client_ip)
             if limited:
                 state.increment_metric("rate_limited_total")
                 log_event(
                     "rate_limited",
-                    remote=peer_host,
+                    remote=client_ip,
                     path=path,
                     retry_after=retry_after,
                 )
@@ -809,6 +1072,42 @@ async def main() -> None:
         default=env_bool("GHOSTTY_RELAY_ALLOW_PUBLIC_BIND", False),
     )
     parser.add_argument(
+        "--trusted-proxies",
+        default=env_str("GHOSTTY_RELAY_TRUSTED_PROXIES", ""),
+        help="Comma-separated IPs/CIDRs whose X-Forwarded-For header is trusted.",
+    )
+    parser.add_argument(
+        "--token-expiry-check-seconds",
+        type=float,
+        default=env_float("GHOSTTY_RELAY_TOKEN_EXPIRY_CHECK_SECONDS", 30.0),
+    )
+    parser.add_argument(
+        "--ping-interval-seconds",
+        type=float,
+        default=env_float("GHOSTTY_RELAY_PING_INTERVAL_SECONDS", 30.0),
+    )
+    parser.add_argument(
+        "--ping-timeout-seconds",
+        type=float,
+        default=env_float("GHOSTTY_RELAY_PING_TIMEOUT_SECONDS", 60.0),
+    )
+    parser.add_argument(
+        "--client-send-buffer-bytes",
+        type=int,
+        default=env_int("GHOSTTY_RELAY_CLIENT_SEND_BUFFER_BYTES", 1024 * 1024),
+    )
+    parser.add_argument(
+        "--admin-host",
+        default=env_str("GHOSTTY_RELAY_ADMIN_HOST", "127.0.0.1"),
+        help="Bind host for the admin listener (health/readiness/metrics).",
+    )
+    parser.add_argument(
+        "--admin-port",
+        type=int,
+        default=env_int("GHOSTTY_RELAY_ADMIN_PORT", 0),
+        help="Bind port for the admin listener; 0 keeps admin endpoints on the public listener.",
+    )
+    parser.add_argument(
         "--static-root",
         default=env_str(
             "GHOSTTY_RELAY_STATIC_ROOT",
@@ -837,15 +1136,29 @@ async def main() -> None:
         max_frame_bytes=args.max_frame_bytes,
         rate_limit_requests=args.rate_limit_requests,
         rate_limit_window_seconds=args.rate_limit_window_seconds,
+        trusted_proxies=parse_trusted_proxies(args.trusted_proxies),
+        token_expiry_check_seconds=args.token_expiry_check_seconds,
+        ping_interval_seconds=args.ping_interval_seconds,
+        ping_timeout_seconds=args.ping_timeout_seconds,
+        client_send_buffer_bytes=args.client_send_buffer_bytes,
+        admin_host=args.admin_host,
+        admin_port=args.admin_port,
     )
     state = RelayState(config=config)
     static_root = config.static_root
 
     server = await asyncio.start_server(
-        lambda r, w: handle_connection(state, static_root, r, w),
+        lambda r, w: handle_connection(state, static_root, r, w, admin=False),
         host=config.host,
         port=config.port,
     )
+    admin_server = None
+    if config.admin_port > 0:
+        admin_server = await asyncio.start_server(
+            lambda r, w: handle_connection(state, static_root, r, w, admin=True),
+            host=config.admin_host,
+            port=config.admin_port,
+        )
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
@@ -879,12 +1192,28 @@ async def main() -> None:
         max_frame_bytes=config.max_frame_bytes,
         rate_limit_requests=config.rate_limit_requests,
         rate_limit_window_seconds=config.rate_limit_window_seconds,
+        trusted_proxies=[str(net) for net in config.trusted_proxies],
+        token_expiry_check_seconds=config.token_expiry_check_seconds,
+        ping_interval_seconds=config.ping_interval_seconds,
+        ping_timeout_seconds=config.ping_timeout_seconds,
+        client_send_buffer_bytes=config.client_send_buffer_bytes,
+        admin_host=config.admin_host,
+        admin_port=config.admin_port,
     )
     asyncio.create_task(state.cleanup_loop())
-    async with server:
-        await stop_event.wait()
-    server.close()
-    await server.wait_closed()
+    try:
+        if admin_server is not None:
+            async with server, admin_server:
+                await stop_event.wait()
+        else:
+            async with server:
+                await stop_event.wait()
+    finally:
+        server.close()
+        await server.wait_closed()
+        if admin_server is not None:
+            admin_server.close()
+            await admin_server.wait_closed()
     log_event("relay_stopped")
 
 

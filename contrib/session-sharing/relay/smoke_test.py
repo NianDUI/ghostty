@@ -286,6 +286,390 @@ def main() -> int:
             rate_limit_process.kill()
             rate_limit_process.wait(timeout=5)
 
+    forwarded_port = free_port()
+    forwarded_env = os.environ.copy()
+    forwarded_env["GHOSTTY_RELAY_USER_TOKENS"] = "smoke-user-token"
+    forwarded_env["GHOSTTY_RELAY_TRUSTED_PROXIES"] = "127.0.0.1"
+    forwarded_process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVER),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(forwarded_port),
+            "--rate-limit-requests",
+            "1",
+            "--rate-limit-window-seconds",
+            "60",
+            "--static-root",
+            str(STATIC_ROOT),
+        ],
+        cwd=str(ROOT),
+        env=forwarded_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        wait_for_server(forwarded_port)
+        auth = "Bearer smoke-user-token"
+        status, _ = http_json(
+            forwarded_port,
+            "GET",
+            "/api/sessions",
+            headers={"Authorization": auth, "X-Forwarded-For": "1.2.3.4"},
+        )
+        assert status == 200, status
+        status, _ = http_json(
+            forwarded_port,
+            "GET",
+            "/api/sessions",
+            headers={"Authorization": auth, "X-Forwarded-For": "1.2.3.4"},
+        )
+        assert status == 429, status
+        # A different forwarded IP gets its own bucket from the trusted proxy.
+        status, _ = http_json(
+            forwarded_port,
+            "GET",
+            "/api/sessions",
+            headers={"Authorization": auth, "X-Forwarded-For": "5.6.7.8"},
+        )
+        assert status == 200, status
+    finally:
+        forwarded_process.terminate()
+        try:
+            forwarded_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            forwarded_process.kill()
+            forwarded_process.wait(timeout=5)
+
+    expiry_port = free_port()
+    expiry_env = os.environ.copy()
+    expiry_env["GHOSTTY_RELAY_USER_TOKENS"] = "smoke-user-token"
+    expiry_process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVER),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(expiry_port),
+            "--token-ttl",
+            "0.6",
+            "--token-expiry-check-seconds",
+            "0.2",
+            "--ping-interval-seconds",
+            "0",
+            "--ping-timeout-seconds",
+            "0",
+            "--static-root",
+            str(STATIC_ROOT),
+        ],
+        cwd=str(ROOT),
+        env=expiry_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        wait_for_server(expiry_port)
+        expiry_session_id = secrets.token_hex(8)
+        status, register = http_json(
+            expiry_port,
+            "POST",
+            "/api/register",
+            {
+                "session_id": expiry_session_id,
+                "name": "Expiry Session",
+                "token": "smoke-user-token",
+            },
+        )
+        assert status == 200, status
+        agent = WebSocketClient(
+            expiry_port,
+            f"/ws/agent?id={expiry_session_id}",
+            headers={"Authorization": f"Bearer {register['agent_token']}"},
+        )
+        close_code = None
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            try:
+                opcode, payload = agent.receive()
+            except (RuntimeError, OSError):
+                break
+            if opcode == 0x8 and len(payload) >= 2:
+                close_code = struct.unpack("!H", payload[:2])[0]
+                break
+        agent.sock.close()
+        assert close_code == 4401, f"expected 4401 token_expired, got {close_code}"
+    finally:
+        expiry_process.terminate()
+        try:
+            expiry_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            expiry_process.kill()
+            expiry_process.wait(timeout=5)
+
+    heartbeat_port = free_port()
+    heartbeat_env = os.environ.copy()
+    heartbeat_env["GHOSTTY_RELAY_USER_TOKENS"] = "smoke-user-token"
+    heartbeat_process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVER),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(heartbeat_port),
+            "--token-ttl",
+            "30",
+            "--token-expiry-check-seconds",
+            "0",
+            "--ping-interval-seconds",
+            "0.2",
+            "--ping-timeout-seconds",
+            "0.4",
+            "--static-root",
+            str(STATIC_ROOT),
+        ],
+        cwd=str(ROOT),
+        env=heartbeat_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        wait_for_server(heartbeat_port)
+        heartbeat_session_id = secrets.token_hex(8)
+        status, register = http_json(
+            heartbeat_port,
+            "POST",
+            "/api/register",
+            {
+                "session_id": heartbeat_session_id,
+                "name": "Heartbeat Session",
+                "token": "smoke-user-token",
+            },
+        )
+        assert status == 200, status
+        agent = WebSocketClient(
+            heartbeat_port,
+            f"/ws/agent?id={heartbeat_session_id}",
+            headers={"Authorization": f"Bearer {register['agent_token']}"},
+        )
+        saw_ping = False
+        close_code = None
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            try:
+                opcode, payload = agent.receive()
+            except (RuntimeError, OSError):
+                break
+            if opcode == 0x9:
+                saw_ping = True
+            elif opcode == 0x8 and len(payload) >= 2:
+                close_code = struct.unpack("!H", payload[:2])[0]
+                break
+        agent.sock.close()
+        assert saw_ping, "did not observe heartbeat ping"
+        assert close_code == 4408, f"expected 4408 ping_timeout, got {close_code}"
+    finally:
+        heartbeat_process.terminate()
+        try:
+            heartbeat_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            heartbeat_process.kill()
+            heartbeat_process.wait(timeout=5)
+
+    slow_port = free_port()
+    slow_env = os.environ.copy()
+    slow_env["GHOSTTY_RELAY_USER_TOKENS"] = "smoke-user-token"
+    slow_process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVER),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(slow_port),
+            "--token-ttl",
+            "30",
+            "--token-expiry-check-seconds",
+            "0",
+            "--ping-interval-seconds",
+            "0",
+            "--ping-timeout-seconds",
+            "0",
+            "--client-send-buffer-bytes",
+            "1024",
+            "--static-root",
+            str(STATIC_ROOT),
+        ],
+        cwd=str(ROOT),
+        env=slow_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        wait_for_server(slow_port)
+        slow_session_id = secrets.token_hex(8)
+        status, register = http_json(
+            slow_port,
+            "POST",
+            "/api/register",
+            {
+                "session_id": slow_session_id,
+                "name": "Slow Session",
+                "token": "smoke-user-token",
+            },
+        )
+        assert status == 200, status
+        agent = WebSocketClient(
+            slow_port,
+            f"/ws/agent?id={slow_session_id}",
+            headers={"Authorization": f"Bearer {register['agent_token']}"},
+        )
+        slow_client = WebSocketClient(
+            slow_port,
+            f"/ws/client?id={slow_session_id}&token={register['client_token']}",
+        )
+        # Single 4 KiB frame on a 1 KiB per-client send buffer must be
+        # rejected at enqueue time and result in a slow_consumer close.
+        agent.send_binary(b"x" * 4096)
+        slow_client.sock.settimeout(3.0)
+        close_code = None
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            try:
+                opcode, payload = slow_client.receive()
+            except (RuntimeError, OSError, socket.timeout):
+                break
+            if opcode == 0x8 and len(payload) >= 2:
+                close_code = struct.unpack("!H", payload[:2])[0]
+                break
+        slow_client.sock.close()
+        assert close_code == 4408, f"expected 4408 slow_consumer, got {close_code}"
+
+        status, metrics = http_text(slow_port, "GET", "/metrics")
+        assert status == 200, status
+        drop_count = None
+        for line in metrics.splitlines():
+            if line.startswith("ghostty_relay_slow_consumer_drop_total "):
+                drop_count = int(line.split(" ")[-1])
+                break
+        assert drop_count is not None and drop_count >= 1, drop_count
+        agent.close()
+    finally:
+        slow_process.terminate()
+        try:
+            slow_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            slow_process.kill()
+            slow_process.wait(timeout=5)
+
+    admin_public_port = free_port()
+    admin_listener_port = free_port()
+    admin_env = os.environ.copy()
+    admin_env["GHOSTTY_RELAY_USER_TOKENS"] = "smoke-user-token"
+    admin_process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVER),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(admin_public_port),
+            "--admin-host",
+            "127.0.0.1",
+            "--admin-port",
+            str(admin_listener_port),
+            "--static-root",
+            str(STATIC_ROOT),
+        ],
+        cwd=str(ROOT),
+        env=admin_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        wait_for_server(admin_public_port)
+        # Public listener must hide admin endpoints when a dedicated admin
+        # listener is configured.
+        for admin_path in ("/healthz", "/readyz", "/metrics"):
+            status, _ = http_text(admin_public_port, "GET", admin_path)
+            assert status == 404, (admin_path, status)
+        # Admin listener serves admin endpoints.
+        status, health = http_json(admin_listener_port, "GET", "/healthz")
+        assert status == 200, status
+        assert health["ok"] is True
+        status, ready = http_json(admin_listener_port, "GET", "/readyz")
+        assert status == 200, status
+        assert ready["ok"] is True
+        status, metrics = http_text(admin_listener_port, "GET", "/metrics")
+        assert status == 200, status
+        assert "ghostty_relay_sessions " in metrics
+        # Admin listener rejects everything else (no register/list/static).
+        status, _ = http_text(admin_listener_port, "GET", "/api/sessions")
+        assert status == 404, status
+        status, _ = http_text(admin_listener_port, "GET", "/")
+        assert status == 404, status
+    finally:
+        admin_process.terminate()
+        try:
+            admin_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            admin_process.kill()
+            admin_process.wait(timeout=5)
+
+    spoof_port = free_port()
+    spoof_env = os.environ.copy()
+    spoof_env["GHOSTTY_RELAY_USER_TOKENS"] = "smoke-user-token"
+    # No GHOSTTY_RELAY_TRUSTED_PROXIES: untrusted senders cannot spoof IPs.
+    spoof_process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVER),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(spoof_port),
+            "--rate-limit-requests",
+            "1",
+            "--rate-limit-window-seconds",
+            "60",
+            "--static-root",
+            str(STATIC_ROOT),
+        ],
+        cwd=str(ROOT),
+        env=spoof_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        wait_for_server(spoof_port)
+        auth = "Bearer smoke-user-token"
+        status, _ = http_json(
+            spoof_port,
+            "GET",
+            "/api/sessions",
+            headers={"Authorization": auth, "X-Forwarded-For": "1.2.3.4"},
+        )
+        assert status == 200, status
+        # The untrusted client cannot pick a new bucket via X-Forwarded-For;
+        # both requests share the loopback bucket and the second is limited.
+        status, _ = http_json(
+            spoof_port,
+            "GET",
+            "/api/sessions",
+            headers={"Authorization": auth, "X-Forwarded-For": "9.9.9.9"},
+        )
+        assert status == 429, status
+    finally:
+        spoof_process.terminate()
+        try:
+            spoof_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            spoof_process.kill()
+            spoof_process.wait(timeout=5)
+
     port = free_port()
     env = os.environ.copy()
     env["GHOSTTY_RELAY_USER_TOKENS"] = "smoke-user-token"
