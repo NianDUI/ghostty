@@ -139,13 +139,21 @@ Done:
   `expires_at` without user action. 4408 (timeout / slow consumer)
   still uses the standard exponential backoff. Covered by the
   `controllerRecoveryDisconnectAction*` Swift Testing cases.
+- Actionable sheet error presentation:
+  `SessionSharingErrorPresentation.actionableMessage(for:)` collapses
+  start-sharing failures to user-actionable Chinese messages instead
+  of dumping `error.localizedDescription`. Covers each
+  `SessionSharingError` case (including the new
+  `userTokenRejected` produced by `parseRegisterResponse` on HTTP
+  401), the common `URLError` codes (DNS / connection / timeout /
+  offline / TLS), and falls back to a token-redacted description
+  for everything else. Covered by the `errorPresentation*` and
+  `registerResponseParser*` Swift Testing cases.
 
 Remaining:
 
 - **P1** Move the sharing shortcut into the standard configurable
   shortcut system instead of a bespoke binding.
-- **P1** Improve sheet error presentation (network failure, invalid
-  relay address, token rejected) with actionable messages.
 - **P1** Reconnect-state UX polish per E2E step 9 (sheet UI lags the
   underlying state).
 
