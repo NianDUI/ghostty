@@ -27,10 +27,27 @@ cd /path/to/ghostty
 python3 contrib/session-sharing/relay/server.py --port 18080
 ```
 
-If you want the relay reachable from other machines on your LAN:
+If you want the relay reachable from other machines on your LAN, bind to
+the host's LAN address. Private ranges (10/8, 172.16/12, 192.168/16,
+169.254/16, IPv6 fe80::/10, IPv6 fc00::/7) do **not** require
+`--allow-public-bind` because they are not routable on the public
+internet:
 
 ```bash
 cd /path/to/ghostty
+# Replace 192.168.1.5 with your machine's LAN IP.
+python3 contrib/session-sharing/relay/server.py --host 192.168.1.5 --port 18080
+```
+
+LAN clients can then point the desktop / browser app at
+`http://192.168.1.5:18080` (and the matching `ws://` for the WebSocket
+endpoints). The macOS app already trusts http/ws on RFC1918, link-local,
+and loopback addresses, so no client-side flag is needed.
+
+If instead you want to listen on every interface (including public ones,
+if the host has any), you must opt in explicitly:
+
+```bash
 python3 contrib/session-sharing/relay/server.py --host 0.0.0.0 --port 18080 --allow-public-bind
 ```
 

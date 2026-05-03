@@ -405,21 +405,42 @@ Recommended manual Linux validation:
 
 ## Production Quantitative Baseline
 
-Production "go/no-go" requires real numbers. Fill these in before declaring
-the relay production-ready; they are placeholders chosen to match the
-current single-instance Python target, not aspirations:
+Production "go/no-go" needs measured numbers, not aspirations. Floor
+targets — anything below these is a regression worth investigating:
 
-- Concurrent sessions per instance: target ≥ 100
-- Client fan-out per session: target ≥ 4
-- p99 PTY frame forwarding latency under target load: ≤ 100 ms
-- Steady-state memory at 100 sessions × 4 clients: ≤ 500 MiB
+- Concurrent sessions per instance: ≥ 100
+- Client fan-out per session: ≥ 4
+- p99 PTY frame forwarding latency: ≤ 100 ms
+- Steady-state memory at the reference workload: ≤ 500 MiB
 - Agent reconnect recovery time after a transient disconnect: ≤ 10 s
 - Time to detect a silently dropped WS connection: ≤ ping timeout
 
-These targets feed Phase 2.5 (slow consumer / heartbeat) and Phase 6 (load
-tests). When any target cannot be met by the Python implementation under
-realistic input, that becomes a Decision Trigger to consider replacing the
-implementation.
+Reference and headroom measurements from
+`contrib/session-sharing/relay/load_test.py`, run 2026-05-03 on a
+developer macOS host (single Python process, loopback). Re-run on
+production hardware before declaring the relay production-ready:
+
+| Workload | Sessions × fan-out | Frame / interval | Aggregate | p50 | p95 | p99 | Max | Peak RSS | Delivery |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Reference | 100 × 4 | 256 B / 100 ms | ~1 MiB/s fan-out | 1.56 ms | 3.45 ms | 4.72 ms | 9.02 ms | 51 MiB | 97.3% |
+| Headroom | 200 × 4 | 1024 B / 50 ms | ~16 MiB/s fan-out | 1.11 ms | 1.89 ms | 2.74 ms | 13.67 ms | 133 MiB | 96.0% |
+
+Both workloads sit well under the 100 ms / 500 MiB floor. The 2-4%
+delivery shortfall is agent ramp-up: clients start half a second before
+agents, so the first ~half second of expected frames never had a sender.
+A more accurate harness would discount that startup window — already
+TODO in `load_test.py`.
+
+Still missing from the harness, and therefore from this baseline:
+
+- Agent reconnect recovery time. The harness does not yet kill an agent
+  mid-run and measure time-to-first-frame after re-register.
+- Silent-drop detection. Heartbeat-driven reaping is exercised by the
+  smoke test but not measured under load.
+
+When any production deployment cannot meet these floors under its real
+workload, that becomes a Decision Trigger to investigate (see the next
+section).
 
 ## Decision Triggers
 
