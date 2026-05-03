@@ -265,9 +265,9 @@ async function connectToSession(session, { updateHistory = true } = {}) {
       });
     });
 
-    socket.addEventListener("close", () => {
+    socket.addEventListener("close", (event) => {
       socket = null;
-      scheduleReconnect();
+      scheduleReconnect(classifyCloseEvent(event));
     });
 
     socket.addEventListener("error", () => {
@@ -360,14 +360,51 @@ function applyPendingModifiers(value) {
   return output;
 }
 
-function scheduleReconnect() {
+// The relay uses these private WebSocket close codes for cases the client
+// can act on. They mirror server.py: 4401 = session token expired
+// (watch_token_expiry), 4408 = ping timeout / slow consumer drop.
+const CLOSE_CODE_TOKEN_EXPIRED = 4401;
+const CLOSE_CODE_TIMEOUT_OR_SLOW = 4408;
+
+function classifyCloseEvent(event) {
+  if (event && event.code === CLOSE_CODE_TOKEN_EXPIRED) {
+    return {
+      reason: "token_expired",
+      statusText: "会话已过期，等待主机重新建立",
+      slowPoll: true,
+    };
+  }
+  if (event && event.code === CLOSE_CODE_TIMEOUT_OR_SLOW) {
+    return {
+      reason: "ping_timeout",
+      statusText: "心跳断开，重连中",
+      slowPoll: false,
+    };
+  }
+  return { reason: "other", statusText: null, slowPoll: false };
+}
+
+function scheduleReconnect(closeContext = null) {
   if (!shouldReconnect || !activeSession) return;
   cancelReconnect();
   reconnectAttempt += 1;
   updateDocumentTitle("重连中");
 
-  const delay = Math.min(1000 * (2 ** Math.max(0, reconnectAttempt - 1)), 30000);
-  reconnectStatusText = delay >= 1000 ? `重连中（${Math.round(delay / 1000)}s）` : "重连中";
+  let delay;
+  let statusText;
+  if (closeContext?.slowPoll) {
+    // Token-expired close: the host must re-register before any reconnect
+    // can succeed. Poll the session list at a steady cadence (capped at
+    // 10 s) instead of ramping an exponential backoff that would burn
+    // pointless API calls and delay recovery once the host comes back.
+    delay = Math.min(2000 + 1000 * (reconnectAttempt - 1), 10000);
+    statusText = closeContext.statusText;
+  } else {
+    delay = Math.min(1000 * (2 ** Math.max(0, reconnectAttempt - 1)), 30000);
+    const fallback = delay >= 1000 ? `重连中（${Math.round(delay / 1000)}s）` : "重连中";
+    statusText = closeContext?.statusText ?? fallback;
+  }
+  reconnectStatusText = statusText;
   setTerminalStatus(reconnectStatusText, "reconnecting");
   reconnectTimer = window.setTimeout(async () => {
     reconnectTimer = null;
@@ -383,7 +420,7 @@ function scheduleReconnect() {
         },
       });
       if (!response.ok) {
-        scheduleReconnect();
+        scheduleReconnect(closeContext);
         return;
       }
 
@@ -391,14 +428,14 @@ function scheduleReconnect() {
       cachedSessions = sessions;
       const session = sessions.find((candidate) => candidate.id === activeSessionId);
       if (!session?.online) {
-        scheduleReconnect();
+        scheduleReconnect(closeContext);
         return;
       }
 
       await connectToSession(session, { updateHistory: false });
     } catch (error) {
       console.error(error);
-      scheduleReconnect();
+      scheduleReconnect(closeContext);
     }
   }, delay);
 }
