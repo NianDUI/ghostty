@@ -431,16 +431,32 @@ agents, so the first ~half second of expected frames never had a sender.
 A more accurate harness would discount that startup window — already
 TODO in `load_test.py`.
 
-Still missing from the harness, and therefore from this baseline:
+### Failure-Path Measurements
 
-- Agent reconnect recovery time. The harness does not yet kill an agent
-  mid-run and measure time-to-first-frame after re-register.
-- Silent-drop detection. Heartbeat-driven reaping is exercised by the
-  smoke test but not measured under load.
+Steady-state percentiles do not capture the user-visible cost of the
+two main failure modes. These come from
+`load_test.py --scenario reconnect` and
+`load_test.py --scenario silent-drop`:
 
-When any production deployment cannot meet these floors under its real
-workload, that becomes a Decision Trigger to investigate (see the next
-section).
+- **Reconnect MTTR** — from agent socket close to the freshly
+  reconnected client receiving the first marker frame. Loopback, agent
+  reopens immediately, three runs averaged **0.79 ms**. Real-world
+  MTTR is dominated by client backoff and network RTT, not by relay
+  code; this number is the server-side ceiling.
+- **Silent-drop MTTD** — idle client never reads or sends pong; timer
+  measures how long until `ghostty_relay_active_clients` decrements
+  via the heartbeat watcher.
+  - Smoke config (interval 1 s / timeout 2 s): **1.63 s**
+  - Production config (interval 30 s / timeout 60 s): **59.7 s**
+
+  Detection tracks the configured timeout closely, since
+  ``last_pong`` is set at connect and the watcher closes the socket as
+  soon as ``now − last_pong > timeout``.
+
+Both measurements clear the floor targets above (≤ 10 s reconnect,
+≤ ping timeout for silent drops). When a production deployment cannot
+meet these floors under its real workload, that becomes a Decision
+Trigger to investigate (see the next section).
 
 ## Decision Triggers
 
