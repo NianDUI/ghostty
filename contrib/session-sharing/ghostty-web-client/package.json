@@ -1,0 +1,17 @@
+{
+  "name": "ghostty-session-sharing-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "ghostty-web": "^0.4.0"
+  },
+  "devDependencies": {
+    "vite": "^7.1.7"
+  }
+}

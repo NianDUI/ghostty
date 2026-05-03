@@ -410,6 +410,14 @@ extension Ghostty {
             }
         }
 
+        fileprivate func applySharedResize(cols: Int, rows: Int) {
+            guard let surface, cols > 0, rows > 0 else { return }
+            let size = ghostty_surface_size(surface)
+            let width = UInt32(cols) * max(size.cell_width_px, 1)
+            let height = UInt32(rows) * max(size.cell_height_px, 1)
+            setSurfaceSize(width: width, height: height)
+        }
+
         override func focusDidChange(_ focused: Bool) {
             guard let surface = self.surface else { return }
             guard self.focused != focused else { return }
@@ -1210,6 +1218,14 @@ extension Ghostty {
             // We only care about key down events. It might not even be possible
             // to receive any other event type here.
             guard event.type == .keyDown else { return false }
+
+            // Let AppKit text inputs keep their normal edit shortcuts when a sheet
+            // or panel field editor owns focus, such as the session sharing dialog.
+            if SessionSharingKeyEquivalentPolicy.shouldUseStandardResponderChain(
+                firstResponder: NSApp.keyWindow?.firstResponder
+            ) {
+                return false
+            }
 
             // Only process events if we're focused. Some key events like C-/ macOS
             // appears to send to the first view in the hierarchy rather than the
@@ -2017,6 +2033,12 @@ private final class SessionSharingController {
         case .ignore:
             return true
 
+        case .resize(let cols, let rows):
+            DispatchQueue.main.async { [weak self] in
+                self?.surfaceView?.applySharedResize(cols: cols, rows: rows)
+            }
+            return true
+
         case .sendPong(let pong):
             guard let webSocket else { return true }
             guard let pongData = try? JSONEncoder().encode(pong),
@@ -2117,6 +2139,7 @@ enum SessionSharingInboundFrameAction: Equatable {
     case forwardToTerminal
     case ignore
     case sendPong(SessionSharingControlFrame)
+    case resize(cols: Int, rows: Int)
 
     static func parse(text: String, sessionID: String) -> Self {
         guard let data = text.data(using: .utf8),
@@ -2127,7 +2150,12 @@ enum SessionSharingInboundFrameAction: Equatable {
         switch frame.type {
         case "ping":
             return .sendPong(.pong(id: sessionID))
-        case "resize", "hello", "pong":
+        case "resize":
+            if let cols = frame.cols, let rows = frame.rows, cols > 0, rows > 0 {
+                return .resize(cols: cols, rows: rows)
+            }
+            return .ignore
+        case "hello", "pong":
             return .ignore
         default:
             return .forwardToTerminal
@@ -2259,6 +2287,13 @@ enum SessionSharingResponseParser {
         }
 
         return registerResponse
+    }
+}
+
+enum SessionSharingKeyEquivalentPolicy {
+    static func shouldUseStandardResponderChain(firstResponder: NSResponder?) -> Bool {
+        guard let textView = firstResponder as? NSTextView else { return false }
+        return textView.isFieldEditor
     }
 }
 
@@ -2492,6 +2527,8 @@ struct SessionSharingControlFrame: Codable, Equatable {
 
 private struct SessionSharingInboundControlFrame: Codable {
     let type: String
+    let cols: Int?
+    let rows: Int?
 }
 
 enum SessionSharingError: LocalizedError {

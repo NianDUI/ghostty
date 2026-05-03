@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import Ghostty
@@ -263,6 +264,28 @@ struct SessionSharingTests {
     }
 
     @Test
+    func keyEquivalentPolicyAllowsFieldEditorsToUseStandardResponderChain() {
+        let fieldEditor = NSTextView()
+        fieldEditor.isFieldEditor = true
+
+        #expect(
+            SessionSharingKeyEquivalentPolicy.shouldUseStandardResponderChain(
+                firstResponder: fieldEditor
+            ) == true
+        )
+        #expect(
+            SessionSharingKeyEquivalentPolicy.shouldUseStandardResponderChain(
+                firstResponder: NSView()
+            ) == false
+        )
+        #expect(
+            SessionSharingKeyEquivalentPolicy.shouldUseStandardResponderChain(
+                firstResponder: nil
+            ) == false
+        )
+    }
+
+    @Test
     func menuPresentationDisabledWithoutFocusedSurface() {
         let presentation = SessionSharingMenuPresentation(
             hasFocusedSurface: false,
@@ -297,13 +320,13 @@ struct SessionSharingTests {
     }
 
     @Test
-    func inboundFrameActionForResizeIsIgnored() {
+    func inboundFrameActionForResizeRequestsSharedResize() {
         let action = SessionSharingInboundFrameAction.parse(
             text: #"{"type":"resize","cols":120,"rows":30}"#,
             sessionID: "session-123"
         )
 
-        #expect(action == .ignore)
+        #expect(action == .resize(cols: 120, rows: 30))
     }
 
     @Test

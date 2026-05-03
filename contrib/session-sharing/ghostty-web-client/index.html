@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ghostty Session Sharing</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4efe6;
+        --panel: rgba(255, 252, 245, 0.92);
+        --line: #2a2723;
+        --muted: #6d655c;
+        --accent: #0c7a5a;
+        --accent-soft: #d7efe4;
+        --warn: #b36a00;
+        --mobile-toolbar-height: 0px;
+        --mobile-toolbar-offset: 0px;
+        --mobile-viewport-height: 100vh;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        font-family: "SF Mono", "IBM Plex Mono", Menlo, monospace;
+        background:
+          radial-gradient(circle at top left, #fff6d5 0, transparent 28rem),
+          linear-gradient(160deg, #efe5d3 0%, #f7f2e8 55%, #ebe2d3 100%);
+        color: var(--line);
+      }
+
+      body.terminal-mode {
+        background: #171412;
+        color: #f5f0e8;
+        overflow: hidden;
+      }
+
+      .shell {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .shell.terminal-mode {
+        max-width: none;
+        min-height: 100vh;
+        padding: 0;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        gap: 18px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid rgba(42, 39, 35, 0.14);
+        border-radius: 18px;
+        backdrop-filter: blur(18px);
+        box-shadow: 0 18px 60px rgba(74, 58, 36, 0.14);
+      }
+
+      .auth, .sessions, .terminal-wrap {
+        padding: 18px;
+      }
+
+      .title {
+        margin: 0 0 8px 0;
+        font-size: 20px;
+        letter-spacing: 0.03em;
+      }
+
+      .hint {
+        margin: 0 0 16px 0;
+        color: var(--muted);
+        line-height: 1.45;
+        font-size: 13px;
+      }
+
+      label {
+        display: block;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      input, button {
+        width: 100%;
+        border-radius: 12px;
+        border: 1px solid rgba(42, 39, 35, 0.18);
+        padding: 12px 14px;
+        font: inherit;
+      }
+
+      input {
+        background: rgba(255, 255, 255, 0.78);
+      }
+
+      button {
+        margin-top: 12px;
+        background: var(--accent);
+        color: white;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
+
+      .session-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .session {
+        border: 1px solid rgba(42, 39, 35, 0.16);
+        border-radius: 14px;
+        padding: 12px;
+        background: rgba(255, 255, 255, 0.74);
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .session.offline {
+        cursor: default;
+        opacity: 0.55;
+      }
+
+      .session.active {
+        outline: 2px solid rgba(12, 122, 90, 0.5);
+      }
+
+      .status {
+        display: inline-block;
+        font-size: 12px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        margin-top: 8px;
+      }
+
+      .status.online {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .status.offline {
+        background: #f1e3d0;
+        color: var(--warn);
+      }
+
+      .terminal-host {
+        position: relative;
+        min-height: 420px;
+        overflow: hidden;
+        background: #171412;
+        border-radius: 16px;
+        padding: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .terminal-host > #terminal {
+        width: 100%;
+        min-height: 404px;
+      }
+
+      .meta {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 10px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .hidden {
+        display: none !important;
+      }
+
+      .terminal-page {
+        min-height: var(--mobile-viewport-height);
+      }
+
+      .terminal-page .terminal-wrap {
+        display: flex;
+        flex-direction: column;
+        min-height: var(--mobile-viewport-height);
+        height: var(--mobile-viewport-height);
+        padding: 0;
+        background: #171412;
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+      }
+
+      .terminal-page .terminal-host {
+        flex: 1;
+        min-height: 0;
+        height: 100%;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: #171412;
+      }
+
+      .terminal-page .terminal-host > #terminal {
+        min-height: var(--mobile-viewport-height);
+        height: 100%;
+      }
+
+      .terminal-status {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        z-index: 10;
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.02em;
+        background: rgba(25, 21, 18, 0.82);
+        color: #f5f0e8;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        backdrop-filter: blur(12px);
+      }
+
+      .terminal-status.connected {
+        color: #7de3bb;
+      }
+
+      .terminal-status.reconnecting {
+        color: #ffd37b;
+      }
+
+      .terminal-status.error {
+        color: #ff9b8a;
+      }
+
+      .mobile-input {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        pointer-events: none;
+        border: 0;
+        padding: 0;
+        margin: 0;
+        background: transparent;
+        color: transparent;
+        caret-color: transparent;
+      }
+
+      .mobile-toolbar-toggle,
+      .mobile-toolbar {
+        display: none;
+      }
+
+      @media (pointer: coarse), (max-width: 860px) {
+        .mobile-toolbar-toggle {
+          position: fixed;
+          left: 50%;
+          bottom: calc(var(--mobile-toolbar-height) + var(--mobile-toolbar-offset) - 14px);
+          z-index: 30;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 52px;
+          height: 28px;
+          margin: 0;
+          transform: translateX(-50%);
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          background: rgba(36, 68, 76, 0.92);
+          color: #f5f0e8;
+          box-shadow: 0 12px 28px rgba(0, 0, 0, 0.26);
+          backdrop-filter: blur(12px);
+        }
+
+        .mobile-toolbar-toggle::before {
+          content: "⌃";
+          font-size: 18px;
+          line-height: 1;
+          transform: rotate(180deg);
+          transition: transform 160ms ease;
+        }
+
+        .mobile-toolbar-toggle.collapsed::before {
+          transform: rotate(0deg);
+        }
+
+        .mobile-toolbar {
+          position: fixed;
+          left: 0;
+          right: 0;
+          bottom: var(--mobile-toolbar-offset);
+          z-index: 20;
+          display: grid;
+          grid-template-columns: repeat(8, minmax(0, 1fr));
+          gap: 8px;
+          padding: 12px;
+          background: rgba(34, 77, 88, 0.96);
+          border-top: 1px solid rgba(255, 255, 255, 0.08);
+          box-shadow: 0 -14px 36px rgba(0, 0, 0, 0.28);
+          backdrop-filter: blur(16px);
+          transition: transform 160ms ease, opacity 160ms ease;
+        }
+
+        .mobile-toolbar.hidden {
+          display: grid !important;
+          transform: translateY(calc(100% + 14px));
+          opacity: 0;
+          pointer-events: none;
+        }
+
+        .terminal-page .terminal-host {
+          padding-bottom: calc(var(--mobile-toolbar-height) + var(--mobile-toolbar-offset));
+        }
+
+        .terminal-page .terminal-host > #terminal {
+          min-height: calc(var(--mobile-viewport-height) - var(--mobile-toolbar-height) - var(--mobile-toolbar-offset));
+          height: calc(var(--mobile-viewport-height) - var(--mobile-toolbar-height) - var(--mobile-toolbar-offset));
+        }
+
+        .mobile-tool {
+          margin: 0;
+          min-height: 34px;
+          padding: 6px 4px;
+          border-radius: 10px;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          background: rgba(255, 255, 255, 0.06);
+          color: #f5f0e8;
+          font-size: 11px;
+          letter-spacing: 0.03em;
+        }
+
+        .mobile-tool.mod-active {
+          background: rgba(125, 227, 187, 0.22);
+          border-color: rgba(125, 227, 187, 0.48);
+          color: #baf5dd;
+        }
+      }
+
+      @media (max-width: 860px) {
+        .hero {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="shell" class="shell">
+      <div id="launcherView">
+        <div class="hero">
+          <div class="panel auth">
+            <h1 class="title">Session Sharing</h1>
+            <p class="hint">这个版本直接使用 `ghostty-web` 作为浏览器终端组件，保留会话共享自己的 token、会话列表和 WebSocket 接入层。</p>
+            <label for="backendBase">Backend URL Base</label>
+            <input id="backendBase" type="text" autocomplete="off" spellcheck="false" placeholder="默认当前页面自身，例如 http://127.0.0.1:18080">
+            <label for="token">User Token</label>
+            <input id="token" type="password" autocomplete="off" spellcheck="false">
+            <button id="saveToken">保存并刷新会话</button>
+          </div>
+          <div class="panel sessions">
+            <div class="meta">
+              <strong>会话列表</strong>
+              <span id="sessionMeta">未加载</span>
+            </div>
+            <div id="sessionList" class="session-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <div id="terminalView" class="terminal-page hidden">
+        <div class="panel terminal-wrap">
+          <div class="terminal-host">
+            <div id="terminalStatus" class="terminal-status hidden">连接中</div>
+            <div id="terminal" aria-label="Ghostty shared terminal"></div>
+          </div>
+        </div>
+        <textarea
+          id="mobileInput"
+          class="mobile-input"
+          autocapitalize="off"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          aria-hidden="true"
+        ></textarea>
+        <button id="mobileToolbarToggle" class="mobile-toolbar-toggle hidden" type="button" aria-label="显示或隐藏快捷按钮"></button>
+        <div id="mobileToolbar" class="mobile-toolbar hidden" aria-label="终端快捷按钮">
+          <button class="mobile-tool" type="button" data-seq="esc">ESC</button>
+          <button class="mobile-tool" type="button" data-seq="/">/</button>
+          <button class="mobile-tool" type="button" data-seq="|">|</button>
+          <button class="mobile-tool" type="button" data-seq="-">-</button>
+          <button class="mobile-tool" type="button" data-seq="up">↑</button>
+          <button class="mobile-tool" type="button" data-seq="home">HOME</button>
+          <button class="mobile-tool" type="button" data-seq="end">END</button>
+          <button class="mobile-tool" type="button" data-seq="pageup">PGUP</button>
+          <button class="mobile-tool" type="button" data-modifier="ctrl">CTRL</button>
+          <button class="mobile-tool" type="button" data-modifier="alt">ALT</button>
+          <button class="mobile-tool" type="button" data-seq="tab">TAB</button>
+          <button class="mobile-tool" type="button" data-seq="left">←</button>
+          <button class="mobile-tool" type="button" data-seq="down">↓</button>
+          <button class="mobile-tool" type="button" data-seq="right">→</button>
+          <button class="mobile-tool" type="button" data-seq="pagedown">PGDN</button>
+          <button class="mobile-tool" type="button" data-seq="backspace">⌫</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+  </html>

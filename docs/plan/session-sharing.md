@@ -2,9 +2,9 @@
 
 ## Status Summary
 
-Last updated: 2026-05-02
+Last updated: 2026-05-03
 
-Overall status: partially implemented
+Overall status: partially implemented, with the browser client now migrated to a `ghostty-web`-based terminal view
 
 Implemented now:
 
@@ -16,16 +16,16 @@ Implemented now:
 - WebSocket input back into Ghostty surface as raw bytes
 - reconnect with exponential backoff
 - relay prototype with REST and WebSocket endpoints
-- mobile browser prototype backed by `libghostty-vt` WASM
+- mobile/browser client backed by `ghostty-web`
 
 Not finished yet:
 
 - GTK/Linux desktop implementation
 - production-grade relay service
-- production-grade mobile `ghostty-web` packaging and deployment flow
+- production-grade `ghostty-web` packaging and deployment flow
 - client token rotation / refresh flow
 - higher-level controller and integration tests
-- richer browser input support and resize synchronization
+- richer browser input support and broader reconnect / mobile behavior hardening
 
 ## Plan
 
@@ -64,7 +64,7 @@ Remaining:
 
 - Add targeted Zig tests for the new bridge hooks
 - Review threading assumptions around output callback lifetime
-- Add explicit resize/control channel handling end to end
+- Add targeted end-to-end verification for resize/control channel handling
 
 ### 3. Relay Service
 
@@ -78,7 +78,7 @@ Completed:
 - Implemented `/ws/agent`
 - Implemented `/ws/client`
 - Added in-memory session table and offline cleanup
-- Added static serving for the mobile web client and `ghostty-vt.wasm`
+- Added static serving for the browser web client
 
 Remaining:
 
@@ -90,24 +90,24 @@ Remaining:
 
 ### 4. Mobile Web Client
 
-Status: prototype complete
+Status: browser client is usable, still not production-ready
 
 Completed:
 
 - Added token login and session listing page
 - Added online/offline session selection
-- Added WebSocket client connection flow
-- Replaced text-only terminal with `libghostty-vt` WASM-backed rendering
-- Added browser-side VT parsing, render state extraction, and DOM rendering
-- Added direct keyboard forwarding and textarea fallback input
+- Added `ghostty-web`-backed terminal page
+- Added terminal-only session route and browser title updates
+- Added browser-side reconnect loop for dropped WebSocket sessions
+- Added terminal resize reporting to the relay/agent
+- Added mobile hidden-input fallback and focus recovery
 
 Remaining:
 
-- Replace prototype DOM renderer with a hardened `ghostty-web` distribution shape
 - Add better mobile keyboard behavior and IME handling
-- Add terminal resize reporting back to the relay/agent
-- Add reconnect UX and session reconnect behavior on page refresh
+- Add more robust reconnect UX and session recovery validation on page refresh
 - Add visual/performance optimization for larger scroll regions
+- Add browser-side smoke and regression coverage
 
 ### 5. Security and Storage
 
@@ -160,7 +160,7 @@ Remaining:
 
 1. Add higher-level tests around `SessionSharingController` network scheduling and reconnect orchestration.
 2. Decide whether the relay should remain a prototype or be rewritten as an in-repo Zig service.
-3. Complete browser resize and mobile input handling so the web client is usable beyond smoke testing.
+3. Complete browser IME handling and validate reconnect/resize behavior on real mobile devices.
 4. If cross-platform support matters, start the GTK implementation instead of deepening macOS-only polish.
 
 ## Current Deliverable Boundary

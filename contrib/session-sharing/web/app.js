@@ -13,6 +13,7 @@ const textDecoder = new TextDecoder();
 
 const RESULT_SUCCESS = 0;
 const RESULT_INVALID_VALUE = -2;
+const FORMATTER_FORMAT_PLAIN = 0;
 
 const RENDER_STATE_DATA = {
   COLS: 1,
@@ -374,6 +375,27 @@ function createWasmApi(exports, layouts) {
     writeUnsigned(ptr + fields.max_scrollback.offset, fields.max_scrollback.size, scrollback);
   }
 
+  function writeFormatterOptions(ptr) {
+    initSizedStruct(ptr, "GhosttyFormatterTerminalOptions");
+
+    const formatterFields = layouts.GhosttyFormatterTerminalOptions.fields;
+    writeUnsigned(ptr + formatterFields.emit.offset, formatterFields.emit.size, FORMATTER_FORMAT_PLAIN);
+    writeUnsigned(ptr + formatterFields.unwrap.offset, formatterFields.unwrap.size, 0);
+    writeUnsigned(ptr + formatterFields.trim.offset, formatterFields.trim.size, 0);
+
+    const extraOffset = formatterFields.extra.offset;
+    const extraFields = layouts.GhosttyFormatterTerminalExtra.fields;
+    writeUnsigned(ptr + extraOffset + extraFields.size.offset, extraFields.size.size, layouts.GhosttyFormatterTerminalExtra.size);
+
+    const screenOffset = extraOffset + extraFields.screen.offset;
+    const screenFields = layouts.GhosttyFormatterScreenExtra.fields;
+    writeUnsigned(
+      ptr + screenOffset + screenFields.size.offset,
+      screenFields.size.size,
+      layouts.GhosttyFormatterScreenExtra.size,
+    );
+  }
+
   function initSizedStruct(ptr, typeName) {
     const layout = layouts[typeName];
     const view = uint8View();
@@ -398,6 +420,7 @@ function createWasmApi(exports, layouts) {
     writeUnsigned,
     readColor,
     writeTerminalOptions,
+    writeFormatterOptions,
     initSizedStruct,
   };
 }
@@ -415,8 +438,10 @@ class GhosttyBrowserTerminal {
     this.renderStatePtrPtr = api.allocOpaque();
     this.rowIteratorPtrPtr = api.allocOpaque();
     this.rowCellsPtrPtr = api.allocOpaque();
+    this.formatterPtrPtr = api.allocOpaque();
 
     this.terminalOptionsPtr = api.allocBytes(api.layouts.GhosttyTerminalOptions.size);
+    this.formatterOptionsPtr = api.allocBytes(api.layouts.GhosttyFormatterTerminalOptions.size);
     this.colorsPtr = api.allocBytes(api.layouts.GhosttyRenderStateColors.size);
     this.stylePtr = api.allocBytes(api.layouts.GhosttyStyle.size);
     this.u16Ptr = api.allocValue(4);
@@ -433,11 +458,22 @@ class GhosttyBrowserTerminal {
   }
 
   createTerminal(cols, rows) {
-    const { exports, writeTerminalOptions, readPointer } = this.api;
+    const { exports, writeTerminalOptions, writeFormatterOptions, readPointer } = this.api;
     writeTerminalOptions(this.terminalOptionsPtr, cols, rows, 5000);
+    writeFormatterOptions(this.formatterOptionsPtr);
 
     this.check(exports.ghostty_terminal_new(0, this.handlePtrPtr, this.terminalOptionsPtr));
     this.terminalHandle = readPointer(this.handlePtrPtr);
+
+    this.check(
+      exports.ghostty_formatter_terminal_new(
+        0,
+        this.formatterPtrPtr,
+        this.terminalHandle,
+        this.formatterOptionsPtr,
+      ),
+    );
+    this.formatterHandle = readPointer(this.formatterPtrPtr);
 
     this.check(exports.ghostty_render_state_new(0, this.renderStatePtrPtr));
     this.renderStateHandle = readPointer(this.renderStatePtrPtr);
@@ -491,128 +527,28 @@ class GhosttyBrowserTerminal {
   }
 
   render() {
-    const { exports, readU16, readBool, readColor, readEnum, readPointer, readU32, initSizedStruct, layouts } = this.api;
+    this.mount.textContent = this.formatPlainText();
+  }
 
-    this.check(exports.ghostty_render_state_update(this.renderStateHandle, this.terminalHandle));
-    this.check(exports.ghostty_render_state_colors_get(this.renderStateHandle, this.colorsPtr));
-
-    const colorFields = layouts.GhosttyRenderStateColors.fields;
-    const defaultBackground = readColor(this.colorsPtr + colorFields.background.offset);
-    const defaultForeground = readColor(this.colorsPtr + colorFields.foreground.offset);
-
-    this.check(exports.ghostty_render_state_get(this.renderStateHandle, RENDER_STATE_DATA.COLS, this.u16Ptr));
-    this.check(exports.ghostty_render_state_get(this.renderStateHandle, RENDER_STATE_DATA.ROWS, this.u16Ptr + 2));
-    const cols = readU16(this.u16Ptr);
-    const rows = readU16(this.u16Ptr + 2);
-
-    this.ensureRows(rows);
-
-    let cursorVisible = false;
-    let cursorX = -1;
-    let cursorY = -1;
-    if (exports.ghostty_render_state_get(this.renderStateHandle, RENDER_STATE_DATA.CURSOR_VISIBLE, this.u8Ptr) === RESULT_SUCCESS) {
-      cursorVisible = readBool(this.u8Ptr);
-    }
-    if (
-      cursorVisible &&
-      exports.ghostty_render_state_get(this.renderStateHandle, RENDER_STATE_DATA.CURSOR_VIEWPORT_HAS_VALUE, this.u8Ptr) === RESULT_SUCCESS &&
-      readBool(this.u8Ptr)
-    ) {
-      this.check(exports.ghostty_render_state_get(this.renderStateHandle, RENDER_STATE_DATA.CURSOR_VIEWPORT_X, this.u16Ptr));
-      this.check(exports.ghostty_render_state_get(this.renderStateHandle, RENDER_STATE_DATA.CURSOR_VIEWPORT_Y, this.u16Ptr + 2));
-      cursorX = readU16(this.u16Ptr);
-      cursorY = readU16(this.u16Ptr + 2);
-    }
-
+  formatPlainText() {
     this.check(
-      exports.ghostty_render_state_get(
-        this.renderStateHandle,
-        4,
-        this.rowIteratorPtrPtr,
+      this.api.exports.ghostty_formatter_format_alloc(
+        this.formatterHandle,
+        0,
+        this.formatterPtrPtr,
+        this.u32Ptr,
       ),
     );
-    this.rowIteratorHandle = readPointer(this.rowIteratorPtrPtr);
 
-    for (let y = 0; y < rows; y += 1) {
-      const rowNode = this.rowNodes[y];
-      rowNode.textContent = "";
-
-      if (!exports.ghostty_render_state_row_iterator_next(this.rowIteratorHandle)) {
-        continue;
+    const outPtr = this.api.readPointer(this.formatterPtrPtr);
+    const outLen = this.api.readU32(this.u32Ptr);
+    try {
+      const bytes = new Uint8Array(this.api.exports.memory.buffer, outPtr, outLen);
+      return textDecoder.decode(bytes);
+    } finally {
+      if (outPtr && outLen >= 0) {
+        this.api.exports.ghostty_free(0, outPtr, outLen);
       }
-
-      this.check(
-        exports.ghostty_render_state_row_get(
-          this.rowIteratorHandle,
-          3,
-          this.rowCellsPtrPtr,
-        ),
-      );
-      this.rowCellsHandle = readPointer(this.rowCellsPtrPtr);
-
-      for (let x = 0; x < cols; x += 1) {
-        if (!exports.ghostty_render_state_row_cells_next(this.rowCellsHandle)) {
-          break;
-        }
-
-        this.check(
-          exports.ghostty_render_state_row_cells_get(
-            this.rowCellsHandle,
-            RENDER_STATE_ROW_CELLS_DATA.RAW,
-            this.cellPtr,
-          ),
-        );
-        const cell = readU64(this.cellPtr);
-        this.check(exports.ghostty_cell_get(cell, CELL_DATA.WIDE, this.u32Ptr));
-        const wide = readEnum(this.u32Ptr);
-        if (wide === CELL_WIDE.SPACER_TAIL || wide === CELL_WIDE.SPACER_HEAD) {
-          continue;
-        }
-
-        this.check(
-          exports.ghostty_render_state_row_cells_get(
-            this.rowCellsHandle,
-            RENDER_STATE_ROW_CELLS_DATA.GRAPHEMES_LEN,
-            this.u32Ptr,
-          ),
-        );
-        const graphemeCount = readU32(this.u32Ptr);
-        const text = graphemeCount > 0 ? this.readGraphemeText(graphemeCount) : " ";
-
-        initSizedStruct(this.stylePtr, "GhosttyStyle");
-        this.check(
-          exports.ghostty_render_state_row_cells_get(
-            this.rowCellsHandle,
-            RENDER_STATE_ROW_CELLS_DATA.STYLE,
-            this.stylePtr,
-          ),
-        );
-
-        const fgColor = this.readResolvedColor(
-          exports.ghostty_render_state_row_cells_get(
-            this.rowCellsHandle,
-            RENDER_STATE_ROW_CELLS_DATA.FG_COLOR,
-            this.cellPtr,
-          ),
-          this.cellPtr,
-          defaultForeground,
-        );
-        const bgColor = this.readResolvedColor(
-          exports.ghostty_render_state_row_cells_get(
-            this.rowCellsHandle,
-            RENDER_STATE_ROW_CELLS_DATA.BG_COLOR,
-            this.cellPtr,
-          ),
-          this.cellPtr,
-          defaultBackground,
-        );
-
-        rowNode.append(this.renderCell(text, fgColor, bgColor, x === cursorX && y === cursorY));
-      }
-    }
-
-    for (let y = rows; y < this.rowNodes.length; y += 1) {
-      this.rowNodes[y].textContent = "";
     }
   }
 
