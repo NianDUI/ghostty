@@ -9,15 +9,15 @@ This is the top-level plan. Relay-side work has its own subplan in
 
 Section dashboard:
 
-| Section                   | State                                             | Owner |
-| ------------------------- | ------------------------------------------------- | ----- |
-| 1. Desktop Host (macOS)   | shippable for LAN, polish remains                 | macOS |
-| 1. Desktop Host (GTK)     | not started; trigger-gated                        | Linux |
-| 2. Core Bridge / Terminal | smoke coverage in place; threading review TODO    | Zig   |
-| 3. Relay Service          | production-shaped; see `relay-production.md`      | Relay |
-| 4. Mobile Web Client      | usable on desktop browser, mobile UX gaps         | Web   |
-| 5. Security & Storage     | redaction covered both sides, Keychain still TODO | macOS |
-| 6. Test & Validation      | relay covered, controller / Zig / browser thin    | Mixed |
+| Section                   | State                                          | Owner |
+| ------------------------- | ---------------------------------------------- | ----- |
+| 1. Desktop Host (macOS)   | shippable for LAN, polish remains              | macOS |
+| 1. Desktop Host (GTK)     | not started; trigger-gated                     | Linux |
+| 2. Core Bridge / Terminal | smoke coverage in place; threading review TODO | Zig   |
+| 3. Relay Service          | production-shaped; see `relay-production.md`   | Relay |
+| 4. Mobile Web Client      | usable on desktop browser, mobile UX gaps      | Web   |
+| 5. Security & Storage     | redaction + Keychain write covered both sides  | macOS |
+| 6. Test & Validation      | relay covered, controller / Zig / browser thin | Mixed |
 
 The single biggest blocker for "GA-shippable on macOS + LAN" is
 mobile IME / soft keyboard handling (Section 4 P0). The single
@@ -273,7 +273,7 @@ Done:
 
 #### Client-side (macOS / browser)
 
-Status: partial.
+Status: covered.
 
 Done:
 
@@ -297,11 +297,22 @@ Done:
   browser scrubber on `Bearer …` headers and the three sensitive
   query parameters. Covered by Swift Testing cases in
   `SessionSharingTests` (`tokenRedaction*`).
+- `SessionSharingConfigStore.writeKeychainToken` mirrors the user
+  token to the macOS Keychain on every `save(…)` (via
+  `SecItemUpdate` with a `SecItemAdd` fallback under
+  `kSecAttrAccessibleWhenUnlocked`). The on-disk
+  `~/.config/ghostty/sharing.conf` remains the primary store at
+  0o600; the Keychain write makes the existing read fallback in
+  `presentSettingsSheet` actually populated, so a future change
+  that hides the on-disk token only loses convenience, not the
+  token itself. `keychainTokenWriter` is injectable so tests don't
+  touch the real Keychain. Covered by `configStoreWriteKeychainToken*`
+  and `configStoreSaveMirrorsTokenToKeychain` Swift Testing cases.
 
 Remaining:
 
-- **P1** Finish the macOS Keychain write path (currently read-only
-  fallback).
+- (none — open Section 5 items have all been picked up; future
+  hardening should add explicit triggers.)
 
 ### 6. Test and Validation
 
