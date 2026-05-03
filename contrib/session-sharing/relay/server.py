@@ -165,6 +165,20 @@ def log_event(event: str, **fields: object) -> None:
 
 
 def host_requires_public_bind_ack(host: str) -> bool:
+    """Return True if binding to ``host`` exposes the relay outside a single
+    private interface and therefore requires an explicit operator ack via
+    ``--allow-public-bind`` / ``GHOSTTY_RELAY_ALLOW_PUBLIC_BIND``.
+
+    - localhost / 127.0.0.0/8 / ::1: trusted loopback, no ack needed.
+    - 0.0.0.0 and :: (wildcard): bind to every interface including any
+      public one, so an ack is always required.
+    - RFC1918 (10/8, 172.16/12, 192.168/16), CGNAT, IPv4 link-local
+      (169.254/16), IPv6 link-local (fe80::/10), and IPv6 ULA (fc00::/7)
+      bind to a single non-public interface — that's a deliberate LAN
+      deployment, not a footgun, so no ack is required.
+    - Anything else (including unparseable hostnames we can't reason
+      about) is treated as a public bind.
+    """
     normalized = host.strip().lower()
     if normalized in {"localhost"}:
         return False
@@ -172,7 +186,13 @@ def host_requires_public_bind_ack(host: str) -> bool:
         ip = ipaddress.ip_address(normalized)
     except ValueError:
         return True
-    return not ip.is_loopback
+    if ip.is_unspecified:
+        return True
+    if ip.is_loopback:
+        return False
+    if ip.is_private or ip.is_link_local:
+        return False
+    return True
 
 
 class ClientChannel:
@@ -690,7 +710,12 @@ async def ws_agent_loop(
 ) -> None:
     try:
         while True:
-            opcode, payload = await ws_read_frame(reader, max_frame_bytes=state.config.max_frame_bytes)
+            try:
+                opcode, payload = await ws_read_frame(
+                    reader, max_frame_bytes=state.config.max_frame_bytes
+                )
+            except (asyncio.IncompleteReadError, ConnectionResetError, ValueError):
+                break
             session.last_seen_at = time.time()
             if opcode == 0x8:
                 break
@@ -725,7 +750,12 @@ async def ws_client_loop(
 ) -> None:
     try:
         while True:
-            opcode, payload = await ws_read_frame(reader, max_frame_bytes=state.config.max_frame_bytes)
+            try:
+                opcode, payload = await ws_read_frame(
+                    reader, max_frame_bytes=state.config.max_frame_bytes
+                )
+            except (asyncio.IncompleteReadError, ConnectionResetError, ValueError):
+                break
             session.last_seen_at = time.time()
             if opcode == 0x8:
                 break

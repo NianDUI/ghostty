@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import http.client
+import importlib.util
 import json
 import os
 import secrets
@@ -211,6 +212,29 @@ def main() -> int:
     if not STATIC_ROOT.exists():
         print("missing built ghostty-web-client dist/, run npm run build first", file=sys.stderr)
         return 1
+
+    spec = importlib.util.spec_from_file_location("relay_server", str(SERVER))
+    relay_module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = relay_module
+    spec.loader.exec_module(relay_module)
+    for bind_host, expected_ack in [
+        ("localhost", False),
+        ("127.0.0.1", False),
+        ("::1", False),
+        ("0.0.0.0", True),
+        ("::", True),
+        ("192.168.1.5", False),
+        ("10.0.0.5", False),
+        ("172.16.0.1", False),
+        ("172.31.255.255", False),
+        ("169.254.1.5", False),
+        ("fe80::1", False),
+        ("fd00::1", False),
+        ("8.8.8.8", True),
+        ("2001:4860:4860::8888", True),
+    ]:
+        actual = relay_module.host_requires_public_bind_ack(bind_host)
+        assert actual == expected_ack, (bind_host, "expected", expected_ack, "got", actual)
 
     public_bind = subprocess.run(
         [
@@ -618,6 +642,142 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             admin_process.kill()
             admin_process.wait(timeout=5)
+
+    fuzz_port = free_port()
+    fuzz_env = os.environ.copy()
+    fuzz_env["GHOSTTY_RELAY_USER_TOKENS"] = "smoke-user-token"
+    fuzz_process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVER),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(fuzz_port),
+            "--token-ttl",
+            "30",
+            "--token-expiry-check-seconds",
+            "0",
+            "--ping-interval-seconds",
+            "0",
+            "--ping-timeout-seconds",
+            "0",
+            "--max-frame-bytes",
+            "65536",
+            "--max-sessions",
+            "8",
+            "--static-root",
+            str(STATIC_ROOT),
+        ],
+        cwd=str(ROOT),
+        env=fuzz_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        wait_for_server(fuzz_port)
+        fuzz_session_id = secrets.token_hex(8)
+        status, register = http_json(
+            fuzz_port,
+            "POST",
+            "/api/register",
+            {
+                "session_id": fuzz_session_id,
+                "name": "Fuzz Session",
+                "token": "smoke-user-token",
+            },
+        )
+        assert status == 200, status
+        fuzz_agent_token = register["agent_token"]
+
+        def open_fuzz_agent_socket() -> socket.socket:
+            sock = socket.create_connection(("127.0.0.1", fuzz_port), timeout=3.0)
+            key = base64.b64encode(os.urandom(16)).decode("ascii")
+            lines = [
+                f"GET /ws/agent?id={fuzz_session_id} HTTP/1.1",
+                "Host: 127.0.0.1",
+                "Upgrade: websocket",
+                "Connection: Upgrade",
+                f"Sec-WebSocket-Key: {key}",
+                "Sec-WebSocket-Version: 13",
+                f"Authorization: Bearer {fuzz_agent_token}",
+                "",
+                "",
+            ]
+            sock.sendall("\r\n".join(lines).encode("utf-8"))
+            response = bytearray()
+            while b"\r\n\r\n" not in response:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    sock.close()
+                    raise RuntimeError("fuzz handshake EOF")
+                response.extend(chunk)
+            head, _, _rest = bytes(response).partition(b"\r\n\r\n")
+            if b"101 Switching Protocols" not in head:
+                sock.close()
+                raise RuntimeError(f"fuzz handshake failed: {head!r}")
+            return sock
+
+        def expect_socket_closed(sock: socket.socket, timeout: float = 2.0) -> bool:
+            sock.settimeout(timeout)
+            try:
+                while True:
+                    data = sock.recv(4096)
+                    if not data:
+                        return True
+            except (socket.timeout, OSError):
+                return False
+            finally:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+        def masked(payload: bytes) -> tuple[bytes, bytes]:
+            mask = bytes(4)
+            return mask, bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+        # 1. Truncated header: announces 8 payload bytes, then half-closes.
+        sock = open_fuzz_agent_socket()
+        sock.sendall(bytes([0x82, 0x80 | 8]) + bytes(4))
+        sock.shutdown(socket.SHUT_WR)
+        assert expect_socket_closed(sock), "truncated frame did not close socket"
+        time.sleep(0.1)
+
+        # 2. Oversized length: 1 GiB exceeds --max-frame-bytes 65536.
+        sock = open_fuzz_agent_socket()
+        sock.sendall(bytes([0x82, 0x80 | 127]) + struct.pack("!Q", 1 << 30) + bytes(4))
+        assert expect_socket_closed(sock), "oversized frame did not close socket"
+        time.sleep(0.1)
+
+        # 3. Invalid UTF-8 in a text frame: server uses errors="replace" so
+        #    forwarding does not crash. We follow the bad text frame with a
+        #    clean close to verify the connection is still in good state.
+        sock = open_fuzz_agent_socket()
+        mask, masked_payload = masked(b"\xc3\x28")
+        sock.sendall(bytes([0x81, 0x80 | 2]) + mask + masked_payload)
+        sock.sendall(bytes([0x88, 0x80 | 0]) + bytes(4))
+        assert expect_socket_closed(sock), "invalid UTF-8 path did not close socket"
+        time.sleep(0.1)
+
+        # 4. Malformed close: 1-byte close payload (status code needs 2).
+        sock = open_fuzz_agent_socket()
+        mask, masked_payload = masked(b"\x03")
+        sock.sendall(bytes([0x88, 0x80 | 1]) + mask + masked_payload)
+        assert expect_socket_closed(sock), "malformed close did not close socket"
+        time.sleep(0.1)
+
+        # Sanity: the relay is still alive after every fuzz input above.
+        status, health = http_json(fuzz_port, "GET", "/healthz")
+        assert status == 200, status
+        assert health["ok"] is True
+    finally:
+        fuzz_process.terminate()
+        try:
+            fuzz_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            fuzz_process.kill()
+            fuzz_process.wait(timeout=5)
 
     spoof_port = free_port()
     spoof_env = os.environ.copy()
