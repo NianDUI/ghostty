@@ -279,11 +279,18 @@ Done:
   recovery loop that re-fetches the session list with the user token,
   so the next `client_token` is picked up automatically when the host
   re-registers. See Section 4.
+- Browser error paths run through `redactErrorMessage` /
+  `redactSensitiveText`, which scrub `Bearer …` Authorization headers
+  and `?token=` / `?client_token=` / `?agent_token=` query params
+  before they hit `console.error` or `terminalMount.textContent`.
+  Covered by `node --test` unit tests in
+  `ghostty-web-client/test/redaction.test.mjs` (run via `npm test`).
 
 Remaining:
 
-- **P0** Automated assertion that no error path on macOS or browser
-  prints a token. Today the guarantee is informal review.
+- **P0** Same automated token-redaction assertion on the macOS
+  Swift side. Browser side is now covered by unit tests; macOS
+  Sources still rely on informal review.
 - **P1** Finish the macOS Keychain write path (currently read-only
   fallback).
 
