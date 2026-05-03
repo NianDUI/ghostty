@@ -659,9 +659,7 @@ pub fn processOutput(self: *Termio, buf: []const u8) void {
 
 /// Process output from readdata but the lock is already held.
 fn processOutputLocked(self: *Termio, buf: []const u8) void {
-    if (self.output_callback.callback) |callback| {
-        callback(self.output_callback.userdata, buf.ptr, buf.len);
-    }
+    self.output_callback.invoke(buf);
 
     // Schedule a render. We can call this first because we have the lock.
     self.terminal_stream.handler.queueRender() catch unreachable;

@@ -106,3 +106,40 @@ test {
     const testing = std.testing;
     try testing.expectEqual(@as(usize, 40), @sizeOf(Message));
 }
+
+test "writeReq fits short bytes inline as write_small" {
+    const testing = std.testing;
+    const msg = try Message.writeReq(testing.allocator, @as([]const u8, "hello"));
+    defer switch (msg) {
+        .write_alloc => |v| v.alloc.free(v.data),
+        else => {},
+    };
+    try testing.expect(msg == .write_small);
+    try testing.expectEqualSlices(u8, "hello", msg.write_small.data[0..msg.write_small.len]);
+}
+
+test "writeReq round-trips empty bytes through write_small" {
+    const testing = std.testing;
+    const msg = try Message.writeReq(testing.allocator, @as([]const u8, ""));
+    try testing.expect(msg == .write_small);
+    try testing.expectEqual(@as(usize, 0), @as(usize, msg.write_small.len));
+}
+
+test "writeReq spills oversized bytes into write_alloc" {
+    const testing = std.testing;
+    const big = "x" ** 256;
+    const msg = try Message.writeReq(testing.allocator, @as([]const u8, big));
+    defer switch (msg) {
+        .write_alloc => |v| v.alloc.free(v.data),
+        else => {},
+    };
+    try testing.expect(msg == .write_alloc);
+    try testing.expectEqualSlices(u8, big, msg.write_alloc.data);
+}
+
+test "writeReq propagates allocator failure for oversized bytes" {
+    const testing = std.testing;
+    const big = "x" ** 256;
+    const result = Message.writeReq(testing.failing_allocator, @as([]const u8, big));
+    try testing.expectError(error.OutOfMemory, result);
+}
