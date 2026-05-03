@@ -2,6 +2,7 @@ import { FitAddon, init, Terminal } from "ghostty-web";
 
 const DEFAULT_TITLE = "Ghostty Session Sharing";
 const SESSION_QUERY_KEY = "session";
+const SESSION_POLL_INTERVAL_MS = 15_000;
 
 const shell = document.querySelector("#shell");
 const launcherView = document.querySelector("#launcherView");
@@ -33,6 +34,7 @@ let pendingCtrlModifier = false;
 let pendingAltModifier = false;
 let isMobileComposing = false;
 let mobileFocusTimer = null;
+let sessionPollTimer = null;
 
 backendBaseInput.value = localStorage.getItem("ghostty-sharing-backend-base") ?? location.origin;
 tokenInput.value = localStorage.getItem("ghostty-sharing-token") ?? "";
@@ -41,6 +43,7 @@ saveTokenButton.addEventListener("click", async () => {
   localStorage.setItem("ghostty-sharing-backend-base", backendBaseInput.value.trim());
   localStorage.setItem("ghostty-sharing-token", tokenInput.value.trim());
   await refreshSessions();
+  scheduleSessionRefresh();
 });
 
 function resolvedBackendBase() {
@@ -135,17 +138,39 @@ async function refreshSessions() {
       sessionList.append(renderSession(session));
     }
 
+    if (activeSessionId) {
+      const updatedActiveSession = sessions.find((session) => session.id === activeSessionId);
+      if (updatedActiveSession) {
+        activeSession = updatedActiveSession;
+      }
+    }
+
     const requestedSessionID = currentRequestedSessionID();
     if (requestedSessionID && !activeSessionId) {
       const requestedSession = sessions.find((session) => session.id === requestedSessionID);
       if (requestedSession?.online) {
         await connectToSession(requestedSession, { updateHistory: false });
+      } else if (requestedSession) {
+        sessionMeta.textContent = "目标会话当前离线";
+      } else {
+        sessionMeta.textContent = "目标会话不存在或已过期";
       }
     }
   } catch (error) {
     console.error(error);
     sessionMeta.textContent = "请求失败";
   }
+}
+
+function scheduleSessionRefresh() {
+  if (sessionPollTimer !== null) {
+    window.clearTimeout(sessionPollTimer);
+  }
+  sessionPollTimer = window.setTimeout(async () => {
+    sessionPollTimer = null;
+    await refreshSessions();
+    scheduleSessionRefresh();
+  }, SESSION_POLL_INTERVAL_MS);
 }
 
 function renderSession(session) {

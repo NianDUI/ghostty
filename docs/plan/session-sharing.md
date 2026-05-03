@@ -103,6 +103,7 @@ Completed:
 - Added terminal resize reporting to the relay/agent
 - Added mobile hidden-input fallback and focus recovery
 - Added session list display for recent activity time
+- Added automatic session list refresh and clearer recovery messaging for direct session links
 
 Remaining:
 
