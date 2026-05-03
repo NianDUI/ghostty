@@ -330,6 +330,16 @@ struct SessionSharingTests {
     }
 
     @Test
+    func inboundFrameActionForClientDisconnectRestoresOriginalSize() {
+        let action = SessionSharingInboundFrameAction.parse(
+            text: #"{"type":"client_disconnect"}"#,
+            sessionID: "session-123"
+        )
+
+        #expect(action == .restoreOriginalSize)
+    }
+
+    @Test
     func inboundFrameActionForPongIsIgnored() {
         let action = SessionSharingInboundFrameAction.parse(
             text: #"{"type":"pong","id":"session-123"}"#,

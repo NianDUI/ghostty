@@ -412,6 +412,15 @@ extension Ghostty {
 
         fileprivate func applySharedResize(cols: Int, rows: Int) {
             guard let surface, cols > 0, rows > 0 else { return }
+            sessionSharing.captureOriginalSharedResizeIfNeeded(cols: Int(ghostty_surface_size(surface).columns), rows: Int(ghostty_surface_size(surface).rows))
+            let size = ghostty_surface_size(surface)
+            let width = UInt32(cols) * max(size.cell_width_px, 1)
+            let height = UInt32(rows) * max(size.cell_height_px, 1)
+            setSurfaceSize(width: width, height: height)
+        }
+
+        fileprivate func restoreSharedResize(cols: Int, rows: Int) {
+            guard let surface, cols > 0, rows > 0 else { return }
             let size = ghostty_surface_size(surface)
             let width = UInt32(cols) * max(size.cell_width_px, 1)
             let height = UInt32(rows) * max(size.cell_height_px, 1)
@@ -1794,6 +1803,11 @@ private func sessionSharingOutputCallback(
 }
 
 private final class SessionSharingController {
+    private struct SharedResizeCheckpoint: Equatable {
+        let cols: Int
+        let rows: Int
+    }
+
     private weak var surfaceView: Ghostty.SurfaceView?
     private let session = URLSession(configuration: .default)
     private let outgoingQueue = DispatchQueue(label: "com.mitchellh.ghostty.session-sharing.outgoing")
@@ -1809,6 +1823,7 @@ private final class SessionSharingController {
     private var reconnectPolicy = SessionSharingReconnectPolicy()
     private var isStopping = false
     private var didPersistConfig = false
+    private var originalSharedResizeCheckpoint: SharedResizeCheckpoint?
 
     init(surfaceView: Ghostty.SurfaceView) {
         self.surfaceView = surfaceView
@@ -1838,8 +1853,22 @@ private final class SessionSharingController {
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
         reconnectPolicy.reset()
+        restoreOriginalSharedResizeIfNeeded()
         isStopping = false
         setState(SessionSharingLifecycle.stateAfterStop(userInitiated: userInitiated))
+    }
+
+    func captureOriginalSharedResizeIfNeeded(cols: Int, rows: Int) {
+        guard cols > 0, rows > 0, originalSharedResizeCheckpoint == nil else { return }
+        originalSharedResizeCheckpoint = .init(cols: cols, rows: rows)
+    }
+
+    private func restoreOriginalSharedResizeIfNeeded() {
+        guard let checkpoint = originalSharedResizeCheckpoint else { return }
+        originalSharedResizeCheckpoint = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.surfaceView?.restoreSharedResize(cols: checkpoint.cols, rows: checkpoint.rows)
+        }
     }
 
     func enqueueOutgoing(_ data: Data) {
@@ -2039,6 +2068,10 @@ private final class SessionSharingController {
             }
             return true
 
+        case .restoreOriginalSize:
+            restoreOriginalSharedResizeIfNeeded()
+            return true
+
         case .sendPong(let pong):
             guard let webSocket else { return true }
             guard let pongData = try? JSONEncoder().encode(pong),
@@ -2140,6 +2173,7 @@ enum SessionSharingInboundFrameAction: Equatable {
     case ignore
     case sendPong(SessionSharingControlFrame)
     case resize(cols: Int, rows: Int)
+    case restoreOriginalSize
 
     static func parse(text: String, sessionID: String) -> Self {
         guard let data = text.data(using: .utf8),
@@ -2155,6 +2189,8 @@ enum SessionSharingInboundFrameAction: Equatable {
                 return .resize(cols: cols, rows: rows)
             }
             return .ignore
+        case "client_disconnect":
+            return .restoreOriginalSize
         case "hello", "pong":
             return .ignore
         default:

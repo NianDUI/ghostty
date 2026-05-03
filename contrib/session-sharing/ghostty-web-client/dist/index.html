@@ -30,6 +30,11 @@
         color: var(--line);
       }
 
+      html, body {
+        width: 100%;
+        height: 100%;
+      }
+
       body.terminal-mode {
         background: #171412;
         color: #f5f0e8;
@@ -45,6 +50,7 @@
       .shell.terminal-mode {
         max-width: none;
         min-height: 100vh;
+        width: 100vw;
         padding: 0;
       }
 
@@ -183,6 +189,7 @@
 
       .terminal-page {
         min-height: var(--mobile-viewport-height);
+        width: 100vw;
       }
 
       .terminal-page .terminal-wrap {
@@ -190,6 +197,7 @@
         flex-direction: column;
         min-height: var(--mobile-viewport-height);
         height: var(--mobile-viewport-height);
+        width: 100vw;
         padding: 0;
         background: #171412;
         border: 0;
@@ -201,6 +209,7 @@
         flex: 1;
         min-height: 0;
         height: 100%;
+        width: 100%;
         padding: 0;
         border: 0;
         border-radius: 0;
@@ -210,6 +219,7 @@
       .terminal-page .terminal-host > #terminal {
         min-height: var(--mobile-viewport-height);
         height: 100%;
+        width: 100%;
       }
 
       .terminal-status {
@@ -351,7 +361,7 @@
         }
       }
     </style>
-    <script type="module" crossorigin src="/assets/index-Dcx4n9Cm.js"></script>
+    <script type="module" crossorigin src="/assets/index-KUEXLsxg.js"></script>
   </head>
   <body>
     <div id="shell" class="shell">

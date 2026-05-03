@@ -34,7 +34,7 @@ let pendingAltModifier = false;
 let isMobileComposing = false;
 let mobileFocusTimer = null;
 
-backendBaseInput.value = localStorage.getItem("ghostty-sharing-backend-base") ?? "";
+backendBaseInput.value = localStorage.getItem("ghostty-sharing-backend-base") ?? location.origin;
 tokenInput.value = localStorage.getItem("ghostty-sharing-token") ?? "";
 
 saveTokenButton.addEventListener("click", async () => {
@@ -149,6 +149,7 @@ async function refreshSessions() {
 }
 
 function renderSession(session) {
+  const activityText = formatLastSeen(session.last_seen_at);
   const item = document.createElement("button");
   item.type = "button";
   item.className = [
@@ -159,6 +160,7 @@ function renderSession(session) {
   item.innerHTML = `
     <div><strong>${escapeHtml(session.name)}</strong></div>
     <div style="margin-top: 6px; font-size: 12px; color: #6d655c;">${escapeHtml(session.id)}</div>
+    <div style="margin-top: 4px; font-size: 12px; color: #6d655c;">最近活动：${escapeHtml(activityText)}</div>
     <div class="status ${session.online ? "online" : "offline"}">${session.online ? "在线" : "离线"}</div>
   `;
   if (session.online) {
@@ -428,6 +430,24 @@ function escapeHtml(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
+}
+
+function formatLastSeen(value) {
+  if (!value) return "未知";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "未知";
+
+  const diff = Date.now() - date.getTime();
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.max(1, Math.floor(diff / 60_000))} 分钟前`;
+  if (diff < 86_400_000) return `${Math.max(1, Math.floor(diff / 3_600_000))} 小时前`;
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function focusTerminal() {

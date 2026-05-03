@@ -359,6 +359,11 @@ async def ws_client_loop(
                 await ws_send_binary(agent_writer, payload)
     finally:
         session.clients.discard(writer)
+        if not session.clients and session.agent_writer:
+            try:
+                await ws_send_text(session.agent_writer, json.dumps({"type": "client_disconnect"}))
+            except Exception:
+                pass
         await ws_close(writer)
 
 
