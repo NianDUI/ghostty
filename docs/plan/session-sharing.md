@@ -71,7 +71,7 @@ tweaks:
 8. Browser reconnects after a network blip; sees the buffered backlog — ✅ works (relay backlog replay verified by smoke)
 9. macOS host network blips; both ends recover within 10 s — ⚠️ relay-side MTTR ≤ 1 ms measured; client-side backoff still has rough edges in the macOS sheet UI
 10. Mobile user opens the same URL on iOS Safari, types via the soft keyboard, sees output — ❌ IME path is broken / unverified
-11. macOS host token expires mid-connection; browser is told to refresh — ⚠️ relay sends WS 4401 close; browser handles it but does not yet refresh the underlying user token automatically
+11. macOS host token expires mid-connection; browser is told to refresh — ⚠️ relay sends WS 4401 close, browser now classifies it, switches to a steady 2-10 s polling cadence, and shows a "session expired, waiting for host" status; the missing half is the macOS host auto-re-registering (Section 1 macOS P0)
 
 Steps 9-11 are the gap to "GA-shippable on macOS + LAN."
 
@@ -225,15 +225,19 @@ Done:
 - Session list display of recent activity time
 - Automatic session list refresh + clearer recovery messaging for
   direct session links
+- WS close-code classification: 4401 (token_expired) switches the
+  reconnect loop to a steady 2-10 s polling cadence with a "session
+  expired, waiting for host" status; 4408 (timeout / slow consumer)
+  shows "heartbeat lost, reconnecting" and keeps the existing
+  exponential backoff. Each reconnect re-fetches `/api/sessions`
+  with the user token, so a fresh `client_token` is picked up
+  automatically once the host re-registers.
 
 Remaining:
 
 - **P0** Mobile soft keyboard / IME path. iOS Safari and Android
   Chrome both need verification; today the hidden-input fallback is
   best-effort and breaks on dead-key / CJK input.
-- **P0** Token refresh / re-auth flow when the WS closes with 4401
-  (relay-side already implemented; browser needs to re-fetch a token
-  and reopen).
 - **P1** Reconnect UX validation on a real mobile device (page
   refresh, screen lock, switching tabs).
 - **P1** Visual / performance work on larger scroll regions.
@@ -267,12 +271,16 @@ Done:
 - Local config stored with restricted file permissions
 - Macros / paths avoid logging token values in the implemented code
   paths
+- Browser distinguishes `4401` (token_expired) from `4408` (timeout /
+  slow consumer) and from generic close: 4401 enters a slow-poll
+  recovery loop that re-fetches the session list with the user token,
+  so the next `client_token` is picked up automatically when the host
+  re-registers. See Section 4.
 
 Remaining:
 
 - **P0** Automated assertion that no error path on macOS or browser
   prints a token. Today the guarantee is informal review.
-- **P0** Browser-side token refresh / expiry handling end-to-end.
 - **P1** Finish the macOS Keychain write path (currently read-only
   fallback).
 
@@ -355,17 +363,22 @@ Centralized so deferred items have explicit conditions, not "later":
 
 In priority order:
 
-1. **Section 4 P0 + Section 5 P0 + Section 6 macOS P0**: mobile IME
-   path, browser token refresh on 4401, and `SessionSharingController`
-   fake-driven tests. These three together close the macOS + LAN GA
-   path. Pick whichever the current owner is closest to first.
-2. **Section 2 P0**: Zig raw-byte bridge smoke. Cheap, removes a
+1. **Section 4 P0**: mobile IME / soft keyboard. Browser-side
+   close-code handling already landed; the remaining macOS + LAN
+   GA blocker on the browser side is the IME path on iOS Safari
+   and Android Chrome.
+2. **Section 6 macOS P0**: `SessionSharingController` fake-driven
+   tests. Keeps the desktop side regression-safe as the host
+   token-refresh work below moves through.
+3. **Section 1 macOS P0**: token refresh / re-register on the host
+   side when the relay closes the agent's WS with 4401. The browser
+   side now polls patiently for the host to come back; the host has
+   to actually come back for the loop to close.
+4. **Section 2 P0**: Zig raw-byte bridge smoke. Cheap, removes a
    silent-regression risk for every consumer.
-3. **Section 1 P0 macOS**: token refresh / re-register on 4401
-   client-side. Requires Section 5 client-side P0 first.
-4. **Section 6 browser P0**: only after Section 4 P0 (mobile IME)
+5. **Section 6 browser P0**: only after Section 4 P0 (mobile IME)
    stabilizes; otherwise the smoke encodes broken behavior.
-5. GTK and persistence remain trigger-gated; do not start them ahead
+6. GTK and persistence remain trigger-gated; do not start them ahead
    of P0 work.
 
 The previous "decide whether the relay should be rewritten in Zig"
