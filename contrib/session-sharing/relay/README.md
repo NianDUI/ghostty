@@ -20,6 +20,13 @@ Notes:
 - If `zig-out/bin/ghostty-vt.wasm` exists, the relay also serves it at `/ghostty-vt.wasm` for the browser client.
 - The relay now binds to `0.0.0.0` by default so phones on the same LAN can connect without passing `--host`.
 - New browser clients receive a replay of the recent agent output backlog so the terminal is not blank on first connect.
+- When the last browser client disconnects, the relay sends a `client_disconnect` control frame back to the agent so the desktop side can restore its original terminal size.
+
+Smoke test:
+
+```bash
+python3 contrib/session-sharing/relay/smoke_test.py
+```
 
 ## REST
 

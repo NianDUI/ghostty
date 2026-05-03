@@ -79,6 +79,7 @@ Completed:
 - Implemented `/ws/client`
 - Added in-memory session table and offline cleanup
 - Added static serving for the browser web client
+- Added client-disconnect signaling so the desktop agent can restore its original size
 
 Remaining:
 
@@ -101,6 +102,7 @@ Completed:
 - Added browser-side reconnect loop for dropped WebSocket sessions
 - Added terminal resize reporting to the relay/agent
 - Added mobile hidden-input fallback and focus recovery
+- Added session list display for recent activity time
 
 Remaining:
 
@@ -140,6 +142,7 @@ Completed:
 - Verified browser JS syntax
 - Verified WASM terminal/render ABI with Node-based smoke tests
 - Verified relay static serving of `ghostty-vt.wasm`
+- Added relay smoke coverage for register/session listing/WebSocket forwarding
 - Added macOS unit tests for sharing config persistence and file permission handling
 - Added macOS unit tests for reconnect backoff policy and reset behavior
 - Added macOS unit tests for sharing state presentation and menu presentation logic
@@ -153,7 +156,6 @@ Remaining:
 
 - Add higher-level tests around `SessionSharingController` scheduling and dependency wiring
 - Add Zig tests for the raw byte bridge hooks
-- Add integration tests for relay registration and WebSocket forwarding
 - Add browser smoke test automation
 
 ## Recommended Next Steps
