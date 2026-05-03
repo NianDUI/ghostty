@@ -927,10 +927,34 @@ struct SessionSharingTests {
     }
 
     @Test
-    func registerResponseParserRejectsNonSuccessStatus() throws {
+    func registerResponseParserMaps401ToUserTokenRejected() throws {
         let response = HTTPURLResponse(
             url: try #require(URL(string: "https://relay.example.com/api/register")),
             statusCode: 401,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        let data = try JSONEncoder().encode(SessionSharingRegisterResponse(
+            sessionID: "session-123",
+            agentToken: "agent-token",
+            clientToken: nil,
+            expiresAt: nil
+        ))
+
+        #expect(throws: SessionSharingError.userTokenRejected) {
+            _ = try SessionSharingResponseParser.parseRegisterResponse(
+                data: data,
+                response: response,
+                expectedSessionID: "session-123"
+            )
+        }
+    }
+
+    @Test
+    func registerResponseParserRejectsOtherNonSuccessStatus() throws {
+        let response = HTTPURLResponse(
+            url: try #require(URL(string: "https://relay.example.com/api/register")),
+            statusCode: 503,
             httpVersion: nil,
             headerFields: nil
         )!
@@ -1033,6 +1057,58 @@ struct SessionSharingTests {
             SessionSharingTokenRedaction.redact(error: LeakingError())
                 == "fetch failed: ?token=[REDACTED]&id=1"
         )
+    }
+
+    @Test
+    func errorPresentationMapsSharingErrorsToActionableHints() {
+        #expect(
+            SessionSharingErrorPresentation.actionableMessage(for: SessionSharingError.invalidRelayAddress)
+                .contains("中转服务器地址无效")
+        )
+        #expect(
+            SessionSharingErrorPresentation.actionableMessage(for: SessionSharingError.invalidResponse)
+                .contains("中转服务器返回了无效响应")
+        )
+        #expect(
+            SessionSharingErrorPresentation.actionableMessage(for: SessionSharingError.insecureRelayAddress)
+                .contains("https:// 或 wss://")
+        )
+        let tokenRejected = SessionSharingErrorPresentation.actionableMessage(
+            for: SessionSharingError.userTokenRejected
+        )
+        #expect(tokenRejected.contains("用户令牌被中转服务器拒绝"))
+        #expect(tokenRejected.contains("GHOSTTY_RELAY_USER_TOKENS"))
+    }
+
+    @Test
+    func errorPresentationMapsURLErrorsToActionableHints() {
+        let scenarios: [(URLError.Code, String)] = [
+            (.cannotFindHost, "找不到中转服务器主机"),
+            (.cannotConnectToHost, "无法连接到中转服务器"),
+            (.timedOut, "连接中转服务器超时"),
+            (.notConnectedToInternet, "当前没有可用网络"),
+            (.serverCertificateUntrusted, "TLS 证书校验失败"),
+        ]
+        for (code, expectedFragment) in scenarios {
+            let message = SessionSharingErrorPresentation.actionableMessage(for: URLError(code))
+            #expect(
+                message.contains(expectedFragment),
+                "URLError(\(code)) should mention '\(expectedFragment)', got: \(message)"
+            )
+        }
+    }
+
+    @Test
+    func errorPresentationFallsBackToRedactedDescriptionForUnknownErrors() {
+        struct UnknownError: LocalizedError {
+            var errorDescription: String? {
+                "boom while authenticating with Bearer s3cret-token"
+            }
+        }
+        let message = SessionSharingErrorPresentation.actionableMessage(for: UnknownError())
+        #expect(message.hasPrefix("启动共享失败："))
+        #expect(message.contains("Bearer [REDACTED]"))
+        #expect(!message.contains("s3cret-token"))
     }
 }
 

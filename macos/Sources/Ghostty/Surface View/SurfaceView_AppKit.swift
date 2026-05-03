@@ -2144,7 +2144,7 @@ private final class SessionSharingController {
         )
         if plan.shouldPresentError {
             presentError(
-                "启动共享失败：\(SessionSharingTokenRedaction.redact(error: error))",
+                SessionSharingErrorPresentation.actionableMessage(for: error),
                 on: surfaceView?.window
             )
         }
@@ -2441,7 +2441,17 @@ enum SessionSharingResponseParser {
         response: URLResponse,
         expectedSessionID: String
     ) throws -> SessionSharingRegisterResponse {
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        guard let http = response as? HTTPURLResponse else {
+            throw SessionSharingError.invalidResponse
+        }
+        if http.statusCode == 401 {
+            // The relay rejected the user token. Surface this as a
+            // distinct error so the sheet can tell the user to fix
+            // their token instead of pointing them at "invalid
+            // response", which sounds like a server bug.
+            throw SessionSharingError.userTokenRejected
+        }
+        guard (200..<300).contains(http.statusCode) else {
             throw SessionSharingError.invalidResponse
         }
 
@@ -3003,6 +3013,7 @@ enum SessionSharingError: LocalizedError {
     case invalidRelayAddress
     case invalidResponse
     case insecureRelayAddress
+    case userTokenRejected
 
     var errorDescription: String? {
         switch self {
@@ -3012,6 +3023,67 @@ enum SessionSharingError: LocalizedError {
             return "中转服务器返回了无效响应"
         case .insecureRelayAddress:
             return "远程中转服务器必须使用 https:// 或 wss://；仅 localhost 或局域网开发地址允许使用 http://"
+        case .userTokenRejected:
+            return "用户令牌被中转服务器拒绝"
+        }
+    }
+}
+
+/// Maps an `Error` from the start-sharing pipeline to a single
+/// user-facing message. The previous code interpolated
+/// `error.localizedDescription` directly, which produced messages like
+/// "启动共享失败：A server with the specified hostname could not be
+/// found." that don't tell the user what to do next. This collapses
+/// the common cases (bad relay config, network unreachable, TLS,
+/// HTTP 401, timeouts) to actionable instructions while still
+/// redacting tokens on the unknown-error fallback.
+enum SessionSharingErrorPresentation {
+    static func actionableMessage(for error: Error) -> String {
+        if let sharingError = error as? SessionSharingError {
+            return sharingError.actionableMessage
+        }
+        if let urlError = error as? URLError {
+            return URLErrorPresentation.message(for: urlError)
+        }
+        return "启动共享失败：\(SessionSharingTokenRedaction.redact(error: error))"
+    }
+}
+
+private extension SessionSharingError {
+    var actionableMessage: String {
+        switch self {
+        case .invalidRelayAddress:
+            return "中转服务器地址无效，请检查后重新启动共享。"
+        case .invalidResponse:
+            return "中转服务器返回了无效响应，请确认服务器版本是否匹配。"
+        case .insecureRelayAddress:
+            return "远程中转服务器必须使用 https:// 或 wss://；仅 localhost 或局域网开发地址允许使用 http://。"
+        case .userTokenRejected:
+            return "用户令牌被中转服务器拒绝，请确认令牌已加入服务器允许列表（GHOSTTY_RELAY_USER_TOKENS）。"
+        }
+    }
+}
+
+private enum URLErrorPresentation {
+    static func message(for error: URLError) -> String {
+        switch error.code {
+        case .cannotFindHost, .dnsLookupFailed:
+            return "找不到中转服务器主机，请检查地址或 DNS 配置。"
+        case .cannotConnectToHost, .networkConnectionLost:
+            return "无法连接到中转服务器，请确认服务已启动并允许该端口。"
+        case .timedOut:
+            return "连接中转服务器超时，请检查网络后重试。"
+        case .notConnectedToInternet:
+            return "当前没有可用网络，请重新连接后再启动共享。"
+        case .secureConnectionFailed,
+             .serverCertificateUntrusted,
+             .serverCertificateHasUnknownRoot,
+             .serverCertificateNotYetValid,
+             .serverCertificateHasBadDate,
+             .clientCertificateRejected:
+            return "中转服务器 TLS 证书校验失败，请确认证书是否已被信任。"
+        default:
+            return "启动共享失败：\(SessionSharingTokenRedaction.redact(error: error))"
         }
     }
 }
