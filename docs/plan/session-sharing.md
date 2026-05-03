@@ -69,7 +69,7 @@ tweaks:
 6. macOS user types output; browser user sees it streamed — ✅ works
 7. Browser user disconnects; macOS user sees "client disconnected" — ✅ works
 8. Browser reconnects after a network blip; sees the buffered backlog — ✅ works (relay backlog replay verified by smoke)
-9. macOS host network blips; both ends recover within 10 s — ⚠️ relay-side MTTR ≤ 1 ms measured; client-side backoff still has rough edges in the macOS sheet UI
+9. macOS host network blips; both ends recover within 10 s — ✅ relay-side MTTR ≤ 1 ms measured; sharing badge now surfaces the live reconnect countdown ("重连中（${seconds}s 后）") so the user sees the backoff progress instead of a static "重连中..."
 10. Mobile user opens the same URL on iOS Safari, types via the soft keyboard, sees output — ❌ IME path is broken / unverified
 11. macOS host token expires mid-connection; browser is told to refresh — ✅ relay sends WS 4401 close. Browser slow-polls `/api/sessions` with a "session expired, waiting for host" status. macOS host recognizes the 4401 close code, resets the reconnect backoff, and immediately re-runs `registerAndConnect` to fetch a fresh agent token + expires_at without user action.
 
@@ -149,13 +149,21 @@ Done:
   offline / TLS), and falls back to a token-redacted description
   for everything else. Covered by the `errorPresentation*` and
   `registerResponseParser*` Swift Testing cases.
+- Reconnect-state UX surfaces the scheduled backoff:
+  `SharingState.reconnecting` now carries the upcoming delay
+  (`case reconnecting(after: TimeInterval)`); the badge text reads
+  "重连中（${seconds}s 后）" while the controller is waiting and
+  falls back to "重连中..." for the relay-driven 4401 fast-path
+  (delay 0). `scheduleReconnect` threads
+  `reconnectCoordinator.prepareToSchedule(...).delay` into
+  `setState`, so the badge follows the actual scheduled wait
+  instead of staying at a static "重连中...". Covered by the
+  expanded `sharingStateDerivedPresentation` Swift Testing case.
 
 Remaining:
 
 - **P1** Move the sharing shortcut into the standard configurable
   shortcut system instead of a bespoke binding.
-- **P1** Reconnect-state UX polish per E2E step 9 (sheet UI lags the
-  underlying state).
 
 #### GTK / Linux
 
