@@ -2152,8 +2152,14 @@ private final class SessionSharingController {
     }
 
     private func handleDisconnect(error: Error) {
+        // Read the close code before nil-ing the task. Application close
+        // frames (e.g. relay's 4401 token_expired) land here in
+        // URLSessionWebSocketTask.closeCode; raw network failures keep
+        // the default `.invalid` (raw value 0).
+        let closeCode = webSocket?.closeCode.rawValue ?? 0
         webSocket = nil
         let action = SessionSharingControllerRecovery.disconnectAction(
+            closeCode: closeCode,
             shouldReconnect: shouldReconnect,
             isStopping: isStopping,
             reconnectPolicy: &reconnectPolicy
@@ -2602,6 +2608,22 @@ struct SessionSharingReconnectCoordinator {
     }
 }
 
+/// Private WebSocket close codes that the relay uses to tell the host
+/// something the host can act on. Mirrors the relay's
+/// `ws_close_with_code` constants in
+/// `contrib/session-sharing/relay/server.py` and the matching browser
+/// handling in `ghostty-web-client/src/main.js`.
+enum SessionSharingCloseCode {
+    /// `watch_token_expiry` fires when `session.expires_at` lapses.
+    /// The host has to re-register to get a fresh agent token; there is
+    /// no point ramping an exponential backoff for it.
+    static let tokenExpired = 4401
+
+    /// Heartbeat timeout or slow-consumer drop. Transient, normal
+    /// reconnect with backoff is the right behavior.
+    static let timeoutOrSlow = 4408
+}
+
 enum SessionSharingControllerRecovery {
     static func connectFailurePlan(
         initialAttempt: Bool,
@@ -2612,6 +2634,7 @@ enum SessionSharingControllerRecovery {
         .init(
             shouldPresentError: SessionSharingLifecycle.shouldPresentConnectFailure(initialAttempt: initialAttempt),
             action: disconnectAction(
+                closeCode: 0,
                 shouldReconnect: shouldReconnect,
                 isStopping: isStopping,
                 reconnectPolicy: &reconnectPolicy
@@ -2620,6 +2643,7 @@ enum SessionSharingControllerRecovery {
     }
 
     static func disconnectAction(
+        closeCode: Int,
         shouldReconnect: Bool,
         isStopping: Bool,
         reconnectPolicy: inout SessionSharingReconnectPolicy
@@ -2631,6 +2655,16 @@ enum SessionSharingControllerRecovery {
         case .idle:
             return .idle
         case .reconnect:
+            // 4401 = the relay's session token expired. The host has to
+            // re-register before any reconnect can succeed and the relay
+            // has already told us the previous backoff history is
+            // irrelevant for this case, so reset the backoff and try
+            // immediately. Other codes (heartbeat / slow consumer / raw
+            // network errors) keep the existing exponential ramp.
+            if closeCode == SessionSharingCloseCode.tokenExpired {
+                reconnectPolicy.reset()
+                return .reconnect(after: 0)
+            }
             return .reconnect(after: reconnectPolicy.nextDelay())
         }
     }

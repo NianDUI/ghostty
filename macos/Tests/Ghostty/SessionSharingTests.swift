@@ -341,16 +341,19 @@ struct SessionSharingTests {
     func controllerRecoveryDisconnectActionAdvancesBackoffOnlyWhenReconnects() {
         var policy = SessionSharingReconnectPolicy()
         let first = SessionSharingControllerRecovery.disconnectAction(
+            closeCode: 0,
             shouldReconnect: true,
             isStopping: false,
             reconnectPolicy: &policy
         )
         let second = SessionSharingControllerRecovery.disconnectAction(
+            closeCode: 0,
             shouldReconnect: true,
             isStopping: false,
             reconnectPolicy: &policy
         )
         let stopped = SessionSharingControllerRecovery.disconnectAction(
+            closeCode: 0,
             shouldReconnect: true,
             isStopping: true,
             reconnectPolicy: &policy
@@ -360,6 +363,78 @@ struct SessionSharingTests {
         #expect(second == .reconnect(after: 2))
         #expect(stopped == .idle)
         #expect(policy.attempt == 2)
+    }
+
+    @Test
+    func controllerRecoveryDisconnectAction4401TokenExpiredResetsBackoff() {
+        var policy = SessionSharingReconnectPolicy()
+        // Build up some backoff history first.
+        _ = SessionSharingControllerRecovery.disconnectAction(
+            closeCode: 0,
+            shouldReconnect: true,
+            isStopping: false,
+            reconnectPolicy: &policy
+        )
+        _ = SessionSharingControllerRecovery.disconnectAction(
+            closeCode: 0,
+            shouldReconnect: true,
+            isStopping: false,
+            reconnectPolicy: &policy
+        )
+        #expect(policy.attempt == 2)
+
+        // Now a token-expired close: skip the backoff entirely and clear
+        // the prior attempt history, since the relay told us those
+        // attempts were against an expired session that's now gone.
+        let action = SessionSharingControllerRecovery.disconnectAction(
+            closeCode: SessionSharingCloseCode.tokenExpired,
+            shouldReconnect: true,
+            isStopping: false,
+            reconnectPolicy: &policy
+        )
+
+        #expect(action == .reconnect(after: 0))
+        #expect(policy.attempt == 0)
+    }
+
+    @Test
+    func controllerRecoveryDisconnectAction4408TimeoutKeepsBackoff() {
+        // The heartbeat-timeout / slow-consumer code is a transient
+        // signal; reconnect with the normal exponential backoff so a
+        // flaky network doesn't get an immediate retry storm.
+        var policy = SessionSharingReconnectPolicy()
+        _ = SessionSharingControllerRecovery.disconnectAction(
+            closeCode: 0,
+            shouldReconnect: true,
+            isStopping: false,
+            reconnectPolicy: &policy
+        )
+        let action = SessionSharingControllerRecovery.disconnectAction(
+            closeCode: SessionSharingCloseCode.timeoutOrSlow,
+            shouldReconnect: true,
+            isStopping: false,
+            reconnectPolicy: &policy
+        )
+
+        #expect(action == .reconnect(after: 2))
+        #expect(policy.attempt == 2)
+    }
+
+    @Test
+    func controllerRecovery4401IsIgnoredWhenReconnectsDisabled() {
+        // shouldReconnect=false means the user asked us to stop. Even a
+        // token_expired close shouldn't surprise them with a fresh
+        // connection attempt.
+        var policy = SessionSharingReconnectPolicy()
+        let action = SessionSharingControllerRecovery.disconnectAction(
+            closeCode: SessionSharingCloseCode.tokenExpired,
+            shouldReconnect: false,
+            isStopping: false,
+            reconnectPolicy: &policy
+        )
+
+        #expect(action == .idle)
+        #expect(policy.attempt == 0)
     }
 
     @Test
