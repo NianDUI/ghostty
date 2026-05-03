@@ -1,0 +1,22 @@
+[Unit]
+Description=Ghostty Session Sharing Relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ghostty-relay
+Group=ghostty-relay
+WorkingDirectory=/opt/ghostty-session-sharing
+EnvironmentFile=/etc/ghostty-relay.env
+ExecStart=/usr/bin/python3 /opt/ghostty-session-sharing/contrib/session-sharing/relay/server.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ghostty-relay
+
+[Install]
+WantedBy=multi-user.target

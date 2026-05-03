@@ -6,9 +6,12 @@ import asyncio
 import base64
 import dataclasses
 import hashlib
+import ipaddress
 import json
+import os
 import pathlib
 import secrets
+import signal
 import struct
 import time
 import urllib.parse
@@ -18,6 +21,101 @@ from typing import Optional
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 SESSION_BACKLOG_LIMIT = 256 * 1024
 SESSION_BACKLOG_FRAME_LIMIT = 512
+DEFAULT_MAX_BODY_BYTES = 64 * 1024
+DEFAULT_MAX_SESSIONS = 4096
+DEFAULT_MAX_CLIENTS_PER_SESSION = 8
+DEFAULT_MAX_FRAME_BYTES = 256 * 1024
+DEFAULT_RATE_LIMIT_REQUESTS = 120
+DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60.0
+
+
+@dataclasses.dataclass(frozen=True)
+class RelayConfig:
+    host: str
+    port: int
+    offline_ttl: float
+    token_ttl: float
+    allowed_user_tokens: frozenset[str]
+    allow_user_token_client_access: bool
+    static_root: pathlib.Path
+    max_body_bytes: int
+    max_sessions: int
+    max_clients_per_session: int
+    max_frame_bytes: int
+    rate_limit_requests: int
+    rate_limit_window_seconds: float
+
+
+@dataclasses.dataclass
+class RateLimitBucket:
+    window_started_at: float
+    count: int
+
+
+def env_str(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return int(value)
+
+
+def env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return float(value)
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def load_allowed_user_tokens() -> frozenset[str]:
+    configured: set[str] = set()
+
+    inline = os.environ.get("GHOSTTY_RELAY_USER_TOKENS", "")
+    if inline.strip():
+        configured.update(
+            token.strip()
+            for token in inline.split(",")
+            if token.strip()
+        )
+
+    token_file = os.environ.get("GHOSTTY_RELAY_USER_TOKENS_FILE", "").strip()
+    if token_file:
+        for line in pathlib.Path(token_file).read_text(encoding="utf-8").splitlines():
+            token = line.strip()
+            if token and not token.startswith("#"):
+                configured.add(token)
+
+    return frozenset(configured)
+
+
+def log_event(event: str, **fields: object) -> None:
+    payload = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "event": event,
+    }
+    payload.update(fields)
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
+def host_requires_public_bind_ack(host: str) -> bool:
+    normalized = host.strip().lower()
+    if normalized in {"localhost"}:
+        return False
+    try:
+        ip = ipaddress.ip_address(normalized)
+    except ValueError:
+        return True
+    return not ip.is_loopback
 
 
 @dataclasses.dataclass
@@ -53,15 +151,65 @@ class Session:
 
 
 class RelayState:
-    def __init__(self, offline_ttl: float) -> None:
-        self.offline_ttl = offline_ttl
+    def __init__(self, config: RelayConfig) -> None:
+        self.config = config
+        self.offline_ttl = config.offline_ttl
         self.sessions: dict[str, Session] = {}
+        self.rate_limits: dict[str, RateLimitBucket] = {}
         self.lock = asyncio.Lock()
+        self.started_at = time.time()
+        self.shutting_down = False
+        self.metrics: dict[str, int] = {
+            "register_requests_total": 0,
+            "register_rejected_total": 0,
+            "agent_connect_total": 0,
+            "agent_disconnect_total": 0,
+            "client_connect_total": 0,
+            "client_disconnect_total": 0,
+            "auth_rejected_total": 0,
+            "expired_session_rejected_total": 0,
+            "rate_limited_total": 0,
+        }
+
+    def is_valid_user_token(self, token: str) -> bool:
+        allowed = self.config.allowed_user_tokens
+        if not allowed:
+            return True
+        return token in allowed
+
+    def increment_metric(self, name: str, amount: int = 1) -> None:
+        self.metrics[name] = self.metrics.get(name, 0) + amount
+
+    def metrics_text(self) -> str:
+        sessions_total = len(self.sessions)
+        sessions_online = sum(1 for session in self.sessions.values() if session.online)
+        sessions_offline = sessions_total - sessions_online
+        active_agents = sum(1 for session in self.sessions.values() if session.agent_writer is not None)
+        active_clients = sum(len(session.clients) for session in self.sessions.values())
+        lines = [
+            "# TYPE ghostty_relay_sessions gauge",
+            f"ghostty_relay_sessions {sessions_total}",
+            "# TYPE ghostty_relay_sessions_online gauge",
+            f"ghostty_relay_sessions_online {sessions_online}",
+            "# TYPE ghostty_relay_sessions_offline gauge",
+            f"ghostty_relay_sessions_offline {sessions_offline}",
+            "# TYPE ghostty_relay_active_agents gauge",
+            f"ghostty_relay_active_agents {active_agents}",
+            "# TYPE ghostty_relay_active_clients gauge",
+            f"ghostty_relay_active_clients {active_clients}",
+            "# TYPE ghostty_relay_uptime_seconds gauge",
+            f"ghostty_relay_uptime_seconds {int(time.time() - self.started_at)}",
+        ]
+        for key in sorted(self.metrics):
+            lines.append(f"# TYPE ghostty_relay_{key} counter")
+            lines.append(f"ghostty_relay_{key} {self.metrics[key]}")
+        return "\n".join(lines) + "\n"
 
     async def cleanup_loop(self) -> None:
         while True:
             await asyncio.sleep(5)
             cutoff = time.time() - self.offline_ttl
+            rate_limit_cutoff = time.time() - self.config.rate_limit_window_seconds
             async with self.lock:
                 expired = [
                     session_id
@@ -70,9 +218,36 @@ class RelayState:
                 ]
                 for session_id in expired:
                     self.sessions.pop(session_id, None)
+                    log_event("session_expired", session_id=session_id)
+                stale_rate_keys = [
+                    key
+                    for key, bucket in self.rate_limits.items()
+                    if bucket.window_started_at < rate_limit_cutoff
+                ]
+                for key in stale_rate_keys:
+                    self.rate_limits.pop(key, None)
+
+    def should_rate_limit(self, key: str, now: float | None = None) -> tuple[bool, int]:
+        if self.config.rate_limit_requests <= 0:
+            return False, 0
+        if now is None:
+            now = time.time()
+        bucket = self.rate_limits.get(key)
+        if bucket is None or now - bucket.window_started_at >= self.config.rate_limit_window_seconds:
+            self.rate_limits[key] = RateLimitBucket(window_started_at=now, count=1)
+            return False, 0
+        if bucket.count >= self.config.rate_limit_requests:
+            retry_after = max(1, int(self.config.rate_limit_window_seconds - (now - bucket.window_started_at)))
+            return True, retry_after
+        bucket.count += 1
+        return False, 0
 
 
-async def read_http_request(reader: asyncio.StreamReader) -> tuple[str, str, dict[str, str], bytes]:
+async def read_http_request(
+    reader: asyncio.StreamReader,
+    *,
+    max_body_bytes: int,
+) -> tuple[str, str, dict[str, str], bytes]:
     header_blob = await reader.readuntil(b"\r\n\r\n")
     header_text = header_blob.decode("utf-8", "replace")
     lines = header_text.split("\r\n")
@@ -86,6 +261,8 @@ async def read_http_request(reader: asyncio.StreamReader) -> tuple[str, str, dic
         headers[key.strip().lower()] = value.strip()
 
     length = int(headers.get("content-length", "0"))
+    if length > max_body_bytes:
+        raise ValueError("request body too large")
     body = await reader.readexactly(length) if length else b""
     return method, target, headers, body
 
@@ -102,9 +279,11 @@ async def send_response(
         201: "Created",
         400: "Bad Request",
         401: "Unauthorized",
+        429: "Too Many Requests",
         404: "Not Found",
         405: "Method Not Allowed",
         500: "Internal Server Error",
+        503: "Service Unavailable",
     }.get(status, "OK")
     headers = {
         "Content-Type": content_type,
@@ -166,7 +345,7 @@ async def websocket_handshake(writer: asyncio.StreamWriter, headers: dict[str, s
     await writer.drain()
 
 
-async def ws_read_frame(reader: asyncio.StreamReader) -> tuple[int, bytes]:
+async def ws_read_frame(reader: asyncio.StreamReader, *, max_frame_bytes: int) -> tuple[int, bytes]:
     header = await reader.readexactly(2)
     first, second = header[0], header[1]
     opcode = first & 0x0F
@@ -176,6 +355,8 @@ async def ws_read_frame(reader: asyncio.StreamReader) -> tuple[int, bytes]:
         length = struct.unpack("!H", await reader.readexactly(2))[0]
     elif length == 127:
         length = struct.unpack("!Q", await reader.readexactly(8))[0]
+    if length > max_frame_bytes:
+        raise ValueError("frame too large")
 
     mask = await reader.readexactly(4) if masked else b""
     payload = await reader.readexactly(length) if length else b""
@@ -223,6 +404,7 @@ async def handle_register(
     if method != "POST":
         await send_response(writer, 405, json_bytes({"error": "method not allowed"}))
         return
+    state.increment_metric("register_requests_total")
 
     try:
         payload = json.loads(body.decode("utf-8"))
@@ -233,6 +415,17 @@ async def handle_register(
         await send_response(writer, 400, json_bytes({"error": "invalid json"}))
         return
 
+    if not session_id or len(session_id) > 128 or len(name) > 256 or not token or len(token) > 1024:
+        state.increment_metric("register_rejected_total")
+        await send_response(writer, 400, json_bytes({"error": "invalid payload"}))
+        return
+    if not state.is_valid_user_token(token):
+        state.increment_metric("register_rejected_total")
+        state.increment_metric("auth_rejected_total")
+        log_event("register_rejected", reason="invalid_user_token", session_id=session_id)
+        await send_response(writer, 401, json_bytes({"error": "invalid user token"}))
+        return
+
     now = time.time()
     session = Session(
         session_id=session_id,
@@ -240,12 +433,17 @@ async def handle_register(
         user_token=token,
         agent_token=secrets.token_urlsafe(24),
         client_token=secrets.token_urlsafe(24),
-        expires_at=now + 300,
+        expires_at=now + state.config.token_ttl,
         online=False,
         last_seen_at=now,
     )
     async with state.lock:
+        if len(state.sessions) >= state.config.max_sessions and session_id not in state.sessions:
+            state.increment_metric("register_rejected_total")
+            await send_response(writer, 503, json_bytes({"error": "session capacity reached"}))
+            return
         state.sessions[session_id] = session
+    log_event("register", session_id=session_id, session_name=name, online=False)
 
     await send_response(
         writer,
@@ -273,9 +471,15 @@ async def handle_sessions(
 
     token = bearer_token(headers)
     if not token:
+        state.increment_metric("auth_rejected_total")
         await send_response(writer, 401, json_bytes({"error": "missing bearer token"}))
         return
+    if not state.is_valid_user_token(token):
+        state.increment_metric("auth_rejected_total")
+        await send_response(writer, 401, json_bytes({"error": "invalid user token"}))
+        return
 
+    now = time.time()
     async with state.lock:
         sessions = [
             {
@@ -286,7 +490,7 @@ async def handle_sessions(
                 "client_token": session.client_token,
             }
             for session in state.sessions.values()
-            if session.user_token == token
+            if session.user_token == token and session.expires_at > now
         ]
 
     await send_response(writer, 200, json_bytes(sessions))
@@ -315,7 +519,7 @@ async def ws_agent_loop(
 ) -> None:
     try:
         while True:
-            opcode, payload = await ws_read_frame(reader)
+            opcode, payload = await ws_read_frame(reader, max_frame_bytes=state.config.max_frame_bytes)
             session.last_seen_at = time.time()
             if opcode == 0x8:
                 break
@@ -331,19 +535,22 @@ async def ws_agent_loop(
             session.last_seen_at = time.time()
             clients = list(session.clients)
             session.clients.clear()
+        state.increment_metric("agent_disconnect_total")
+        log_event("agent_disconnected", session_id=session.session_id, client_count=len(clients))
         for client in clients:
             await ws_close(client)
         await ws_close(writer)
 
 
 async def ws_client_loop(
+    state: RelayState,
     session: Session,
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
 ) -> None:
     try:
         while True:
-            opcode, payload = await ws_read_frame(reader)
+            opcode, payload = await ws_read_frame(reader, max_frame_bytes=state.config.max_frame_bytes)
             session.last_seen_at = time.time()
             if opcode == 0x8:
                 break
@@ -359,6 +566,8 @@ async def ws_client_loop(
                 await ws_send_binary(agent_writer, payload)
     finally:
         session.clients.discard(writer)
+        state.increment_metric("client_disconnect_total")
+        log_event("client_disconnected", session_id=session.session_id, remaining_clients=len(session.clients))
         if not session.clients and session.agent_writer:
             try:
                 await ws_send_text(session.agent_writer, json.dumps({"type": "client_disconnect"}))
@@ -385,19 +594,28 @@ async def handle_ws_agent(
     session_id = (query.get("id") or [None])[0]
     token = bearer_token(headers)
     if not session_id or not token:
+        state.increment_metric("auth_rejected_total")
         await send_response(writer, 401, json_bytes({"error": "missing agent credentials"}))
         return
 
     async with state.lock:
         session = state.sessions.get(session_id)
         if not session or session.agent_token != token:
+            state.increment_metric("auth_rejected_total")
             await send_response(writer, 401, json_bytes({"error": "invalid agent token"}))
+            return
+        if session.expires_at <= time.time():
+            state.increment_metric("auth_rejected_total")
+            state.increment_metric("expired_session_rejected_total")
+            await send_response(writer, 401, json_bytes({"error": "expired agent token"}))
             return
         session.online = True
         session.last_seen_at = time.time()
         session.agent_writer = writer
 
     await websocket_handshake(writer, headers)
+    state.increment_metric("agent_connect_total")
+    log_event("agent_connected", session_id=session.session_id)
     await ws_agent_loop(state, session, reader, writer)
 
 
@@ -413,6 +631,7 @@ async def handle_ws_client(
     header_token = bearer_token(headers)
     token = query_token or header_token
     if not session_id or not token:
+        state.increment_metric("auth_rejected_total")
         await send_response(writer, 401, json_bytes({"error": "missing client credentials"}))
         return
 
@@ -421,15 +640,35 @@ async def handle_ws_client(
         if not session:
             await send_response(writer, 404, json_bytes({"error": "session not found"}))
             return
+        if session.expires_at <= time.time():
+            state.increment_metric("auth_rejected_total")
+            state.increment_metric("expired_session_rejected_total")
+            await send_response(writer, 401, json_bytes({"error": "expired client token"}))
+            return
+        using_user_token = token == session.user_token
+        if using_user_token and not state.config.allow_user_token_client_access:
+            state.increment_metric("auth_rejected_total")
+            await send_response(writer, 401, json_bytes({"error": "user token client access disabled"}))
+            return
+        if using_user_token and not state.is_valid_user_token(token):
+            state.increment_metric("auth_rejected_total")
+            await send_response(writer, 401, json_bytes({"error": "invalid user token"}))
+            return
         if token not in (session.client_token, session.user_token):
+            state.increment_metric("auth_rejected_total")
             await send_response(writer, 401, json_bytes({"error": "invalid client token"}))
+            return
+        if len(session.clients) >= state.config.max_clients_per_session:
+            await send_response(writer, 503, json_bytes({"error": "client capacity reached"}))
             return
         session.clients.add(writer)
         session.last_seen_at = time.time()
 
     await websocket_handshake(writer, headers)
+    state.increment_metric("client_connect_total")
+    log_event("client_connected", session_id=session.session_id, client_count=len(session.clients))
     await replay_backlog(session, writer)
-    await ws_client_loop(session, reader, writer)
+    await ws_client_loop(state, session, reader, writer)
 
 
 def resolve_static_path(static_root: pathlib.Path, target_path: str) -> Optional[pathlib.Path]:
@@ -469,13 +708,19 @@ async def handle_connection(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
 ) -> None:
+    peer = writer.get_extra_info("peername")
+    peer_host = peer[0] if isinstance(peer, tuple) and peer else None
     try:
-        method, target, headers, body = await read_http_request(reader)
+        method, target, headers, body = await read_http_request(
+            reader,
+            max_body_bytes=state.config.max_body_bytes,
+        )
     except asyncio.IncompleteReadError:
         writer.close()
         await writer.wait_closed()
         return
     except Exception:
+        log_event("bad_request", remote=peer_host)
         await send_response(writer, 400, json_bytes({"error": "bad request"}))
         return
 
@@ -483,6 +728,46 @@ async def handle_connection(
     path = parsed.path
     query = urllib.parse.parse_qs(parsed.query)
     upgrade = headers.get("upgrade", "").lower()
+
+    if path == "/healthz":
+        await send_response(writer, 200, json_bytes({"ok": True}))
+        return
+    if path == "/readyz":
+        async with state.lock:
+            await send_response(writer, 200, json_bytes({
+                "ok": not state.shutting_down,
+                "sessions": len(state.sessions),
+                "uptime_seconds": int(time.time() - state.started_at),
+            }))
+        return
+    if path == "/metrics":
+        async with state.lock:
+            await send_response(
+                writer,
+                200,
+                state.metrics_text().encode("utf-8"),
+                "text/plain; version=0.0.4; charset=utf-8",
+            )
+        return
+
+    if path in {"/api/register", "/api/sessions", "/ws/agent", "/ws/client"}:
+        async with state.lock:
+            limited, retry_after = state.should_rate_limit(peer_host or "unknown")
+            if limited:
+                state.increment_metric("rate_limited_total")
+                log_event(
+                    "rate_limited",
+                    remote=peer_host,
+                    path=path,
+                    retry_after=retry_after,
+                )
+                await send_response(
+                    writer,
+                    429,
+                    json_bytes({"error": "rate limited"}),
+                    extra_headers={"Retry-After": str(retry_after)},
+                )
+                return
 
     if upgrade == "websocket" and path == "/ws/agent":
         await handle_ws_agent(state, reader, writer, headers, query)
@@ -503,32 +788,105 @@ async def handle_connection(
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Ghostty session sharing relay prototype")
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=18080)
-    parser.add_argument("--offline-ttl", type=float, default=300.0)
+    parser.add_argument("--host", default=env_str("GHOSTTY_RELAY_HOST", "127.0.0.1"))
+    parser.add_argument("--port", type=int, default=env_int("GHOSTTY_RELAY_PORT", 18080))
+    parser.add_argument("--offline-ttl", type=float, default=env_float("GHOSTTY_RELAY_OFFLINE_TTL", 300.0))
+    parser.add_argument("--token-ttl", type=float, default=env_float("GHOSTTY_RELAY_TOKEN_TTL", 300.0))
+    parser.add_argument("--max-body-bytes", type=int, default=env_int("GHOSTTY_RELAY_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES))
+    parser.add_argument("--max-sessions", type=int, default=env_int("GHOSTTY_RELAY_MAX_SESSIONS", DEFAULT_MAX_SESSIONS))
+    parser.add_argument("--max-clients-per-session", type=int, default=env_int("GHOSTTY_RELAY_MAX_CLIENTS_PER_SESSION", DEFAULT_MAX_CLIENTS_PER_SESSION))
+    parser.add_argument("--max-frame-bytes", type=int, default=env_int("GHOSTTY_RELAY_MAX_FRAME_BYTES", DEFAULT_MAX_FRAME_BYTES))
+    parser.add_argument("--rate-limit-requests", type=int, default=env_int("GHOSTTY_RELAY_RATE_LIMIT_REQUESTS", DEFAULT_RATE_LIMIT_REQUESTS))
+    parser.add_argument("--rate-limit-window-seconds", type=float, default=env_float("GHOSTTY_RELAY_RATE_LIMIT_WINDOW_SECONDS", DEFAULT_RATE_LIMIT_WINDOW_SECONDS))
+    parser.add_argument(
+        "--allow-user-token-client-access",
+        action="store_true",
+        default=env_bool("GHOSTTY_RELAY_ALLOW_USER_TOKEN_CLIENT_ACCESS", False),
+    )
+    parser.add_argument(
+        "--allow-public-bind",
+        action="store_true",
+        default=env_bool("GHOSTTY_RELAY_ALLOW_PUBLIC_BIND", False),
+    )
     parser.add_argument(
         "--static-root",
-        default=str(pathlib.Path(__file__).resolve().parent.parent / "web"),
+        default=env_str(
+            "GHOSTTY_RELAY_STATIC_ROOT",
+            str(pathlib.Path(__file__).resolve().parent.parent / "web"),
+        ),
     )
     args = parser.parse_args()
 
-    state = RelayState(offline_ttl=args.offline_ttl)
-    static_root = pathlib.Path(args.static_root).resolve()
+    if host_requires_public_bind_ack(args.host) and not args.allow_public_bind:
+        parser.error(
+            "public bind requires --allow-public-bind "
+            "(or GHOSTTY_RELAY_ALLOW_PUBLIC_BIND=1)"
+        )
+
+    config = RelayConfig(
+        host=args.host,
+        port=args.port,
+        offline_ttl=args.offline_ttl,
+        token_ttl=args.token_ttl,
+        allowed_user_tokens=load_allowed_user_tokens(),
+        allow_user_token_client_access=args.allow_user_token_client_access,
+        static_root=pathlib.Path(args.static_root).resolve(),
+        max_body_bytes=args.max_body_bytes,
+        max_sessions=args.max_sessions,
+        max_clients_per_session=args.max_clients_per_session,
+        max_frame_bytes=args.max_frame_bytes,
+        rate_limit_requests=args.rate_limit_requests,
+        rate_limit_window_seconds=args.rate_limit_window_seconds,
+    )
+    state = RelayState(config=config)
+    static_root = config.static_root
 
     server = await asyncio.start_server(
         lambda r, w: handle_connection(state, static_root, r, w),
-        host=args.host,
-        port=args.port,
+        host=config.host,
+        port=config.port,
     )
 
-    print(f"relay listening on http://{args.host}:{args.port}")
+    loop = asyncio.get_running_loop()
+    stop_event = asyncio.Event()
+
+    def begin_shutdown() -> None:
+        if state.shutting_down:
+            return
+        state.shutting_down = True
+        log_event("shutdown_requested")
+        stop_event.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, begin_shutdown)
+        except NotImplementedError:
+            pass
+
+    log_event(
+        "relay_started",
+        host=config.host,
+        port=config.port,
+        static_root=str(config.static_root),
+        auth_mode="token-allowlist" if config.allowed_user_tokens else "accept-any-token",
+        configured_user_tokens=len(config.allowed_user_tokens),
+        allow_user_token_client_access=config.allow_user_token_client_access,
+        offline_ttl=config.offline_ttl,
+        token_ttl=config.token_ttl,
+        max_body_bytes=config.max_body_bytes,
+        max_sessions=config.max_sessions,
+        max_clients_per_session=config.max_clients_per_session,
+        max_frame_bytes=config.max_frame_bytes,
+        rate_limit_requests=config.rate_limit_requests,
+        rate_limit_window_seconds=config.rate_limit_window_seconds,
+    )
     asyncio.create_task(state.cleanup_loop())
     async with server:
-        await server.serve_forever()
+        await stop_event.wait()
+    server.close()
+    await server.wait_closed()
+    log_event("relay_stopped")
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())

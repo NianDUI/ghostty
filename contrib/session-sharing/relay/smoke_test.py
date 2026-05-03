@@ -66,6 +66,64 @@ def http_json(
     return status, json.loads(data.decode("utf-8"))
 
 
+def http_text(port: int, method: str, path: str) -> tuple[int, str]:
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request(method, path)
+    response = conn.getresponse()
+    data = response.read()
+    status = response.status
+    conn.close()
+    return status, data.decode("utf-8")
+
+
+def expect_websocket_upgrade_failure(
+    port: int,
+    path: str,
+    headers: Optional[dict[str, str]] = None,
+) -> tuple[int, bytes]:
+    sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    try:
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        lines = [
+            f"GET {path} HTTP/1.1",
+            "Host: 127.0.0.1",
+            "Upgrade: websocket",
+            "Connection: Upgrade",
+            f"Sec-WebSocket-Key: {key}",
+            "Sec-WebSocket-Version: 13",
+        ]
+        if headers:
+            for header_key, header_value in headers.items():
+                lines.append(f"{header_key}: {header_value}")
+        lines.append("")
+        lines.append("")
+        sock.sendall("\r\n".join(lines).encode("utf-8"))
+        response = bytearray()
+        while b"\r\n\r\n" not in response:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response.extend(chunk)
+        head, _, rest = bytes(response).partition(b"\r\n\r\n")
+        status_line = head.split(b"\r\n", 1)[0].decode("utf-8")
+        status_code = int(status_line.split(" ")[1])
+        content_length = 0
+        for raw_line in head.split(b"\r\n")[1:]:
+            key, _, value = raw_line.partition(b":")
+            if key.strip().lower() == b"content-length":
+                content_length = int(value.strip() or b"0")
+                break
+        body = bytearray(rest)
+        while len(body) < content_length:
+            chunk = sock.recv(content_length - len(body))
+            if not chunk:
+                break
+            body.extend(chunk)
+        return status_code, bytes(body)
+    finally:
+        sock.close()
+
+
 class WebSocketClient:
     def __init__(self, port: int, path: str, headers: Optional[dict[str, str]] = None) -> None:
         self.sock = socket.create_connection(("127.0.0.1", port), timeout=5)
@@ -154,7 +212,83 @@ def main() -> int:
         print("missing built ghostty-web-client dist/, run npm run build first", file=sys.stderr)
         return 1
 
+    public_bind = subprocess.run(
+        [
+            sys.executable,
+            str(SERVER),
+            "--host",
+            "0.0.0.0",
+            "--port",
+            str(free_port()),
+            "--static-root",
+            str(STATIC_ROOT),
+        ],
+        cwd=str(ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert public_bind.returncode != 0
+    assert "--allow-public-bind" in public_bind.stderr
+
+    rate_limit_port = free_port()
+    rate_limit_env = os.environ.copy()
+    rate_limit_env["GHOSTTY_RELAY_USER_TOKENS"] = "smoke-user-token"
+    rate_limit_process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVER),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(rate_limit_port),
+            "--rate-limit-requests",
+            "2",
+            "--rate-limit-window-seconds",
+            "60",
+            "--static-root",
+            str(STATIC_ROOT),
+        ],
+        cwd=str(ROOT),
+        env=rate_limit_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        wait_for_server(rate_limit_port)
+        status, _ = http_json(
+            rate_limit_port,
+            "GET",
+            "/api/sessions",
+            headers={"Authorization": "Bearer smoke-user-token"},
+        )
+        assert status == 200, status
+        status, _ = http_json(
+            rate_limit_port,
+            "GET",
+            "/api/sessions",
+            headers={"Authorization": "Bearer smoke-user-token"},
+        )
+        assert status == 200, status
+        status, body = http_json(
+            rate_limit_port,
+            "GET",
+            "/api/sessions",
+            headers={"Authorization": "Bearer smoke-user-token"},
+        )
+        assert status == 429, status
+        assert body["error"] == "rate limited"
+    finally:
+        rate_limit_process.terminate()
+        try:
+            rate_limit_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            rate_limit_process.kill()
+            rate_limit_process.wait(timeout=5)
+
     port = free_port()
+    env = os.environ.copy()
+    env["GHOSTTY_RELAY_USER_TOKENS"] = "smoke-user-token"
     process = subprocess.Popen(
         [
             sys.executable,
@@ -163,10 +297,15 @@ def main() -> int:
             "127.0.0.1",
             "--port",
             str(port),
+            "--token-ttl",
+            "1",
+            "--max-sessions",
+            "1",
             "--static-root",
             str(STATIC_ROOT),
         ],
         cwd=str(ROOT),
+        env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -174,9 +313,36 @@ def main() -> int:
     try:
         wait_for_server(port)
 
+        status, health = http_json(port, "GET", "/healthz")
+        assert status == 200, status
+        assert health["ok"] is True
+
+        status, ready = http_json(port, "GET", "/readyz")
+        assert status == 200, status
+        assert ready["ok"] is True
+        assert ready["sessions"] == 0
+
+        status, metrics = http_text(port, "GET", "/metrics")
+        assert status == 200, status
+        assert "ghostty_relay_sessions " in metrics
+        assert "ghostty_relay_register_requests_total " in metrics
+
         user_token = "smoke-user-token"
         session_id = secrets.token_hex(8)
         session_name = "Smoke Session"
+
+        status, invalid_register = http_json(
+            port,
+            "POST",
+            "/api/register",
+            {
+                "session_id": secrets.token_hex(8),
+                "name": "Invalid Token Session",
+                "token": "bad-token",
+            },
+        )
+        assert status == 401, status
+        assert invalid_register["error"] == "invalid user token"
 
         status, register = http_json(
             port,
@@ -192,6 +358,28 @@ def main() -> int:
         agent_token = register["agent_token"]
         client_token = register["client_token"]
 
+        status, invalid_list = http_json(
+            port,
+            "GET",
+            "/api/sessions",
+            headers={"Authorization": "Bearer bad-token"},
+        )
+        assert status == 401, status
+        assert invalid_list["error"] == "invalid user token"
+
+        status, capacity_error = http_json(
+            port,
+            "POST",
+            "/api/register",
+            {
+                "session_id": secrets.token_hex(8),
+                "name": "Second Session",
+                "token": user_token,
+            },
+        )
+        assert status == 503, status
+        assert capacity_error["error"] == "session capacity reached"
+
         status, sessions = http_json(
             port,
             "GET",
@@ -202,6 +390,14 @@ def main() -> int:
         assert len(sessions) == 1
         assert sessions[0]["name"] == session_name
         assert "last_seen_at" in sessions[0]
+
+        status, payload = expect_websocket_upgrade_failure(
+            port,
+            f"/ws/client?id={session_id}",
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+        assert status == 401, status
+        assert b"user token client access disabled" in payload
 
         agent = WebSocketClient(
             port,
@@ -230,6 +426,25 @@ def main() -> int:
         assert control["type"] == "client_disconnect"
 
         agent.close()
+
+        time.sleep(1.2)
+
+        status, sessions = http_json(
+            port,
+            "GET",
+            "/api/sessions",
+            headers={"Authorization": f"Bearer {user_token}"},
+        )
+        assert status == 200, status
+        assert sessions == []
+
+        status, payload = expect_websocket_upgrade_failure(
+            port,
+            f"/ws/client?id={session_id}&token={client_token}",
+        )
+        assert status == 401, status
+        assert b"expired client token" in payload
+
         print("relay smoke test passed")
         return 0
     finally:

@@ -189,6 +189,17 @@ struct SessionSharingTests {
     }
 
     @Test
+    func relayURLBuilderRejectsExplicitInsecureRemoteRelay() {
+        #expect(throws: SessionSharingError.insecureRelayAddress) {
+            _ = try SessionSharingRelayURLBuilder.url(
+                for: "http://relay.example.com:8080",
+                scheme: "https",
+                path: "/api/register"
+            )
+        }
+    }
+
+    @Test
     func relayURLBuilderRejectsEmptyRelay() {
         #expect(throws: SessionSharingError.invalidRelayAddress) {
             _ = try SessionSharingRelayURLBuilder.url(
@@ -208,6 +219,28 @@ struct SessionSharingTests {
                 path: "/api/register"
             )
         }
+    }
+
+    @Test
+    func sheetValidationRejectsExplicitInsecureRemoteRelay() {
+        #expect(
+            SessionSharingSheetValidation.message(
+                name: "Ghostty-20260503-120000",
+                relay: "http://relay.example.com:8080",
+                token: "token"
+            ) == SessionSharingError.insecureRelayAddress.localizedDescription
+        )
+    }
+
+    @Test
+    func sheetValidationRequiresCompleteFields() {
+        #expect(
+            SessionSharingSheetValidation.message(
+                name: "",
+                relay: "127.0.0.1:18080",
+                token: "token"
+            ) == "共享配置不完整"
+        )
     }
 
     @Test

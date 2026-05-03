@@ -4,6 +4,7 @@ import SwiftUI
 import CoreText
 import UserNotifications
 import Security
+import Network
 import GhosttyKit
 
 extension Ghostty {
@@ -1912,6 +1913,11 @@ private final class SessionSharingController {
 
         let content = SessionSharingSheetContentView(defaults: defaults)
         alert.accessoryView = content.container
+        let startButton = alert.buttons.first
+        content.validationDidChange = { message in
+            startButton?.isEnabled = message == nil
+        }
+        content.refreshValidation()
 
         let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
@@ -1920,8 +1926,12 @@ private final class SessionSharingController {
             let name = content.nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             let saveConfig = content.saveCheckbox.state == .on
 
-            guard !relay.isEmpty, !token.isEmpty, !name.isEmpty else {
-                self.presentError("共享配置不完整", on: parentWindow)
+            if let validationMessage = SessionSharingSheetValidation.message(
+                name: name,
+                relay: relay,
+                token: token
+            ) {
+                self.presentError(validationMessage, on: parentWindow)
                 return
             }
 
@@ -2229,6 +2239,11 @@ enum SessionSharingInboundFrameAction: Equatable {
 }
 
 enum SessionSharingRelayURLBuilder {
+    private enum RelayHostTrust {
+        case local
+        case remote
+    }
+
     private enum Transport {
         case http
         case websocket
@@ -2262,6 +2277,7 @@ enum SessionSharingRelayURLBuilder {
         guard var components = URLComponents(string: raw) else {
             throw SessionSharingError.invalidRelayAddress
         }
+        try validateExplicitScheme(components.scheme, host: components.host)
         components.scheme = try scheme(for: components.scheme, transport: transport, defaultScheme: defaultScheme)
         components.path = path
         components.queryItems = queryItems.isEmpty ? nil : queryItems
@@ -2272,6 +2288,18 @@ enum SessionSharingRelayURLBuilder {
             throw SessionSharingError.invalidRelayAddress
         }
         return url
+    }
+
+    private static func validateExplicitScheme(_ explicitScheme: String?, host: String?) throws {
+        guard let explicitScheme else { return }
+        switch explicitScheme.lowercased() {
+        case "http", "ws":
+            guard trust(for: host) == .local else {
+                throw SessionSharingError.insecureRelayAddress
+            }
+        default:
+            break
+        }
     }
 
     private static func scheme(
@@ -2296,6 +2324,37 @@ enum SessionSharingRelayURLBuilder {
         default:
             throw SessionSharingError.invalidRelayAddress
         }
+    }
+
+    private static func trust(for host: String?) -> RelayHostTrust {
+        guard let host else { return .remote }
+        let normalized = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "localhost" {
+            return .local
+        }
+        if let ipv4 = IPv4Address(normalized) {
+            let octets = ipv4.rawValue
+            if octets[0] == 127 {
+                return .local
+            }
+            if octets[0] == 10 {
+                return .local
+            }
+            if octets[0] == 192, octets[1] == 168 {
+                return .local
+            }
+            if octets[0] == 172, (16...31).contains(octets[1]) {
+                return .local
+            }
+            return .remote
+        }
+        if let ipv6 = IPv6Address(normalized) {
+            if ipv6.isLoopback || ipv6.isLinkLocal || ipv6.isUniqueLocal {
+                return .local
+            }
+            return .remote
+        }
+        return .remote
     }
 }
 
@@ -2545,19 +2604,51 @@ private struct SessionSharingSheetDefaults {
     let relayHistory: [String]
 }
 
-private final class SessionSharingSheetContentView {
+enum SessionSharingSheetValidation {
+    static func message(name: String, relay: String, token: String) -> String? {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedRelay = relay.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedName.isEmpty, !trimmedRelay.isEmpty, !trimmedToken.isEmpty else {
+            return "共享配置不完整"
+        }
+
+        do {
+            _ = try SessionSharingRelayURLBuilder.url(
+                for: trimmedRelay,
+                scheme: "https",
+                path: "/api/register"
+            )
+            return nil
+        } catch let error as SessionSharingError {
+            return error.localizedDescription
+        } catch {
+            return "共享配置不完整"
+        }
+    }
+}
+
+private final class SessionSharingSheetContentView: NSObject, NSControlTextEditingDelegate, NSTextFieldDelegate, NSComboBoxDelegate {
     let container: NSView
     let nameField: NSTextField
     let relayField: NSComboBox
     let tokenField: NSSecureTextField
     let saveCheckbox: NSButton
+    let validationLabel: NSTextField
+    var validationDidChange: ((String?) -> Void)?
 
     init(defaults: SessionSharingSheetDefaults) {
         nameField = NSTextField(string: defaults.name)
         relayField = NSComboBox()
         tokenField = NSSecureTextField(string: defaults.token)
         saveCheckbox = NSButton(checkboxWithTitle: "保存配置", target: nil, action: nil)
+        validationLabel = NSTextField(labelWithString: "")
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 174))
+        self.container = container
         saveCheckbox.state = .on
+
+        super.init()
 
         relayField.isEditable = true
         relayField.addItems(withObjectValues: defaults.relayHistory)
@@ -2565,18 +2656,25 @@ private final class SessionSharingSheetContentView {
         nameField.placeholderString = "Ghostty-时间戳"
         relayField.placeholderString = "relay.example.com:443"
         tokenField.placeholderString = "认证令牌"
+        nameField.delegate = self
+        relayField.delegate = self
+        tokenField.delegate = self
+        validationLabel.textColor = .systemRed
+        validationLabel.lineBreakMode = .byWordWrapping
+        validationLabel.maximumNumberOfLines = 0
+        validationLabel.isHidden = true
 
         let grid = NSGridView(views: [
             [Self.label("会话名称"), nameField],
             [Self.label("中转服务器"), relayField],
             [Self.label("认证令牌"), tokenField],
             [NSView(), saveCheckbox],
+            [NSView(), validationLabel],
         ])
         grid.rowSpacing = 10
         grid.columnSpacing = 12
         grid.translatesAutoresizingMaskIntoConstraints = false
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 142))
         container.addSubview(grid)
         NSLayoutConstraint.activate([
             grid.topAnchor.constraint(equalTo: container.topAnchor),
@@ -2585,7 +2683,21 @@ private final class SessionSharingSheetContentView {
             grid.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             relayField.widthAnchor.constraint(equalToConstant: 260),
         ])
-        self.container = container
+    }
+
+    func controlTextDidChange(_ notification: Notification) {
+        refreshValidation()
+    }
+
+    func refreshValidation() {
+        let message = SessionSharingSheetValidation.message(
+            name: nameField.stringValue,
+            relay: relayField.stringValue,
+            token: tokenField.stringValue
+        )
+        validationLabel.stringValue = message ?? ""
+        validationLabel.isHidden = message == nil
+        validationDidChange?(message)
     }
 
     private static func label(_ text: String) -> NSTextField {
@@ -2752,6 +2864,7 @@ private struct SessionSharingInboundControlFrame: Codable {
 enum SessionSharingError: LocalizedError {
     case invalidRelayAddress
     case invalidResponse
+    case insecureRelayAddress
 
     var errorDescription: String? {
         switch self {
@@ -2759,6 +2872,8 @@ enum SessionSharingError: LocalizedError {
             return "中转服务器地址无效"
         case .invalidResponse:
             return "中转服务器返回了无效响应"
+        case .insecureRelayAddress:
+            return "远程中转服务器必须使用 https:// 或 wss://；仅 localhost 或局域网开发地址允许使用 http://"
         }
     }
 }
