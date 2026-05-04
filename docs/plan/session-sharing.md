@@ -330,17 +330,50 @@ Remaining:
   `terminal.reset()` + `term.write(decoded)`. Covered by the
   `screenSnapshotEncodesBase64WithClearAndHomePrefix` Swift case
   and the `relay smoke_test` checkpoint scenario.
-- **P2 Phase 2 (open)** Lazy on-demand scrollback. macOS agent
-  exposes a `fetch_scrollback { start_line, count }` control frame
-  backed by the live `Screen.PageList`; browser requests it when
-  the user scrolls into the top of the existing buffer. This needs
-  an "insert rows above existing scrollback" entry point on
-  `ghostty-web` (no public API today), so the work either forks
-  the library or upstreams a PR to `coder/ghostty-web`. Phase 1
-  trade-off — browsers see the host's current viewport but no
-  scrollback prior to their join — is acceptable until users hit
-  it; revisit when that lands as a real complaint or when GA-ship
-  for mobile demands history.
+- **P2 Phase 2a (landed)** Snapshot now spans the full host screen
+  (history + active) instead of just the viewport. The agent reads
+  `GHOSTTY_POINT_SCREEN` (top_left → bottom_right), tail-trims at
+  a `\n` boundary so the raw VT byte stream stays under a 32 KiB
+  budget — sized so the JSON+base64 wrapping still fits inside the
+  relay's default 64 KiB `SESSION_BACKLOG_LIMIT` and never gets
+  evicted on its own append. Browser keeps its existing
+  `terminal.reset()` + `term.write(decoded)` path; older rows
+  scroll off into xterm.js's own scrollback as the newer ones fill
+  the visible grid. Covered by
+  `screenSnapshotTrimsHistoryAtLineBoundaryWhenOverBudget`.
+- **P2 Phase 2b (open)** True lazy fetch beyond the 32 KiB
+  snapshot. Concrete shape, decided after rejecting the "scroll the
+  host alongside the browser" alternative (host scroll has
+  intrusive side effects on the macOS user and conflicts with
+  live PTY auto-scroll):
+  - **Protocol**: client → agent
+    `{type:"fetch_scrollback", id, before:<oldest_held_idx|-1>, count}`
+    asks for `count` lines older than `before` (or the most recent
+    batch when `before == -1`). Agent → client
+    `{type:"scrollback", id, start, count, total, content}` where
+    `start` is the absolute history-index of the first returned
+    row, `total` is the agent's current scrollback length, and
+    `content` is base64-encoded VT bytes.
+  - **Agent**: read-only access via
+    `ghostty_surface_read_text(.history, .exact(0, y))`; do not
+    move the host's viewport. Cap `count` at the same 32 KiB byte
+    budget per response.
+  - **Relay**: pass-through; no parsing change needed. Stays
+    layering-clean.
+  - **Browser**: maintain a JS-side `historyBuffer` (string of
+    accumulated VT bytes since connect) plus the snapshot. When
+    `viewportY >= scrollbackLength - margin`, send a fetch. On
+    response, prepend to `historyBuffer` and refresh via
+    `terminal.reset()` + `term.write(historyBuffer + snapshot
+    + post-snapshot bytes)`. The reset is the "no fork" trick
+    that sidesteps `ghostty-web`'s missing prepend-rows API.
+  - **UX trade-off**: every fetch causes a full reset+replay
+    flash. Acceptable because fetches are user-initiated (scroll
+    to top) and bounded in size.
+  - **Out of scope here**: SGR colour preservation (the snapshot
+    is plain text). Lift that into a separate "styled cell
+    readback" item if/when it becomes a real complaint — would
+    need a new `ghostty_surface_read_cells` C API on the Zig side.
 
 Browser-side smoke automation lives in Section 6 (single source of
 truth).

@@ -3125,6 +3125,12 @@ struct SessionSharingAppearancePayload: Codable, Equatable {
 }
 
 struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
+    /// Soft cap on the raw VT byte stream we emit. Sized so the JSON +
+    /// base64 wrapping still fits inside the relay's default 64 KiB
+    /// per-session backlog (`SESSION_BACKLOG_LIMIT`); larger snapshots
+    /// would be evicted immediately and never reach a fresh client.
+    static let snapshotByteBudget = 32 * 1024
+
     let type: String
     let id: String
     /// Base64-encoded VT byte stream. Already prefixed with
@@ -3137,57 +3143,84 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
         from surface: ghostty_surface_t,
         sessionID: String
     ) -> SessionSharingScreenSnapshotPayload? {
-        var text = ghostty_text_s()
+        // GHOSTTY_POINT_SCREEN spans the full scrollback (history) plus
+        // the active grid, oldest line first. Writing the result back
+        // through term.write naturally recreates the host's scrollback
+        // on the browser: the older rows scroll off into xterm.js's
+        // scrollback buffer as the newer rows fill the visible area.
         let selection = ghostty_selection_s(
             top_left: ghostty_point_s(
-                tag: GHOSTTY_POINT_VIEWPORT,
+                tag: GHOSTTY_POINT_SCREEN,
                 coord: GHOSTTY_POINT_COORD_TOP_LEFT,
                 x: 0,
                 y: 0
             ),
             bottom_right: ghostty_point_s(
-                tag: GHOSTTY_POINT_VIEWPORT,
+                tag: GHOSTTY_POINT_SCREEN,
                 coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
                 x: 0,
                 y: 0
             ),
             rectangle: false
         )
+        var text = ghostty_text_s()
         guard ghostty_surface_read_text(surface, selection, &text) else {
             return nil
         }
         defer { ghostty_surface_free_text(surface, &text) }
 
-        let viewport: String
+        let body: String
         if text.text_len > 0 {
-            viewport = String(
+            body = String(
                 bytesNoCopy: UnsafeMutableRawPointer(mutating: text.text),
                 length: Int(text.text_len),
                 encoding: .utf8,
                 freeWhenDone: false
             ) ?? ""
         } else {
-            viewport = ""
+            body = ""
         }
-        return encode(viewport: viewport, sessionID: sessionID)
+        return encode(body: body, sessionID: sessionID)
     }
 
     static func encode(
-        viewport: String,
+        body: String,
         sessionID: String
     ) -> SessionSharingScreenSnapshotPayload {
         // \x1b[2J clears the screen, \x1b[H moves the cursor to (1,1).
         // The browser receives this and term.write reproduces the same
         // grid contents (without SGR colour, see the plan for the Phase
-        // 2 follow-up that adds styled cell readback).
+        // 2b follow-up that adds styled cell readback + lazy fetch).
         let prefix = "\u{1b}[2J\u{1b}[H"
-        let normalised = viewport.replacingOccurrences(of: "\n", with: "\r\n")
-        let bytes = Data(prefix.utf8) + Data(normalised.utf8)
+        let normalised = body.replacingOccurrences(of: "\n", with: "\r\n")
+        let prefixData = Data(prefix.utf8)
+        var bodyData = Data(normalised.utf8)
+        let budget = snapshotByteBudget - prefixData.count
+        if budget > 0, bodyData.count > budget {
+            bodyData = trimToTail(bodyData, byteBudget: budget)
+        }
+        let bytes = prefixData + bodyData
         return .init(
             type: "screen",
             id: sessionID,
             content: bytes.base64EncodedString()
         )
+    }
+
+    private static func trimToTail(_ data: Data, byteBudget: Int) -> Data {
+        precondition(byteBudget >= 0)
+        if data.count <= byteBudget { return data }
+        var cutIndex = data.count - byteBudget
+        // Snap forward to the next \n so we never split a line in half.
+        // Worst case the loop walks to the end and we keep nothing.
+        let lf: UInt8 = 0x0A
+        while cutIndex < data.count, data[cutIndex] != lf {
+            cutIndex += 1
+        }
+        if cutIndex < data.count {
+            cutIndex += 1
+        }
+        return data.subdata(in: cutIndex..<data.count)
     }
 }
 

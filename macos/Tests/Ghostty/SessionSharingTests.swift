@@ -1144,7 +1144,7 @@ struct SessionSharingTests {
     @Test
     func screenSnapshotEncodesBase64WithClearAndHomePrefix() throws {
         let payload = SessionSharingScreenSnapshotPayload.encode(
-            viewport: "hello\nworld",
+            body: "hello\nworld",
             sessionID: "abc"
         )
 
@@ -1160,6 +1160,47 @@ struct SessionSharingTests {
             SessionSharingScreenSnapshotPayload.self, from: json
         )
         #expect(decoded == payload)
+    }
+
+    @Test
+    func screenSnapshotTrimsHistoryAtLineBoundaryWhenOverBudget() throws {
+        // Build a body that is well over the snapshot byte budget. Each
+        // line is ~ 2 KiB so the agent has to drop the oldest ones to
+        // fit a 32 KiB raw payload (less the \x1b[2J\x1b[H prefix).
+        let lineWidth = 2048
+        let lineCount = 32
+        let lines = (0..<lineCount).map { index -> String in
+            let prefix = String(format: "%04d ", index)
+            let filler = String(
+                repeating: "x",
+                count: max(0, lineWidth - prefix.utf8.count - 1)
+            )
+            return prefix + filler
+        }
+        let body = lines.joined(separator: "\n")
+
+        let payload = SessionSharingScreenSnapshotPayload.encode(
+            body: body,
+            sessionID: "abc"
+        )
+        let bytes = try #require(Data(base64Encoded: payload.content))
+
+        let prefix = Data("\u{1b}[2J\u{1b}[H".utf8)
+        #expect(bytes.starts(with: prefix))
+        #expect(
+            bytes.count
+                <= SessionSharingScreenSnapshotPayload.snapshotByteBudget
+        )
+
+        let body_text = try #require(
+            String(data: bytes.subdata(in: prefix.count..<bytes.count), encoding: .utf8)
+        )
+        // Whatever survived must end with the most recent line and start
+        // at a clean line boundary (i.e. the trim respected \n).
+        #expect(body_text.hasSuffix(lines.last!))
+        let firstLineStart = body_text.split(separator: "\r\n", maxSplits: 1).first ?? ""
+        #expect(firstLineStart.hasPrefix(String(format: "%04d ", lineCount - 1))
+                || lines.contains { $0 == String(firstLineStart) })
     }
 
     @Test
