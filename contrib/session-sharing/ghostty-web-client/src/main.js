@@ -23,7 +23,6 @@ const mobileToolbarToggle = document.querySelector("#mobileToolbarToggle");
 
 let terminal = null;
 let fitAddon = null;
-let resizeObserver = null;
 let socket = null;
 let activeSession = null;
 let activeSessionId = null;
@@ -117,11 +116,6 @@ async function ensureTerminal() {
       rows,
     });
   });
-  resizeObserver = new ResizeObserver(() => {
-    if (!fitAddon) return;
-    fitAddon.fit();
-  });
-  resizeObserver.observe(terminalMount);
   return terminal;
 }
 
@@ -749,6 +743,19 @@ function sendToolbarKeyEvent(name) {
   return true;
 }
 
+// Coalesces fit + bottom-scroll into one rAF tick. iOS keyboard show/hide
+// fires `visualViewport.scroll` dozens of times per animation; before this
+// each tick reflowed the terminal and triggered a full re-render that
+// looked like a top-down repaint on long sessions.
+const requestViewportFit = createCoalescedScroll(
+  (cb) => window.requestAnimationFrame(cb),
+  () => {
+    if (!fitAddon) return;
+    fitAddon.fit();
+    scrollTerminalToBottom();
+  },
+);
+
 function syncMobileViewportInsets() {
   const mobile = shouldUseMobileInput();
   const viewportHeight =
@@ -783,19 +790,92 @@ function syncMobileViewportInsets() {
     `${keyboardOffset}px`,
   );
 
-  if (fitAddon) {
-    window.requestAnimationFrame(() => {
-      fitAddon.fit();
-      scrollTerminalToBottom();
-    });
-  }
+  if (fitAddon) requestViewportFit();
   if (mobile || activeSessionId) {
     window.scrollTo(0, 0);
   }
 }
 
-terminalView.addEventListener("touchstart", focusTerminal, { passive: true });
-terminalView.addEventListener("pointerdown", () => {
+// Touch interaction: a tap focuses the hidden mobile input (which raises
+// the soft keyboard), but a vertical drag scrolls the terminal scrollback
+// instead. Previously every `touchstart` immediately popped the keyboard,
+// so swipes never reached the renderer and the terminal felt frozen.
+let touchScrollState = null;
+const TOUCH_TAP_THRESHOLD_PX = 6;
+
+function currentCellHeightPx() {
+  const metric = terminal?.renderer?.getMetrics?.();
+  if (metric && metric.height > 0) return metric.height;
+  const computed = Number.parseFloat(
+    window.getComputedStyle(terminalMount).fontSize,
+  );
+  return Number.isFinite(computed) && computed > 0 ? computed * 1.2 : 16;
+}
+
+terminalMount.addEventListener(
+  "touchstart",
+  (event) => {
+    if (event.touches.length !== 1) {
+      touchScrollState = null;
+      return;
+    }
+    const touch = event.touches[0];
+    touchScrollState = {
+      startY: touch.clientY,
+      lastY: touch.clientY,
+      cellHeight: currentCellHeightPx(),
+      moved: false,
+    };
+  },
+  { passive: true },
+);
+
+terminalMount.addEventListener(
+  "touchmove",
+  (event) => {
+    if (!touchScrollState || !terminal) return;
+    if (event.touches.length !== 1) {
+      touchScrollState = null;
+      return;
+    }
+    const touch = event.touches[0];
+    if (
+      Math.abs(touch.clientY - touchScrollState.startY) > TOUCH_TAP_THRESHOLD_PX
+    ) {
+      touchScrollState.moved = true;
+    }
+    if (!touchScrollState.moved) return;
+    if (typeof terminal.scrollLines !== "function") return;
+    const cellHeight = touchScrollState.cellHeight || 16;
+    // Drag down = scroll into older history (scrollLines wants negative).
+    const lines = Math.trunc(
+      (touchScrollState.lastY - touch.clientY) / cellHeight,
+    );
+    if (lines !== 0) {
+      terminal.scrollLines(lines);
+      touchScrollState.lastY -= lines * cellHeight;
+    }
+    if (event.cancelable) event.preventDefault();
+  },
+  { passive: false },
+);
+
+function endTouchScroll() {
+  if (!touchScrollState) return;
+  const wasTap = !touchScrollState.moved;
+  touchScrollState = null;
+  if (wasTap && shouldUseMobileInput()) focusTerminal();
+}
+
+terminalMount.addEventListener("touchend", endTouchScroll);
+terminalMount.addEventListener("touchcancel", () => {
+  touchScrollState = null;
+});
+
+terminalView.addEventListener("pointerdown", (event) => {
+  // Touch input is handled via touchend tap detection above so a vertical
+  // swipe scrolls the terminal instead of immediately focusing the input.
+  if (event.pointerType === "touch") return;
   if (shouldUseMobileInput()) {
     window.setTimeout(focusTerminal, 0);
   }
