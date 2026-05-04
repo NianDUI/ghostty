@@ -64,6 +64,7 @@ Each terminal surface runs three dedicated threads:
 - Input handling (key encoding, bindings, IME) in `src/input/`
 - Logging is controlled by `GHOSTTY_LOG` env var (destinations: `stderr`, `macos`) and compile-time optimization level (debug builds log to stderr by default)
 - Input-stack changes (key event → pty encoding) require manual IME testing on Linux: Wayland/X11 × ibus/fcitx/none × dead key / CJK / Emoji / Unicode hex. See `HACKING.md` "Input Stack Testing" for the full matrix — there is no automated coverage.
+- Changes to the C ABI between Zig and macOS — `include/ghostty.h` enums, `src/apprt/action.zig` (`Action` / `Action.Tag`), `src/input/Binding.zig` `Action` cases, `src/apprt/embedded.zig` exports — must be followed by `zig build -Demit-macos-app=false` before committing so `macos/GhosttyKit.xcframework/` (gitignored) is regenerated. The xcframework is the bridge the Swift code links against; without the rebuild Xcode fails with `cannot find GHOSTTY_ACTION_…` (or similar) even though `zig build test` is clean.
 
 ## Agent Rules
 
