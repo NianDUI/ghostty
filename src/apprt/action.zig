@@ -117,6 +117,12 @@ pub const Action = union(Key) {
     /// Toggle the command palette.
     toggle_command_palette,
 
+    /// Open or stop session sharing on the focused surface. Implemented
+    /// on macOS as a passthrough to the SurfaceView session-sharing
+    /// controller; other apprts can ignore this until they wire up
+    /// session sharing.
+    toggle_session_sharing,
+
     /// Toggle the visibility of all Ghostty terminal windows.
     toggle_visibility,
 
@@ -357,6 +363,7 @@ pub const Action = union(Key) {
         toggle_window_decorations,
         toggle_quick_terminal,
         toggle_command_palette,
+        toggle_session_sharing,
         toggle_visibility,
         toggle_background_opacity,
         move_tab,

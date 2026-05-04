@@ -708,6 +708,12 @@ fn actionCommands(action: Action.Key) []const Command {
         .crash,
         => comptime &.{},
 
+        .toggle_session_sharing => comptime &.{.{
+            .action = .toggle_session_sharing,
+            .title = "Share Terminal Session",
+            .description = "Toggle session sharing: open the configuration sheet, or stop the active share if one is running.",
+        }},
+
         // No commands because I'm not sure they make sense in a command
         // palette context.
         .toggle_command_palette,
