@@ -2107,6 +2107,23 @@ private final class SessionSharingController {
         }
     }
 
+    private func sendScrollbackResponseIfPossible(before: Int, count: Int) {
+        guard let webSocket, let surface = surfaceView?.surface else { return }
+        guard let payload = SessionSharingScrollbackPayload.respond(
+            from: surface,
+            sessionID: sessionID,
+            before: before,
+            requestedCount: count
+        ) else { return }
+        guard let data = try? JSONEncoder().encode(payload),
+              let text = String(data: data, encoding: .utf8) else { return }
+        webSocket.send(.string(text)) { [weak self] error in
+            if let error {
+                self?.handleDisconnect(error: error)
+            }
+        }
+    }
+
     private func receiveNextMessage() {
         guard let webSocket else { return }
         webSocket.receive { [weak self] result in
@@ -2166,6 +2183,10 @@ private final class SessionSharingController {
             // screen snapshot so the new viewer sees the current grid
             // instead of whatever the relay backlog last checkpointed.
             sendScreenSnapshotIfPossible()
+            return true
+
+        case .fetchScrollback(let before, let count):
+            sendScrollbackResponseIfPossible(before: before, count: count)
             return true
 
         case .sendPong(let pong):
@@ -2301,6 +2322,7 @@ enum SessionSharingInboundFrameAction: Equatable {
     case resize(cols: Int, rows: Int)
     case restoreOriginalSize
     case clientConnected
+    case fetchScrollback(before: Int, count: Int)
 
     static func parse(text: String, sessionID: String) -> Self {
         guard let data = text.data(using: .utf8),
@@ -2320,7 +2342,12 @@ enum SessionSharingInboundFrameAction: Equatable {
             return .restoreOriginalSize
         case "client_connected":
             return .clientConnected
-        case "hello", "pong":
+        case "fetch_scrollback":
+            if let before = frame.before, let count = frame.count, before >= 0, count > 0 {
+                return .fetchScrollback(before: before, count: count)
+            }
+            return .ignore
+        case "hello", "pong", "scrollback":
             return .ignore
         default:
             return .forwardToTerminal
@@ -3054,6 +3081,8 @@ private struct SessionSharingInboundControlFrame: Codable {
     let type: String
     let cols: Int?
     let rows: Int?
+    let before: Int?
+    let count: Int?
 }
 
 struct SessionSharingAppearancePayload: Codable, Equatable {
@@ -3221,6 +3250,161 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
             cutIndex += 1
         }
         return data.subdata(in: cutIndex..<data.count)
+    }
+}
+
+struct SessionSharingScrollbackPayload: Codable, Equatable {
+    /// Maximum raw VT bytes we'll return per response. Mirrors the
+    /// snapshot budget so the JSON+base64 wrapping fits in the relay
+    /// frame cap (256 KiB hard, 64 KiB backlog).
+    static let responseByteBudget = 32 * 1024
+
+    let type: String
+    let id: String
+    /// Echoes the request's `before` so the browser can match the
+    /// response to the right slot in its history buffer.
+    let before: Int
+    /// Number of history rows actually returned in `content`. May be
+    /// smaller than the request when we hit the top of the agent's
+    /// scrollback or when the byte budget clipped the slice.
+    let count: Int
+    /// The agent's current total history-line count, computed at
+    /// response time. The browser uses it to detect "no more older
+    /// rows available" (when `before + count >= total`).
+    let total: Int
+    /// Base64-encoded VT byte stream — the requested rows joined by
+    /// `\r\n`, no clear/home prefix. The browser combines this with
+    /// the snapshot body and live buffer at replay time.
+    let content: String
+
+    static func respond(
+        from surface: ghostty_surface_t,
+        sessionID: String,
+        before: Int,
+        requestedCount: Int
+    ) -> SessionSharingScrollbackPayload? {
+        guard before >= 0, requestedCount > 0 else { return nil }
+
+        // Read the entire history, oldest line first. Cheap because
+        // the call just walks the in-memory page list and emits text.
+        let selection = ghostty_selection_s(
+            top_left: ghostty_point_s(
+                tag: GHOSTTY_POINT_SURFACE,
+                coord: GHOSTTY_POINT_COORD_TOP_LEFT,
+                x: 0,
+                y: 0
+            ),
+            bottom_right: ghostty_point_s(
+                tag: GHOSTTY_POINT_SURFACE,
+                coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
+                x: 0,
+                y: 0
+            ),
+            rectangle: false
+        )
+        var text = ghostty_text_s()
+        let ok = ghostty_surface_read_text(surface, selection, &text)
+        defer {
+            if ok { ghostty_surface_free_text(surface, &text) }
+        }
+        let body: String
+        if ok, text.text_len > 0 {
+            body = String(
+                bytesNoCopy: UnsafeMutableRawPointer(mutating: text.text),
+                length: Int(text.text_len),
+                encoding: .utf8,
+                freeWhenDone: false
+            ) ?? ""
+        } else {
+            body = ""
+        }
+        return slice(
+            history: body,
+            sessionID: sessionID,
+            before: before,
+            requestedCount: requestedCount
+        )
+    }
+
+    /// Pure helper: given the full history text (lines separated by
+    /// `\n`, oldest first), return the slice the browser asked for.
+    /// Exposed for testing — the on-device path goes through `respond`.
+    static func slice(
+        history: String,
+        sessionID: String,
+        before: Int,
+        requestedCount: Int
+    ) -> SessionSharingScrollbackPayload {
+        // Drop the trailing empty string that `split(separator:)` may
+        // emit when the history ends with `\n`.
+        var lines = history.split(
+            separator: "\n",
+            omittingEmptySubsequences: false
+        ).map(String.init)
+        if let last = lines.last, last.isEmpty {
+            lines.removeLast()
+        }
+        let total = lines.count
+
+        // `before == 0` -> include the newest history row. Larger
+        // `before` skips that many newest rows. Indices map oldest
+        // first: lines[0] is oldest, lines[total-1] is newest.
+        let upperExclusive = max(0, total - before)
+        let lowerInclusive = max(0, upperExclusive - requestedCount)
+        let slice = Array(lines[lowerInclusive..<upperExclusive])
+
+        var content = slice.joined(separator: "\r\n")
+        var contentBytes = Data(content.utf8)
+        var emittedCount = slice.count
+        if contentBytes.count > responseByteBudget {
+            // Tail-truncate at line boundary to keep the *newest*
+            // rows in the slice — those are the ones the browser
+            // will scroll into view next.
+            let trimmed = SessionSharingScreenSnapshotPayload
+                .tailWithinByteBudget(
+                    lines: slice,
+                    byteBudget: responseByteBudget
+                )
+            content = trimmed.text
+            contentBytes = Data(content.utf8)
+            emittedCount = trimmed.count
+        }
+
+        return .init(
+            type: "scrollback",
+            id: sessionID,
+            before: before,
+            count: emittedCount,
+            total: total,
+            content: contentBytes.base64EncodedString()
+        )
+    }
+}
+
+extension SessionSharingScreenSnapshotPayload {
+    /// Trim a `\n`-separated tail of `lines` whose joined `\r\n` form
+    /// fits within `byteBudget`. Used by the scrollback response path
+    /// so the byte budget logic stays in one place.
+    static func tailWithinByteBudget(
+        lines: [String],
+        byteBudget: Int
+    ) -> (text: String, count: Int) {
+        precondition(byteBudget >= 0)
+        var bytes = 0
+        var keepFromIndex = lines.count
+        let separatorBytes = "\r\n".utf8.count
+        // Walk newest -> oldest accumulating budget.
+        for index in (0..<lines.count).reversed() {
+            let lineBytes = lines[index].utf8.count
+            let extra = bytes == 0 ? lineBytes : lineBytes + separatorBytes
+            if bytes + extra > byteBudget {
+                break
+            }
+            bytes += extra
+            keepFromIndex = index
+        }
+        let kept = Array(lines[keepFromIndex..<lines.count])
+        return (kept.joined(separator: "\r\n"), kept.count)
     }
 }
 

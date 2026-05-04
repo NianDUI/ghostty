@@ -2,6 +2,7 @@ import { FitAddon, init, Terminal } from "ghostty-web";
 import { buildAppearanceTheme } from "./appearance.js";
 import { redactErrorMessage } from "./redaction.js";
 import { createCoalescedScroll } from "./scroll.js";
+import { createReplayBuffer } from "./scrollback.js";
 
 const DEFAULT_TITLE = "Ghostty Session Sharing";
 const SESSION_QUERY_KEY = "session";
@@ -37,6 +38,13 @@ let pendingAltModifier = false;
 let isMobileComposing = false;
 let mobileFocusTimer = null;
 let sessionPollTimer = null;
+const replayBuffer = createReplayBuffer();
+// Latest host grid rows announced via `hello`. We need this to know
+// how many rows of the snapshot are "viewport" vs "history" so the
+// next fetch_scrollback request can set `before` correctly.
+let hostRows = 24;
+const SCROLLBACK_FETCH_BATCH = 200;
+const SCROLLBACK_TOP_TRIGGER_LINES = 10;
 
 backendBaseInput.value =
   localStorage.getItem("ghostty-sharing-backend-base") ?? location.origin;
@@ -116,6 +124,11 @@ async function ensureTerminal() {
       rows,
     });
   });
+  if (typeof terminal.onScroll === "function") {
+    terminal.onScroll(() => {
+      maybeRequestOlderScrollback();
+    });
+  }
   return terminal;
 }
 
@@ -297,6 +310,7 @@ async function connectToSession(session, { updateHistory = true } = {}) {
       }
 
       const bytes = new Uint8Array(event.data);
+      replayBuffer.onLive(bytes);
       term.write(bytes);
       if (shouldUseMobileInput()) {
         requestMobileBottomScroll();
@@ -329,6 +343,7 @@ function handleControlFrame(data) {
         Number.isInteger(frame.rows) &&
         terminal
       ) {
+        hostRows = frame.rows;
         terminal.resize(frame.cols, frame.rows);
       }
       return;
@@ -356,6 +371,9 @@ function handleControlFrame(data) {
     case "screen":
       applyScreenSnapshot(frame);
       return;
+    case "scrollback":
+      applyScrollbackResponse(frame);
+      return;
     default:
       if (terminal) terminal.write(data);
   }
@@ -365,6 +383,7 @@ function applyScreenSnapshot(frame) {
   if (!terminal || typeof frame?.content !== "string") return;
   const bytes = decodeBase64(frame.content);
   if (!bytes) return;
+  replayBuffer.onScreen(bytes);
   // The agent prefixes its snapshot with `\x1b[2J\x1b[H`, but reset()
   // also clears the active scrollback so a stale checkpoint can't
   // bleed through after the host re-emits the current viewport.
@@ -372,6 +391,51 @@ function applyScreenSnapshot(frame) {
     terminal.reset();
   }
   terminal.write(bytes);
+}
+
+function applyScrollbackResponse(frame) {
+  if (!terminal || typeof frame?.content !== "string") return;
+  const bytes = decodeBase64(frame.content);
+  if (!bytes) {
+    replayBuffer.fetchFailed();
+    return;
+  }
+  replayBuffer.onScrollback(bytes, {
+    count: Number.isInteger(frame.count) ? frame.count : 0,
+    total: Number.isInteger(frame.total) ? frame.total : null,
+  });
+  if (typeof terminal.reset === "function") {
+    terminal.reset();
+  }
+  terminal.write(replayBuffer.buildReplayBytes());
+}
+
+function maybeRequestOlderScrollback() {
+  if (!terminal || !socket || socket.readyState !== WebSocket.OPEN) return;
+  if (replayBuffer.isFetchInFlight()) return;
+  if (replayBuffer.hasReachedTop(hostRows)) return;
+  const scrollback =
+    typeof terminal.getScrollbackLength === "function"
+      ? terminal.getScrollbackLength()
+      : 0;
+  const viewportY =
+    typeof terminal.getViewportY === "function"
+      ? terminal.getViewportY()
+      : (terminal.viewportY ?? 0);
+  // viewportY is the offset from the live screen (0 = bottom). We
+  // trigger the fetch when the user is within a few lines of the
+  // top of currently-loaded scrollback so the new content lands
+  // before they hit the wall.
+  if (viewportY < scrollback - SCROLLBACK_TOP_TRIGGER_LINES) return;
+  replayBuffer.fetchStarted();
+  socket.send(
+    JSON.stringify({
+      type: "fetch_scrollback",
+      id: activeSession?.id ?? "",
+      before: replayBuffer.coveredHistoryRows(hostRows),
+      count: SCROLLBACK_FETCH_BATCH,
+    }),
+  );
 }
 
 function decodeBase64(text) {

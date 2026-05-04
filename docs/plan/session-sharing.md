@@ -341,39 +341,51 @@ Remaining:
   scroll off into xterm.js's own scrollback as the newer ones fill
   the visible grid. Covered by
   `screenSnapshotTrimsHistoryAtLineBoundaryWhenOverBudget`.
-- **P2 Phase 2b (open)** True lazy fetch beyond the 32 KiB
-  snapshot. Concrete shape, decided after rejecting the "scroll the
-  host alongside the browser" alternative (host scroll has
-  intrusive side effects on the macOS user and conflicts with
-  live PTY auto-scroll):
+- **P2 Phase 2b (landed)** True lazy fetch beyond the 32 KiB
+  snapshot, decided after rejecting the "scroll the host alongside
+  the browser" alternative (host scroll has intrusive side
+  effects on the macOS user and conflicts with live PTY
+  auto-scroll). Shape that landed:
   - **Protocol**: client → agent
-    `{type:"fetch_scrollback", id, before:<oldest_held_idx|-1>, count}`
-    asks for `count` lines older than `before` (or the most recent
-    batch when `before == -1`). Agent → client
-    `{type:"scrollback", id, start, count, total, content}` where
-    `start` is the absolute history-index of the first returned
-    row, `total` is the agent's current scrollback length, and
-    `content` is base64-encoded VT bytes.
-  - **Agent**: read-only access via
-    `ghostty_surface_read_text(.history, .exact(0, y))`; do not
-    move the host's viewport. Cap `count` at the same 32 KiB byte
-    budget per response.
-  - **Relay**: pass-through; no parsing change needed. Stays
-    layering-clean.
-  - **Browser**: maintain a JS-side `historyBuffer` (string of
-    accumulated VT bytes since connect) plus the snapshot. When
-    `viewportY >= scrollbackLength - margin`, send a fetch. On
-    response, prepend to `historyBuffer` and refresh via
-    `terminal.reset()` + `term.write(historyBuffer + snapshot
-    + post-snapshot bytes)`. The reset is the "no fork" trick
-    that sidesteps `ghostty-web`'s missing prepend-rows API.
+    `{type:"fetch_scrollback", id, before, count}` asks for
+    `count` rows older than the `before`-many newest rows.
+    Agent → client
+    `{type:"scrollback", id, before, count, total, content}`
+    echoes `before`, returns the actual emitted row count, the
+    agent's current total history length, and base64-encoded VT
+    bytes (no clear/home prefix, just rows joined by `\r\n`).
+  - **Agent**: `SessionSharingScrollbackPayload.respond` reads
+    history via `ghostty_surface_read_text(.history, top_left ↔
+    bottom_right)`, splits on `\n`, slices `[total - before -
+    count, total - before)`, tail-trims to the same 32 KiB
+    budget as the snapshot. Read-only: never moves the host's
+    viewport. Inbound dispatch sits in
+    `SessionSharingInboundFrameAction.fetchScrollback`. Covered
+    by the slicer Swift cases.
+  - **Relay**: untouched in code; just passes the new frames.
+    Smoke test asserts the round trip.
+  - **Browser**: `src/scrollback.js` holds a small replay buffer
+    (`olderChunks`, `snapshotBody` with prefix stripped,
+    `liveBuffer`, `inflight`, `agentTotal`). On every
+    `terminal.onScroll` we run `maybeRequestOlderScrollback`,
+    which fires a `fetch_scrollback` whenever the viewport is
+    within `SCROLLBACK_TOP_TRIGGER_LINES` of the top, no fetch
+    is in flight, and `hasReachedTop` is false. On response we
+    prepend the chunk and refresh via `terminal.reset()` +
+    `terminal.write(buildReplayBytes())`, where
+    `buildReplayBytes()` always emits a single `\x1b[2J\x1b[H`
+    prefix followed by older chunks (oldest first), the
+    snapshot body, and the live buffer. Covered by
+    `test/scrollback.test.mjs`.
   - **UX trade-off**: every fetch causes a full reset+replay
     flash. Acceptable because fetches are user-initiated (scroll
-    to top) and bounded in size.
+    to top) and bounded by `SCROLLBACK_FETCH_BATCH = 200` rows
+    per round-trip.
   - **Out of scope here**: SGR colour preservation (the snapshot
     is plain text). Lift that into a separate "styled cell
     readback" item if/when it becomes a real complaint — would
-    need a new `ghostty_surface_read_cells` C API on the Zig side.
+    need a new `ghostty_surface_read_cells` C API on the Zig
+    side, and the corresponding browser-side replay path.
 
 Browser-side smoke automation lives in Section 6 (single source of
 truth).

@@ -934,6 +934,48 @@ def main() -> int:
         assert connected["type"] == "client_connected"
 
         client_b.close()
+
+        # Phase 2b: client → relay → agent fetch_scrollback request,
+        # and agent → relay → client scrollback response. Relay just
+        # passes the JSON envelopes through; the protocol contract
+        # (echoed `before`, `total`, base64 `content`) lives in the
+        # macOS controller and the browser replay buffer.
+        fetch_request = json.dumps(
+            {
+                "type": "fetch_scrollback",
+                "id": control_session_id,
+                "before": 3,
+                "count": 200,
+            }
+        )
+        client.send_text(fetch_request)
+        opcode, payload = agent.receive()
+        assert opcode == 0x1, opcode
+        received_fetch = json.loads(payload.decode("utf-8"))
+        assert received_fetch["type"] == "fetch_scrollback"
+        assert received_fetch["before"] == 3
+        assert received_fetch["count"] == 200
+
+        scrollback_response = json.dumps(
+            {
+                "type": "scrollback",
+                "id": control_session_id,
+                "before": 3,
+                "count": 1,
+                "total": 8,
+                "content": "b2xkZXI=",  # base64("older")
+            }
+        )
+        agent.send_text(scrollback_response)
+        opcode, payload = client.receive()
+        assert opcode == 0x1, opcode
+        received_scrollback = json.loads(payload.decode("utf-8"))
+        assert received_scrollback["type"] == "scrollback"
+        assert received_scrollback["before"] == 3
+        assert received_scrollback["count"] == 1
+        assert received_scrollback["total"] == 8
+        assert received_scrollback["content"] == "b2xkZXI="
+
         # The original client is still attached, so client_b leaving
         # does not flip the agent into client_disconnect; we only see
         # that signal once the *last* client drops below.

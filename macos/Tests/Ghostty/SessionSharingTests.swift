@@ -1163,6 +1163,91 @@ struct SessionSharingTests {
     }
 
     @Test
+    func inboundFrameRecognisesFetchScrollback() {
+        let action = SessionSharingInboundFrameAction.parse(
+            text: #"{"type":"fetch_scrollback","before":3,"count":50}"#,
+            sessionID: "abc"
+        )
+        #expect(action == .fetchScrollback(before: 3, count: 50))
+    }
+
+    @Test
+    func inboundFrameRejectsFetchScrollbackWithBadFields() {
+        let cases: [(text: String, expected: SessionSharingInboundFrameAction)] = [
+            (#"{"type":"fetch_scrollback","before":-1,"count":10}"#, .ignore),
+            (#"{"type":"fetch_scrollback","before":0,"count":0}"#, .ignore),
+            (#"{"type":"fetch_scrollback","before":0}"#, .ignore),
+        ]
+        for (text, expected) in cases {
+            #expect(
+                SessionSharingInboundFrameAction.parse(text: text, sessionID: "abc")
+                    == expected
+            )
+        }
+    }
+
+    @Test
+    func scrollbackSlicerReturnsNewestRowsForBeforeZero() throws {
+        let history = (0..<5)
+            .map { "row\($0)" }
+            .joined(separator: "\n")
+        let payload = SessionSharingScrollbackPayload.slice(
+            history: history,
+            sessionID: "abc",
+            before: 0,
+            requestedCount: 2
+        )
+        #expect(payload.before == 0)
+        #expect(payload.count == 2)
+        #expect(payload.total == 5)
+        let bytes = try #require(Data(base64Encoded: payload.content))
+        let text = try #require(String(data: bytes, encoding: .utf8))
+        #expect(text == "row3\r\nrow4")
+    }
+
+    @Test
+    func scrollbackSlicerWalksOlderViaBefore() throws {
+        let history = (0..<5)
+            .map { "row\($0)" }
+            .joined(separator: "\n")
+        let first = SessionSharingScrollbackPayload.slice(
+            history: history,
+            sessionID: "abc",
+            before: 0,
+            requestedCount: 2
+        )
+        let second = SessionSharingScrollbackPayload.slice(
+            history: history,
+            sessionID: "abc",
+            before: first.count,
+            requestedCount: 2
+        )
+        let bytes = try #require(Data(base64Encoded: second.content))
+        let text = try #require(String(data: bytes, encoding: .utf8))
+        #expect(text == "row1\r\nrow2")
+        #expect(second.count == 2)
+        #expect(second.total == 5)
+    }
+
+    @Test
+    func scrollbackSlicerClampsAtOldestRow() throws {
+        let history = "row0\nrow1\nrow2"
+        let payload = SessionSharingScrollbackPayload.slice(
+            history: history,
+            sessionID: "abc",
+            before: 2,
+            requestedCount: 5
+        )
+        // Only row0 is older than the two newest, so we get a single
+        // line back and `total` confirms the agent has nothing more.
+        let bytes = try #require(Data(base64Encoded: payload.content))
+        let text = try #require(String(data: bytes, encoding: .utf8))
+        #expect(text == "row0")
+        #expect(payload.count == 1)
+        #expect(payload.total == 3)
+    }
+
+    @Test
     func screenSnapshotTrimsHistoryAtLineBoundaryWhenOverBudget() throws {
         // Build a body that is well over the snapshot byte budget. Each
         // line is ~ 2 KiB so the agent has to drop the oldest ones to
