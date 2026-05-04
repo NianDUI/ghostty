@@ -1,5 +1,6 @@
 import { FitAddon, init, Terminal } from "ghostty-web";
 import { redactErrorMessage } from "./redaction.js";
+import { createCoalescedScroll } from "./scroll.js";
 
 const DEFAULT_TITLE = "Ghostty Session Sharing";
 const SESSION_QUERY_KEY = "session";
@@ -303,7 +304,7 @@ async function connectToSession(session, { updateHistory = true } = {}) {
       const bytes = new Uint8Array(event.data);
       term.write(bytes);
       if (shouldUseMobileInput()) {
-        window.setTimeout(scrollTerminalToBottom, 0);
+        requestMobileBottomScroll();
       }
     });
   } catch (error) {
@@ -595,6 +596,15 @@ function scrollTerminalToBottom() {
   }
 }
 
+// Mobile auto-scroll: a busy producer fires hundreds of binary frames per
+// second, and previously each one queued its own setTimeout. Folding them
+// into a single rAF tick caps the work at one scroll-to-bottom per frame
+// while still keeping the cursor visible. See `scroll.js` for the helper.
+const requestMobileBottomScroll = createCoalescedScroll(
+  (cb) => window.requestAnimationFrame(cb),
+  scrollTerminalToBottom,
+);
+
 function scheduleMobileRefocus() {
   if (!shouldUseMobileInput() || !activeSessionId || document.hidden) return;
   if (mobileFocusTimer !== null) {
@@ -782,7 +792,7 @@ mobileInput.addEventListener("input", () => {
   if (!mobileInput.value) return;
   sendInput(applyPendingModifiers(mobileInput.value));
   mobileInput.value = "";
-  window.setTimeout(scrollTerminalToBottom, 0);
+  requestMobileBottomScroll();
   scheduleMobileRefocus();
 });
 
@@ -795,7 +805,7 @@ mobileInput.addEventListener("compositionend", () => {
   if (!mobileInput.value) return;
   sendInput(applyPendingModifiers(mobileInput.value));
   mobileInput.value = "";
-  window.setTimeout(scrollTerminalToBottom, 0);
+  requestMobileBottomScroll();
   scheduleMobileRefocus();
 });
 
@@ -805,21 +815,21 @@ mobileInput.addEventListener("keydown", (event) => {
       event.preventDefault();
       sendInput(applyPendingModifiers("\r"));
       mobileInput.value = "";
-      window.setTimeout(scrollTerminalToBottom, 0);
+      requestMobileBottomScroll();
       scheduleMobileRefocus();
       break;
     case "Tab":
       event.preventDefault();
       sendInput(applyPendingModifiers("\t"));
       mobileInput.value = "";
-      window.setTimeout(scrollTerminalToBottom, 0);
+      requestMobileBottomScroll();
       scheduleMobileRefocus();
       break;
     case "Backspace":
       if (mobileInput.value.length === 0) {
         sendInput(applyPendingModifiers("\u007f"));
       }
-      window.setTimeout(scrollTerminalToBottom, 0);
+      requestMobileBottomScroll();
       scheduleMobileRefocus();
       break;
     default:
