@@ -581,6 +581,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_TOGGLE_COMMAND_PALETTE:
                 toggleCommandPalette(app, target: target)
 
+            case GHOSTTY_ACTION_TOGGLE_SESSION_SHARING:
+                toggleSessionSharing(app, target: target)
+
             case GHOSTTY_ACTION_TOGGLE_MAXIMIZE:
                 toggleMaximize(app, target: target)
 
@@ -1004,6 +1007,26 @@ extension Ghostty {
                     name: .ghosttyCommandPaletteDidToggle,
                     object: surfaceView
                 )
+
+            default:
+                assertionFailure()
+            }
+        }
+
+        private static func toggleSessionSharing(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s) {
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                Ghostty.logger.warning("toggle session sharing requires a surface target")
+                return
+
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface else { return }
+                guard let surfaceView = self.surfaceView(from: surface) else { return }
+                DispatchQueue.main.async {
+                    surfaceView.toggleSessionSharing(from: surfaceView.window)
+                }
 
             default:
                 assertionFailure()

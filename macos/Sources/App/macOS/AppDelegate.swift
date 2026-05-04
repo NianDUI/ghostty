@@ -1248,10 +1248,18 @@ extension AppDelegate {
 
         syncMenuShortcut(config, action: "toggle_secure_input", menuItem: self.menuSecureInput)
 
-        if let menuToggleSessionSharing {
-            menuToggleSessionSharing.keyEquivalent = "s"
-            menuToggleSessionSharing.keyEquivalentModifierMask = [.control, .shift]
-        }
+        // First let the user's `keybind = … = toggle_session_sharing` in
+        // ghostty config drive the shortcut, the same way every other
+        // configurable menu item does. If the user hasn't bound it,
+        // syncMenuShortcut clears the equivalent; we then fall back to
+        // the long-standing default ctrl+shift+s so the shortcut still
+        // works out of the box.
+        syncMenuShortcut(config, action: "toggle_session_sharing", menuItem: self.menuToggleSessionSharing)
+        EditMenuFallbackShortcut.applyIfMissing(
+            menuToggleSessionSharing,
+            equivalent: "s",
+            modifiers: [.control, .shift]
+        )
 
         // This menu item is NOT synced with the configuration because it disables macOS
         // global fullscreen keyboard shortcut. The shortcut in the Ghostty config will continue
@@ -1272,13 +1280,17 @@ extension AppDelegate {
         guard let parentMenu = menuChangeTitle?.menu else { return }
         guard let anchor = menuChangeTitle, let anchorIndex = parentMenu.items.firstIndex(of: anchor) else { return }
 
+        // The shortcut is intentionally left empty here; it's wired up in
+        // syncMenuShortcuts() so user `keybind = … = toggle_session_sharing`
+        // configuration takes precedence, with EditMenuFallbackShortcut
+        // applying the default ctrl+shift+s when the user hasn't bound
+        // anything.
         let item = NSMenuItem(
             title: LocalizedString.text("共享此会话"),
             action: #selector(BaseTerminalController.toggleSessionSharing(_:)),
-            keyEquivalent: "s"
+            keyEquivalent: ""
         )
         item.target = nil
-        item.keyEquivalentModifierMask = [.control, .shift]
         parentMenu.insertItem(item, at: anchorIndex)
         menuToggleSessionSharing = item
     }
