@@ -269,6 +269,17 @@ Done:
   exponential backoff. Each reconnect re-fetches `/api/sessions`
   with the user token, so a fresh `client_token` is picked up
   automatically once the host re-registers.
+- Mobile auto-scroll under noisy producers (`cat` / `npm install`
+  / dense logs) used to queue one `setTimeout(scrollToBottom, 0)`
+  per binary frame, dwarfing the actual render cost.
+  `createCoalescedScroll` (in `src/scroll.js`) folds back-to-back
+  requests into a single `requestAnimationFrame` tick: at most one
+  `terminal.scrollToBottom()` per frame, regardless of how many
+  frames the relay just delivered. All the
+  `setTimeout(scrollTerminalToBottom, 0)` call sites in `main.js`
+  now go through `requestMobileBottomScroll()`. Covered by four
+  `node --test` cases in
+  `ghostty-web-client/test/scroll.test.mjs`.
 
 Remaining:
 
@@ -277,7 +288,6 @@ Remaining:
   best-effort and breaks on dead-key / CJK input.
 - **P1** Reconnect UX validation on a real mobile device (page
   refresh, screen lock, switching tabs).
-- **P1** Visual / performance work on larger scroll regions.
 
 Browser-side smoke automation lives in Section 6 (single source of
 truth).
