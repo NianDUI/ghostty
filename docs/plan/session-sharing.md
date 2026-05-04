@@ -11,7 +11,7 @@ Section dashboard:
 
 | Section                   | State                                          | Owner |
 | ------------------------- | ---------------------------------------------- | ----- |
-| 1. Desktop Host (macOS)   | shippable for LAN, polish remains              | macOS |
+| 1. Desktop Host (macOS)   | covered                                        | macOS |
 | 1. Desktop Host (GTK)     | not started; trigger-gated                     | Linux |
 | 2. Core Bridge / Terminal | smoke coverage in place; threading review TODO | Zig   |
 | 3. Relay Service          | production-shaped; see `relay-production.md`   | Relay |
@@ -159,11 +159,23 @@ Done:
   `setState`, so the badge follows the actual scheduled wait
   instead of staying at a static "重连中...". Covered by the
   expanded `sharingStateDerivedPresentation` Swift Testing case.
+- Sharing shortcut is now a first-class configurable binding.
+  `toggle_session_sharing` is a real binding action across the
+  full stack: `src/input/Binding.zig`,
+  `src/input/command.zig` (command-palette entry "Share Terminal
+  Session"), `src/Surface.zig` (dispatch to apprt),
+  `src/apprt/action.zig` + `include/ghostty.h`
+  (GHOSTTY_ACTION_TOGGLE_SESSION_SHARING), and macOS
+  `Ghostty.App.swift` (`toggleSessionSharing(app:target:)` posts
+  back to the focused SurfaceView). `AppDelegate.syncMenuShortcuts`
+  calls `syncMenuShortcut(config, action: "toggle_session_sharing", …)`
+  so a user `keybind = ⌥⌘S = toggle_session_sharing` overrides the
+  menu shortcut, with `EditMenuFallbackShortcut.applyIfMissing`
+  preserving the default ⌃⇧S when the user hasn't bound anything.
 
 Remaining:
 
-- **P1** Move the sharing shortcut into the standard configurable
-  shortcut system instead of a bespoke binding.
+- (none — open Section 1 macOS items have all been picked up.)
 
 #### GTK / Linux
 
