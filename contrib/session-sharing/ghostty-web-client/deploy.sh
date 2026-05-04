@@ -2,25 +2,27 @@
 # Build and rsync the session-sharing web client to the relay host.
 #
 # Usage:
-#   ./deploy.sh                # npm run build + rsync to the defaults below
+#   ./deploy.sh                # npm run build + rsync to the configured target
 #   ./deploy.sh --dry-run      # preview what rsync would change
 #   ./deploy.sh --skip-build   # rsync the existing dist/ as-is
 #
-# Override the target with environment variables:
-#   DEPLOY_HOST=user@host \
-#   DEPLOY_PATH=/srv/web-client/dist/ \
-#     ./deploy.sh
+# The deploy target is read from a sibling `deploy.env` file (gitignored)
+# OR from the environment. The repo ships a `deploy.env.example`; copy
+# it once and fill in your real DEPLOY_HOST / DEPLOY_PATH:
 #
-# Defaults match the production relay (GHOSTTY_RELAY_STATIC_ROOT in
-# /etc/ghostty-relay.env). The relay serves files directly off disk, so no
-# service restart is needed after a successful sync.
+#   cp deploy.env.example deploy.env
+#   $EDITOR deploy.env
+#
+# Or pass them inline:
+#
+#   DEPLOY_HOST=user@host DEPLOY_PATH=/srv/web/dist/ ./deploy.sh
+#
+# The relay serves files directly off disk, so no service restart is
+# needed after a successful sync.
 
 set -euo pipefail
 
 cd "$(dirname "$0")"
-
-DEPLOY_HOST="${DEPLOY_HOST:-root@47.94.215.160}"
-DEPLOY_PATH="${DEPLOY_PATH:-/opt/ghostty-session-sharing/ghostty-web-client/dist/}"
 
 skip_build=0
 dry_run=0
@@ -29,7 +31,7 @@ for arg in "$@"; do
         --skip-build) skip_build=1 ;;
         --dry-run)    dry_run=1 ;;
         -h|--help)
-            sed -n '2,17p' "$0"
+            sed -n '2,21p' "$0"
             exit 0
             ;;
         *)
@@ -38,6 +40,24 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+if [[ -f deploy.env ]]; then
+    # shellcheck disable=SC1091
+    source ./deploy.env
+fi
+
+DEPLOY_HOST="${DEPLOY_HOST:-}"
+DEPLOY_PATH="${DEPLOY_PATH:-}"
+
+if [[ -z "$DEPLOY_HOST" || -z "$DEPLOY_PATH" ]]; then
+    cat >&2 <<'EOF'
+deploy.sh: missing DEPLOY_HOST or DEPLOY_PATH.
+  Either copy deploy.env.example to deploy.env and fill in the real
+  values, or run with the variables set inline:
+      DEPLOY_HOST=user@host DEPLOY_PATH=/srv/web/dist/ ./deploy.sh
+EOF
+    exit 2
+fi
 
 if [[ "$skip_build" -eq 0 ]]; then
     npm run build

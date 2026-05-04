@@ -1,2 +1,5 @@
 node_modules/
 dist/
+# Local deploy target — copy deploy.env.example to deploy.env and
+# fill in the real DEPLOY_HOST / DEPLOY_PATH for your relay.
+deploy.env
