@@ -51,7 +51,11 @@ let hostCols = 80;
 // browser at 80x24 even when the host is bigger.
 let helloReceived = false;
 const SCROLLBACK_FETCH_BATCH = 200;
-const SCROLLBACK_TOP_TRIGGER_LINES = 10;
+// Distance from the top of currently-loaded scrollback at which we
+// fire the next fetch. Bumped from 10 to 50 so a fast swipe / drag
+// doesn't bottom out before the older batch lands; 50 ≈ 2 swipe
+// gestures of head-room on a phone.
+const SCROLLBACK_TOP_TRIGGER_LINES = 50;
 const LOCK_HOST_SIZE_KEY = "ghostty-sharing-lock-host-size";
 
 backendBaseInput.value =

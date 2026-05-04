@@ -18,6 +18,15 @@ export const SNAPSHOT_PREFIX = new Uint8Array([
   0x1b, 0x5b, 0x32, 0x4a, 0x1b, 0x5b, 0x48,
 ]);
 
+// Hard cap on the live byte buffer between snapshots. Without it a
+// noisy producer (`cat /var/log/system.log`, `npm install`) would
+// grow the JS heap unboundedly — every replay would also have to
+// rewrite the entire history. 256 KiB is roughly 4× the relay's
+// per-session backlog cap, enough to comfortably cover the gap
+// between two snapshots on a busy session without becoming a
+// long-tail memory leak.
+const LIVE_BUFFER_BYTES_CAP = 256 * 1024;
+
 function startsWithPrefix(bytes, prefix) {
   if (!bytes || bytes.length < prefix.length) return false;
   for (let i = 0; i < prefix.length; i += 1) {
@@ -90,8 +99,18 @@ export function createReplayBuffer() {
     },
     onLive(bytes) {
       // Append; we replay the full live buffer on each future fetch
-      // so older content lands in the correct relative position.
-      liveBuffer = concatBytes([liveBuffer, bytes]);
+      // so older content lands in the correct relative position. Cap
+      // the buffer so a long noisy session doesn't leak memory or
+      // make every replay drag the full session through term.write.
+      // Trim from the front: the byte at the cut may land mid-VT
+      // sequence, but the next live byte fixes that on its own and
+      // the snapshot replay always restarts from a clean
+      // `\x1b[2J\x1b[H`.
+      const appended = concatBytes([liveBuffer, bytes]);
+      liveBuffer =
+        appended.length > LIVE_BUFFER_BYTES_CAP
+          ? appended.subarray(appended.length - LIVE_BUFFER_BYTES_CAP)
+          : appended;
     },
     onScrollback(decodedBytes, { count, total } = {}) {
       // The newest fetch comes from BEFORE our oldest known row, so

@@ -1,9 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  createReplayBuffer,
-  SNAPSHOT_PREFIX,
-} from "../src/scrollback.js";
+import { createReplayBuffer, SNAPSHOT_PREFIX } from "../src/scrollback.js";
 
 const PREFIX = SNAPSHOT_PREFIX;
 
@@ -84,6 +81,25 @@ test("hasReachedTop flips once covered rows match the agent total", () => {
   buf.onScrollback(bytes("older"), { count: 4, total: 5 });
   assert.equal(buf.coveredHistoryRows(24), 5);
   assert.equal(buf.hasReachedTop(24), true);
+});
+
+test("onLive caps the buffer to keep memory bounded on a noisy session", () => {
+  const buf = createReplayBuffer();
+  buf.onScreen(snapshotBytes("snap"));
+  // Push more than the soft cap (~256 KiB) so the trim has to fire.
+  // The exact threshold isn't part of the public API; we just need
+  // the buffer to refuse to grow past a reasonable ceiling.
+  const oneKb = new Uint8Array(1024);
+  for (let i = 0; i < 320; i += 1) buf.onLive(oneKb);
+  const liveLen = buf._state().liveBuffer.length;
+  assert.ok(
+    liveLen <= 256 * 1024,
+    `live buffer should be trimmed (got ${liveLen} bytes)`,
+  );
+  assert.ok(
+    liveLen >= 256 * 1024 - 1024,
+    `live buffer should keep close to the cap (got ${liveLen} bytes)`,
+  );
 });
 
 test("a fresh onScreen tears down older chunks and live buffer", () => {
