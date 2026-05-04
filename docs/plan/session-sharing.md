@@ -13,7 +13,7 @@ Section dashboard:
 | ------------------------- | ---------------------------------------------- | ----- |
 | 1. Desktop Host (macOS)   | covered                                        | macOS |
 | 1. Desktop Host (GTK)     | not started; trigger-gated                     | Linux |
-| 2. Core Bridge / Terminal | smoke coverage in place; threading review TODO | Zig   |
+| 2. Core Bridge / Terminal | covered                                        | Zig   |
 | 3. Relay Service          | production-shaped; see `relay-production.md`   | Relay |
 | 4. Mobile Web Client      | usable on desktop browser, mobile UX gaps      | Web   |
 | 5. Security & Storage     | redaction + Keychain write covered both sides  | macOS |
@@ -215,11 +215,18 @@ Done:
   that thread is always the IO read thread set up in
   `Exec.threadMain` / `threadMainWindows`; manual callers must pick
   one dedicated thread.
+- End-to-end resize + control-channel round trip is exercised by
+  the relay smoke test: it drives an agent + client through the
+  three control frames the host and browser actually exchange —
+  agent → client `hello` (carries the host's initial cols/rows),
+  client → agent `resize` (browser-driven viewport change), and
+  the relay-emitted `client_disconnect` signal that the macOS
+  controller uses to restore the original surface size. JSON
+  bodies are asserted intact in both directions.
 
 Remaining:
 
-- **P1** End-to-end resize + control-channel verification (macOS
-  surface size change → relay → browser size update and back).
+- (none — open Section 2 items have all been picked up.)
 
 ### 3. Relay Service
 
