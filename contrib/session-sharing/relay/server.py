@@ -19,8 +19,6 @@ from typing import Optional
 
 
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-SESSION_BACKLOG_LIMIT = 256 * 1024
-SESSION_BACKLOG_FRAME_LIMIT = 512
 DEFAULT_MAX_BODY_BYTES = 64 * 1024
 DEFAULT_MAX_SESSIONS = 4096
 DEFAULT_MAX_CLIENTS_PER_SESSION = 8
@@ -82,6 +80,16 @@ def env_bool(name: str, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Per-session replay backlog. A fresh client connect drains the entire
+# backlog through `term.write` before live frames resume; a 256 KiB cap
+# was producing a visible top-to-bottom scan on long sessions, so the
+# default is now sized for "a few screens of recent activity" and the
+# operator can dial it back up via env where the longer scrollback is
+# worth the slower first paint.
+SESSION_BACKLOG_LIMIT = env_int("GHOSTTY_RELAY_SESSION_BACKLOG_BYTES", 64 * 1024)
+SESSION_BACKLOG_FRAME_LIMIT = env_int("GHOSTTY_RELAY_SESSION_BACKLOG_FRAMES", 256)
 
 
 def parse_trusted_proxies(value: str) -> tuple:

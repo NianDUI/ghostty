@@ -295,6 +295,42 @@ Remaining:
   best-effort and breaks on dead-key / CJK input.
 - **P1** Reconnect UX validation on a real mobile device (page
   refresh, screen lock, switching tabs).
+- **P1** Lower the relay's first-screen replay so a fresh browser
+  join doesn't render a visible top-to-bottom scan over a long
+  session. `server.py:22-23` currently caches up to `256 KiB` /
+  `512` frames per session and `replay_backlog` writes the entire
+  buffer through `term.write` on connect. Drop the defaults to
+  something closer to "a few screens of recent activity"
+  (e.g. `64 KiB` / `256` frames) and promote the caps to env-tunable
+  knobs (`GHOSTTY_RELAY_SESSION_BACKLOG_BYTES` /
+  `GHOSTTY_RELAY_SESSION_BACKLOG_FRAMES`) so operators can dial
+  them per deployment. Trade-off: a late-joining client sees less
+  recent history before the next live output from the host.
+- **P1** Touch-drag the right-edge scrollbar so phone users get
+  parity with mouse users. `ghostty-web`'s built-in scrollbar
+  (`dist/ghostty-web.js:2177`, 8 px wide, 4 px right padding) only
+  binds `mousedown`, so the thumb is unreachable from a touch
+  device. Hit-test `touchstart` on `terminalMount` against the
+  scrollbar lane (`canvas.width - 12 .. canvas.width - 4`); when
+  inside, translate the touch Y into a viewport line via the same
+  geometry the renderer uses (`k = 4`, `M = canvas.height - 8`) and
+  call `terminal.scrollToLine(...)`. Outside the lane, fall through
+  to the existing free-scroll handler that the touch-swipe work
+  already added in `main.js`.
+- **P2** Replace the byte-replay backlog with a state-snapshot
+  model so a fresh join shows the host's current viewport instead
+  of replaying queued bytes, and so scrollback isn't bounded by
+  the relay backlog cap. macOS agent emits a one-shot snapshot of
+  the visible screen on `hello` (cells + SGR encoded) plus a new
+  `fetch_scrollback { start_line, count }` control frame backed by
+  the live `Screen.PageList` for on-demand history. Browser side
+  needs an "insert rows above existing scrollback" path, which
+  `ghostty-web` doesn't expose today — likely requires a fork or
+  upstream PR. Drops the relay's history cap, eliminates the
+  first-screen scan, and unblocks the "load on scroll" UX.
+  Trigger: revisit once the P1 backlog cap above is consistently
+  too small for typical sessions, or once the P0 mobile IME work
+  lands and we want to actually GA-ship the mobile path.
 
 Browser-side smoke automation lives in Section 6 (single source of
 truth).

@@ -797,11 +797,21 @@ function syncMobileViewportInsets() {
 }
 
 // Touch interaction: a tap focuses the hidden mobile input (which raises
-// the soft keyboard), but a vertical drag scrolls the terminal scrollback
-// instead. Previously every `touchstart` immediately popped the keyboard,
-// so swipes never reached the renderer and the terminal felt frozen.
+// the soft keyboard), a vertical drag in the body scrolls the scrollback,
+// and a touch in the right-edge scrollbar lane drags the thumb (xterm.js
+// only binds `mousedown` for the scrollbar so the lane is unreachable
+// from a touch device by default). Previously every `touchstart`
+// immediately popped the keyboard, so swipes never reached the renderer
+// and the terminal felt frozen.
 let touchScrollState = null;
 const TOUCH_TAP_THRESHOLD_PX = 6;
+// Mirror of ghostty-web's renderScrollbar layout: 8 px wide thumb in a
+// lane offset 4 px from the right edge, with 4 px top/bottom padding on
+// the track. See `node_modules/ghostty-web/dist/ghostty-web.js` ~L2186.
+const SCROLLBAR_LANE_WIDTH_PX = 8;
+const SCROLLBAR_LANE_RIGHT_PADDING_PX = 4;
+const SCROLLBAR_TRACK_PADDING_Y_PX = 4;
+const SCROLLBAR_HIT_SLOP_PX = 6;
 
 function currentCellHeightPx() {
   const metric = terminal?.renderer?.getMetrics?.();
@@ -812,6 +822,43 @@ function currentCellHeightPx() {
   return Number.isFinite(computed) && computed > 0 ? computed * 1.2 : 16;
 }
 
+function terminalCanvas() {
+  return terminal?.element?.querySelector?.("canvas") ?? null;
+}
+
+function scrollbarHitTest(touch) {
+  if (!terminal) return null;
+  const canvas = terminalCanvas();
+  if (!canvas) return null;
+  const scrollback =
+    typeof terminal.getScrollbackLength === "function"
+      ? terminal.getScrollbackLength()
+      : 0;
+  if (scrollback <= 0) return null;
+  const rect = canvas.getBoundingClientRect();
+  const x = touch.clientX - rect.left;
+  const laneRight = rect.width - SCROLLBAR_LANE_RIGHT_PADDING_PX;
+  const laneLeft = laneRight - SCROLLBAR_LANE_WIDTH_PX;
+  if (
+    x < laneLeft - SCROLLBAR_HIT_SLOP_PX ||
+    x > laneRight + SCROLLBAR_HIT_SLOP_PX
+  ) {
+    return null;
+  }
+  return { canvasRect: rect, scrollback };
+}
+
+function scrollbarLineForTouchY(canvasRect, scrollback, touchY) {
+  const k = SCROLLBAR_TRACK_PADDING_Y_PX;
+  const trackHeight = Math.max(1, canvasRect.height - k * 2);
+  const localY = touchY - canvasRect.top;
+  // Library convention (handleMouseDown): viewportY=0 is the live screen
+  // and viewportY=scrollback is the top of history, so an upper touch
+  // maps to a higher viewportY.
+  const fraction = Math.max(0, Math.min(1, 1 - (localY - k) / trackHeight));
+  return Math.round(fraction * scrollback);
+}
+
 terminalMount.addEventListener(
   "touchstart",
   (event) => {
@@ -820,7 +867,28 @@ terminalMount.addEventListener(
       return;
     }
     const touch = event.touches[0];
+    const scrollbar = scrollbarHitTest(touch);
+    if (scrollbar) {
+      touchScrollState = {
+        type: "scrollbar",
+        canvasRect: scrollbar.canvasRect,
+        scrollback: scrollbar.scrollback,
+      };
+      // Tap inside the lane jumps to that position (matches the
+      // mouse-side click-to-jump behaviour).
+      if (typeof terminal.scrollToLine === "function") {
+        terminal.scrollToLine(
+          scrollbarLineForTouchY(
+            scrollbar.canvasRect,
+            scrollbar.scrollback,
+            touch.clientY,
+          ),
+        );
+      }
+      return;
+    }
     touchScrollState = {
+      type: "swipe",
       startY: touch.clientY,
       lastY: touch.clientY,
       cellHeight: currentCellHeightPx(),
@@ -839,6 +907,19 @@ terminalMount.addEventListener(
       return;
     }
     const touch = event.touches[0];
+    if (touchScrollState.type === "scrollbar") {
+      if (typeof terminal.scrollToLine === "function") {
+        terminal.scrollToLine(
+          scrollbarLineForTouchY(
+            touchScrollState.canvasRect,
+            touchScrollState.scrollback,
+            touch.clientY,
+          ),
+        );
+      }
+      if (event.cancelable) event.preventDefault();
+      return;
+    }
     if (
       Math.abs(touch.clientY - touchScrollState.startY) > TOUCH_TAP_THRESHOLD_PX
     ) {
@@ -862,7 +943,7 @@ terminalMount.addEventListener(
 
 function endTouchScroll() {
   if (!touchScrollState) return;
-  const wasTap = !touchScrollState.moved;
+  const wasTap = touchScrollState.type === "swipe" && !touchScrollState.moved;
   touchScrollState = null;
   if (wasTap && shouldUseMobileInput()) focusTerminal();
 }
