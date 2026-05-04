@@ -21,6 +21,7 @@ const terminalMount = document.querySelector("#terminal");
 const mobileInput = document.querySelector("#mobileInput");
 const mobileToolbar = document.querySelector("#mobileToolbar");
 const mobileToolbarToggle = document.querySelector("#mobileToolbarToggle");
+const lockHostSizeInput = document.querySelector("#lockHostSize");
 
 let terminal = null;
 let fitAddon = null;
@@ -43,12 +44,20 @@ const replayBuffer = createReplayBuffer();
 // how many rows of the snapshot are "viewport" vs "history" so the
 // next fetch_scrollback request can set `before` correctly.
 let hostRows = 24;
+let hostCols = 80;
+// True once we've heard the agent's first `hello`. Until then the
+// `hostCols`/`hostRows` defaults are placeholders, so the
+// lock-host-size snap-back has to wait or it would freeze the
+// browser at 80x24 even when the host is bigger.
+let helloReceived = false;
 const SCROLLBACK_FETCH_BATCH = 200;
 const SCROLLBACK_TOP_TRIGGER_LINES = 10;
+const LOCK_HOST_SIZE_KEY = "ghostty-sharing-lock-host-size";
 
 backendBaseInput.value =
   localStorage.getItem("ghostty-sharing-backend-base") ?? location.origin;
 tokenInput.value = localStorage.getItem("ghostty-sharing-token") ?? "";
+lockHostSizeInput.checked = localStorage.getItem(LOCK_HOST_SIZE_KEY) === "1";
 
 saveTokenButton.addEventListener("click", async () => {
   localStorage.setItem(
@@ -59,6 +68,28 @@ saveTokenButton.addEventListener("click", async () => {
   await refreshSessions();
   scheduleSessionRefresh();
 });
+
+// Persist the lock-host-size preference and re-apply on the active
+// session so the user sees the change immediately without needing
+// to reconnect. Toggling it on snaps the browser back to the host's
+// announced grid; toggling it off restores fit-to-viewport.
+lockHostSizeInput.addEventListener("change", () => {
+  localStorage.setItem(
+    LOCK_HOST_SIZE_KEY,
+    lockHostSizeInput.checked ? "1" : "0",
+  );
+  if (terminal && activeSessionId) {
+    if (isHostSizeLocked()) {
+      terminal.resize(hostCols, hostRows);
+    } else if (fitAddon) {
+      fitAddon.fit();
+    }
+  }
+});
+
+function isHostSizeLocked() {
+  return lockHostSizeInput?.checked ?? false;
+}
 
 function resolvedBackendBase() {
   const configured = backendBaseInput.value.trim();
@@ -117,6 +148,19 @@ async function ensureTerminal() {
     }
   });
   terminal.onResize(({ cols, rows }) => {
+    // When the operator opted into "lock host size" we never push the
+    // browser's grid up to the host. fitAddon.observeResize keeps
+    // firing fit() in the background as the browser viewport
+    // changes, so any resize that disagrees with the host has to be
+    // snapped back here. Without the snap-back the grid would drift
+    // off-host but the user wouldn't see anything change because
+    // the host is still rendering at its own dimensions.
+    if (isHostSizeLocked()) {
+      if (helloReceived && (cols !== hostCols || rows !== hostRows)) {
+        terminal.resize(hostCols, hostRows);
+      }
+      return;
+    }
     sendControlFrame({
       type: "resize",
       id: activeSession?.id ?? "",
@@ -268,6 +312,7 @@ async function connectToSession(session, { updateHistory = true } = {}) {
     shouldReconnect = true;
     activeSession = session;
     activeSessionId = session.id;
+    helloReceived = false;
     enterTerminalView(session, { updateHistory });
     document.title = session.name;
     setTerminalStatus("连接中");
@@ -281,16 +326,21 @@ async function connectToSession(session, { updateHistory = true } = {}) {
 
     socket.addEventListener("open", () => {
       reconnectAttempt = 0;
-      if (fitAddon) fitAddon.fit();
+      // Only fit-to-viewport when we're allowed to push the host
+      // around. With the lock engaged we wait for the agent's hello
+      // / screen frame to tell us what dimensions to render at.
+      if (fitAddon && !isHostSizeLocked()) fitAddon.fit();
       focusTerminal();
       updateDocumentTitle();
       setTerminalStatus("已连接", "connected");
-      sendControlFrame({
-        type: "resize",
-        id: session.id,
-        cols: term.cols,
-        rows: term.rows,
-      });
+      if (!isHostSizeLocked()) {
+        sendControlFrame({
+          type: "resize",
+          id: session.id,
+          cols: term.cols,
+          rows: term.rows,
+        });
+      }
     });
 
     socket.addEventListener("close", (event) => {
@@ -344,6 +394,8 @@ function handleControlFrame(data) {
         terminal
       ) {
         hostRows = frame.rows;
+        hostCols = frame.cols;
+        helloReceived = true;
         terminal.resize(frame.cols, frame.rows);
       }
       return;
@@ -608,7 +660,7 @@ function enterTerminalView(session, { updateHistory = true } = {}) {
   }
 
   requestAnimationFrame(() => {
-    if (fitAddon) fitAddon.fit();
+    if (fitAddon && !isHostSizeLocked()) fitAddon.fit();
     focusTerminal();
     window.scrollTo(0, 0);
   });
