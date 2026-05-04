@@ -1911,6 +1911,41 @@ pub fn dumpText(
     return try self.dumpTextLocked(alloc, sel);
 }
 
+/// Like `dumpText` but emits a styled VT byte stream (cell text plus
+/// SGR escapes) instead of plaintext. The caller owns the returned
+/// slice. Used by the session-sharing snapshot/scrollback path so the
+/// browser sees host colours instead of monochrome text.
+pub fn dumpStyledTextLocked(
+    self: *Surface,
+    alloc: Allocator,
+    sel: terminal.Selection,
+) ![:0]const u8 {
+    var aw: std.Io.Writer.Allocating = .init(alloc);
+    defer aw.deinit();
+
+    const ScreenFormatter = terminal.formatter.ScreenFormatter;
+    var formatter: ScreenFormatter = .init(
+        self.io.terminal.screens.active,
+        .{
+            .emit = .vt,
+            // Visual representation: keep soft-wrapped breaks where
+            // they appear on the host's grid so the browser ends up
+            // with the same cell layout.
+            .unwrap = false,
+            .trim = false,
+        },
+    );
+    formatter.content = .{ .selection = sel };
+    // Emit just SGR / hyperlink state alongside cell text. We don't
+    // want cursor positioning, terminal modes, or charset state in
+    // the dump because the browser is the one driving cursor and
+    // mode-state through its own xterm.js instance.
+    formatter.extra = .styles;
+
+    formatter.format(&aw.writer) catch return error.OutOfMemory;
+    return try aw.toOwnedSliceSentinel(0);
+}
+
 /// Same as `dumpText` but assumes the renderer state mutex is already
 /// held.
 pub fn dumpTextLocked(

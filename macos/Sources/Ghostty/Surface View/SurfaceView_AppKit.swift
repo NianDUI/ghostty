@@ -3177,6 +3177,9 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
         // through term.write naturally recreates the host's scrollback
         // on the browser: the older rows scroll off into xterm.js's
         // scrollback buffer as the newer rows fill the visible area.
+        // We use the styled variant so SGR colours survive the trip;
+        // the browser xterm parses SGR natively and renders host
+        // colours instead of falling back to monochrome.
         let selection = ghostty_selection_s(
             top_left: ghostty_point_s(
                 tag: GHOSTTY_POINT_SCREEN,
@@ -3193,7 +3196,7 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
             rectangle: false
         )
         var text = ghostty_text_s()
-        guard ghostty_surface_read_text(surface, selection, &text) else {
+        guard ghostty_surface_read_text_styled(surface, selection, &text) else {
             return nil
         }
         defer { ghostty_surface_free_text(surface, &text) }
@@ -3218,12 +3221,11 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
     ) -> SessionSharingScreenSnapshotPayload {
         // \x1b[2J clears the screen, \x1b[H moves the cursor to (1,1).
         // The browser receives this and term.write reproduces the same
-        // grid contents (without SGR colour, see the plan for the Phase
-        // 2b follow-up that adds styled cell readback + lazy fetch).
+        // grid contents along with the agent's SGR escapes (host
+        // colours land for free because xterm.js parses SGR natively).
         let prefix = "\u{1b}[2J\u{1b}[H"
-        let normalised = body.replacingOccurrences(of: "\n", with: "\r\n")
         let prefixData = Data(prefix.utf8)
-        var bodyData = Data(normalised.utf8)
+        var bodyData = Data(normaliseLineEndings(body).utf8)
         let budget = snapshotByteBudget - prefixData.count
         if budget > 0, bodyData.count > budget {
             bodyData = trimToTail(bodyData, byteBudget: budget)
@@ -3234,6 +3236,17 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
             id: sessionID,
             content: bytes.base64EncodedString()
         )
+    }
+
+    /// Collapse `\r\n` -> `\n`, then expand back to `\r\n`. Idempotent
+    /// — works for both the legacy plaintext path and the styled
+    /// `.vt` formatter (which already emits `\r\n`) without doubling
+    /// up. Without this, switching the agent to the styled readback
+    /// would have produced `\r\r\n` separators and confused xterm.
+    static func normaliseLineEndings(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\n", with: "\r\n")
     }
 
     private static func trimToTail(_ data: Data, byteBudget: Int) -> Data {
@@ -3285,8 +3298,9 @@ struct SessionSharingScrollbackPayload: Codable, Equatable {
     ) -> SessionSharingScrollbackPayload? {
         guard before >= 0, requestedCount > 0 else { return nil }
 
-        // Read the entire history, oldest line first. Cheap because
-        // the call just walks the in-memory page list and emits text.
+        // Read the entire history, oldest line first. The styled
+        // variant emits SGR escapes alongside cell text so colours
+        // survive the trip to the browser.
         let selection = ghostty_selection_s(
             top_left: ghostty_point_s(
                 tag: GHOSTTY_POINT_SURFACE,
@@ -3303,7 +3317,7 @@ struct SessionSharingScrollbackPayload: Codable, Equatable {
             rectangle: false
         )
         var text = ghostty_text_s()
-        let ok = ghostty_surface_read_text(surface, selection, &text)
+        let ok = ghostty_surface_read_text_styled(surface, selection, &text)
         defer {
             if ok { ghostty_surface_free_text(surface, &text) }
         }
@@ -3327,17 +3341,20 @@ struct SessionSharingScrollbackPayload: Codable, Equatable {
     }
 
     /// Pure helper: given the full history text (lines separated by
-    /// `\n`, oldest first), return the slice the browser asked for.
-    /// Exposed for testing — the on-device path goes through `respond`.
+    /// `\n` or `\r\n`, oldest first), return the slice the browser
+    /// asked for. Exposed for testing — the on-device path goes
+    /// through `respond`.
     static func slice(
         history: String,
         sessionID: String,
         before: Int,
         requestedCount: Int
     ) -> SessionSharingScrollbackPayload {
-        // Drop the trailing empty string that `split(separator:)` may
-        // emit when the history ends with `\n`.
-        var lines = history.split(
+        // The styled `.vt` readback emits `\r\n`; the legacy plaintext
+        // path emits `\n`. Collapse to `\n` so split / slice / rejoin
+        // produces the same shape regardless of source.
+        let collapsed = history.replacingOccurrences(of: "\r\n", with: "\n")
+        var lines = collapsed.split(
             separator: "\n",
             omittingEmptySubsequences: false
         ).map(String.init)

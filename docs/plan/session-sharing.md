@@ -381,11 +381,33 @@ Remaining:
     flash. Acceptable because fetches are user-initiated (scroll
     to top) and bounded by `SCROLLBACK_FETCH_BATCH = 200` rows
     per round-trip.
-  - **Out of scope here**: SGR colour preservation (the snapshot
-    is plain text). Lift that into a separate "styled cell
-    readback" item if/when it becomes a real complaint — would
-    need a new `ghostty_surface_read_cells` C API on the Zig
-    side, and the corresponding browser-side replay path.
+- **P2 styled readback (landed)** SGR colour preservation in the
+  snapshot and scrollback frames. New
+  `Surface.dumpStyledTextLocked` runs the `terminal.formatter`
+  `ScreenFormatter` with `emit = .vt` + `Extra = .styles` so the
+  cell text comes back wrapped in SGR escapes (and OSC 8 hyperlink
+  state). Exposed through a new C export
+  `ghostty_surface_read_text_styled` in `embedded.zig`,
+  declared in `include/ghostty.h`, and the macOS controller
+  switched both `SessionSharingScreenSnapshotPayload.capture` and
+  `SessionSharingScrollbackPayload.respond` over to the styled
+  variant. Also added an idempotent `\r\n` normaliser on the Swift
+  side because the styled formatter already emits `\r\n`, so the
+  old bare-`\n`-to-`\r\n` rewrite would have corrupted line
+  endings into `\r\r\n`. `zig build -Demit-macos-app=false`
+  rebuilds `GhosttyKit.xcframework/`; the macOS app picks up the
+  new symbol on its next Xcode build. Covered by
+  `screenSnapshotIdempotentlyNormalisesCRLF` and
+  `scrollbackSlicerNormalisesCRLF` Swift Testing cases.
+- **Decision (deferred)** Forking `coder/ghostty-web` to add a
+  proper `terminal.prependScrollback(rows)` API and eliminate the
+  Phase 2b reset+replay flash. Rejected for now because the work
+  spans a third-party WASM build (we don't ship the upstream's
+  Zig-to-WASM toolchain), the maintenance overhead of a private
+  fork, and the actual user complaint (history depth) is already
+  resolved by Phase 2b. Trigger to revisit: the flash is reported
+  as a real UX issue on a phone, *or* an upstream PR window opens
+  for the prepend-rows API.
 
 Browser-side smoke automation lives in Section 6 (single source of
 truth).

@@ -1647,6 +1647,44 @@ pub const CAPI = struct {
         return readTextLocked(surface, core_sel, result);
     }
 
+    /// Like `ghostty_surface_read_text`, but emits styled VT bytes
+    /// (cell text plus SGR escapes) instead of plaintext. Used by
+    /// session-sharing snapshot/scrollback paths so the browser sees
+    /// host colours. The viewport metadata fields are zeroed; the
+    /// caller is expected to feed `text`/`text_len` straight through
+    /// `term.write` rather than mapping it back to viewport pixels.
+    export fn ghostty_surface_read_text_styled(
+        surface: *Surface,
+        sel: Selection,
+        result: *Text,
+    ) bool {
+        const core_surface = &surface.core_surface;
+        core_surface.renderer_state.mutex.lock();
+        defer core_surface.renderer_state.mutex.unlock();
+
+        const core_sel = sel.core(
+            core_surface.renderer_state.terminal.screens.active,
+        ) orelse return false;
+
+        const styled = core_surface.dumpStyledTextLocked(
+            global.alloc,
+            core_sel,
+        ) catch |err| {
+            log.warn("error reading styled text err={}", .{err});
+            return false;
+        };
+
+        result.* = .{
+            .tl_px_x = -1,
+            .tl_px_y = -1,
+            .offset_start = 0,
+            .offset_len = 0,
+            .text = styled.ptr,
+            .text_len = styled.len,
+        };
+        return true;
+    }
+
     fn readTextLocked(
         surface: *Surface,
         core_sel: terminal.Selection,

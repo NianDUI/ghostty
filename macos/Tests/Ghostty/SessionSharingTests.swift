@@ -1163,6 +1163,41 @@ struct SessionSharingTests {
     }
 
     @Test
+    func screenSnapshotIdempotentlyNormalisesCRLF() throws {
+        // The styled .vt readback already emits \r\n separators, so the
+        // encoder must not turn each \r\n into \r\r\n. Bytes coming
+        // from the legacy plaintext path (\n only) still get expanded
+        // to \r\n.
+        let alreadyCRLF = SessionSharingScreenSnapshotPayload.encode(
+            body: "row1\r\nrow2",
+            sessionID: "abc"
+        )
+        let bareLF = SessionSharingScreenSnapshotPayload.encode(
+            body: "row1\nrow2",
+            sessionID: "abc"
+        )
+        #expect(alreadyCRLF.content == bareLF.content)
+        let bytes = try #require(Data(base64Encoded: alreadyCRLF.content))
+        #expect(bytes == Data("\u{1b}[2J\u{1b}[Hrow1\r\nrow2".utf8))
+    }
+
+    @Test
+    func scrollbackSlicerNormalisesCRLF() throws {
+        let history = "row0\r\nrow1\r\nrow2"
+        let payload = SessionSharingScrollbackPayload.slice(
+            history: history,
+            sessionID: "abc",
+            before: 1,
+            requestedCount: 2
+        )
+        let bytes = try #require(Data(base64Encoded: payload.content))
+        let text = try #require(String(data: bytes, encoding: .utf8))
+        #expect(text == "row0\r\nrow1")
+        #expect(payload.count == 2)
+        #expect(payload.total == 3)
+    }
+
+    @Test
     func inboundFrameRecognisesFetchScrollback() {
         let action = SessionSharingInboundFrameAction.parse(
             text: #"{"type":"fetch_scrollback","before":3,"count":50}"#,
