@@ -779,6 +779,122 @@ def main() -> int:
             fuzz_process.kill()
             fuzz_process.wait(timeout=5)
 
+    # Phase 6 e2e: end-to-end control-channel round trip. Binary frames
+    # are already covered by the main process scenario below; this case
+    # focuses on the control-shaped text frames the macOS controller and
+    # the browser web client exchange (hello + resize + client_disconnect)
+    # and asserts the JSON body survives both directions through the
+    # relay unchanged.
+    control_port = free_port()
+    control_env = os.environ.copy()
+    control_env["GHOSTTY_RELAY_USER_TOKENS"] = "smoke-user-token"
+    control_process = subprocess.Popen(
+        [
+            sys.executable,
+            str(SERVER),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(control_port),
+            "--token-ttl",
+            "30",
+            "--token-expiry-check-seconds",
+            "0",
+            "--ping-interval-seconds",
+            "0",
+            "--ping-timeout-seconds",
+            "0",
+            "--static-root",
+            str(STATIC_ROOT),
+        ],
+        cwd=str(ROOT),
+        env=control_env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        wait_for_server(control_port)
+        control_session_id = secrets.token_hex(8)
+        status, register = http_json(
+            control_port,
+            "POST",
+            "/api/register",
+            {
+                "session_id": control_session_id,
+                "name": "Resize E2E",
+                "token": "smoke-user-token",
+            },
+        )
+        assert status == 200, status
+
+        agent = WebSocketClient(
+            control_port,
+            f"/ws/agent?id={control_session_id}",
+            headers={"Authorization": f"Bearer {register['agent_token']}"},
+        )
+        client = WebSocketClient(
+            control_port,
+            f"/ws/client?id={control_session_id}&token={register['client_token']}",
+        )
+
+        # Agent → relay → client: hello frame announces the host's terminal
+        # size when sharing starts. The relay must forward it verbatim so
+        # the browser can resize its xterm.js view to match.
+        hello = json.dumps(
+            {
+                "type": "hello",
+                "id": control_session_id,
+                "name": "Resize E2E",
+                "cols": 80,
+                "rows": 24,
+            }
+        )
+        agent.send_text(hello)
+        opcode, payload = client.receive()
+        assert opcode == 0x1, opcode
+        received_hello = json.loads(payload.decode("utf-8"))
+        assert received_hello["type"] == "hello"
+        assert received_hello["cols"] == 80
+        assert received_hello["rows"] == 24
+        assert received_hello["id"] == control_session_id
+
+        # Client → relay → agent: resize frame the browser emits when its
+        # viewport changes. The agent must see the new cols/rows so it can
+        # apply the shared resize to the macOS surface.
+        resize = json.dumps(
+            {
+                "type": "resize",
+                "id": control_session_id,
+                "cols": 120,
+                "rows": 40,
+            }
+        )
+        client.send_text(resize)
+        opcode, payload = agent.receive()
+        assert opcode == 0x1, opcode
+        received_resize = json.loads(payload.decode("utf-8"))
+        assert received_resize["type"] == "resize"
+        assert received_resize["cols"] == 120
+        assert received_resize["rows"] == 40
+
+        # Closing the client triggers the relay's client_disconnect signal
+        # back to the agent, which the macOS controller uses to restore
+        # the original surface size.
+        client.close()
+        opcode, payload = agent.receive()
+        assert opcode == 0x1, opcode
+        disconnect = json.loads(payload.decode("utf-8"))
+        assert disconnect["type"] == "client_disconnect"
+
+        agent.close()
+    finally:
+        control_process.terminate()
+        try:
+            control_process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            control_process.kill()
+            control_process.wait(timeout=5)
+
     spoof_port = free_port()
     spoof_env = os.environ.copy()
     spoof_env["GHOSTTY_RELAY_USER_TOKENS"] = "smoke-user-token"
