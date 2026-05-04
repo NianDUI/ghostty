@@ -317,20 +317,30 @@ Remaining:
   call `terminal.scrollToLine(...)`. Outside the lane, fall through
   to the existing free-scroll handler that the touch-swipe work
   already added in `main.js`.
-- **P2** Replace the byte-replay backlog with a state-snapshot
-  model so a fresh join shows the host's current viewport instead
-  of replaying queued bytes, and so scrollback isn't bounded by
-  the relay backlog cap. macOS agent emits a one-shot snapshot of
-  the visible screen on `hello` (cells + SGR encoded) plus a new
-  `fetch_scrollback { start_line, count }` control frame backed by
-  the live `Screen.PageList` for on-demand history. Browser side
-  needs an "insert rows above existing scrollback" path, which
-  `ghostty-web` doesn't expose today — likely requires a fork or
-  upstream PR. Drops the relay's history cap, eliminates the
-  first-screen scan, and unblocks the "load on scroll" UX.
-  Trigger: revisit once the P1 backlog cap above is consistently
-  too small for typical sessions, or once the P0 mobile IME work
-  lands and we want to actually GA-ship the mobile path.
+- **P2 Phase 1 (landed)** Viewport snapshot replaces byte-replay
+  for the first paint. macOS agent calls
+  `ghostty_surface_read_text(.viewport, ...)` after `hello` and on
+  every relay-driven `client_connected` signal, base64-encodes
+  `\x1b[2J\x1b[H` + the viewport text, and sends it as a `screen`
+  control frame. Relay's `append_backlog` detects `type=screen`
+  text frames and truncates earlier entries so a late-joining
+  client only replays the most recent snapshot plus bytes since;
+  `handle_ws_client` also writes `{type:client_connected}` to the
+  agent on every join. Browser case `screen` runs
+  `terminal.reset()` + `term.write(decoded)`. Covered by the
+  `screenSnapshotEncodesBase64WithClearAndHomePrefix` Swift case
+  and the `relay smoke_test` checkpoint scenario.
+- **P2 Phase 2 (open)** Lazy on-demand scrollback. macOS agent
+  exposes a `fetch_scrollback { start_line, count }` control frame
+  backed by the live `Screen.PageList`; browser requests it when
+  the user scrolls into the top of the existing buffer. This needs
+  an "insert rows above existing scrollback" entry point on
+  `ghostty-web` (no public API today), so the work either forks
+  the library or upstreams a PR to `coder/ghostty-web`. Phase 1
+  trade-off — browsers see the host's current viewport but no
+  scrollback prior to their join — is acceptable until users hit
+  it; revisit when that lands as a real complaint or when GA-ship
+  for mobile demands history.
 
 Browser-side smoke automation lives in Section 6 (single source of
 truth).

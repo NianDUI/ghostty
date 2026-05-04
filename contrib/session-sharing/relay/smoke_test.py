@@ -837,6 +837,13 @@ def main() -> int:
             f"/ws/client?id={control_session_id}&token={register['client_token']}",
         )
 
+        # The relay tells the agent every time a fresh viewer joins so
+        # the macOS controller can re-emit a current screen snapshot.
+        opcode, payload = agent.receive()
+        assert opcode == 0x1, opcode
+        first_connect = json.loads(payload.decode("utf-8"))
+        assert first_connect["type"] == "client_connected"
+
         # Agent → relay → client: hello frame announces the host's terminal
         # size when sharing starts. The relay must forward it verbatim so
         # the browser can resize its xterm.js view to match.
@@ -877,9 +884,59 @@ def main() -> int:
         assert received_resize["cols"] == 120
         assert received_resize["rows"] == 40
 
-        # Closing the client triggers the relay's client_disconnect signal
-        # back to the agent, which the macOS controller uses to restore
-        # the original surface size.
+        # Agent → relay → client: screen snapshot. The macOS controller
+        # emits this frame after hello (and on every client_connected
+        # signal) so a fresh client renders the host's visible viewport
+        # in one shot instead of replaying queued PTY bytes top-to-bottom.
+        snapshot = json.dumps(
+            {
+                "type": "screen",
+                "id": control_session_id,
+                "content": "Y2hlY2twb2ludA==",  # base64("checkpoint")
+            }
+        )
+        agent.send_text(snapshot)
+        agent.send_binary(b"post-snapshot-bytes")
+        opcode, payload = client.receive()
+        assert opcode == 0x1, opcode
+        received_snapshot = json.loads(payload.decode("utf-8"))
+        assert received_snapshot["type"] == "screen"
+        assert received_snapshot["content"] == "Y2hlY2twb2ludA=="
+        opcode, payload = client.receive()
+        assert opcode == 0x2 and payload == b"post-snapshot-bytes", (
+            opcode,
+            payload,
+        )
+
+        # A second viewer joining mid-session: the relay's checkpoint
+        # logic should have dropped the original hello + resize entries
+        # (they all predate the screen frame), so the replay backlog
+        # only feeds the snapshot and the bytes that landed after it.
+        # The relay also tells the agent a new client connected so the
+        # macOS controller can re-emit a fresh snapshot for it.
+        client_b = WebSocketClient(
+            control_port,
+            f"/ws/client?id={control_session_id}&token={register['client_token']}",
+        )
+        opcode, payload = client_b.receive()
+        assert opcode == 0x1, opcode
+        replay_snapshot = json.loads(payload.decode("utf-8"))
+        assert replay_snapshot["type"] == "screen"
+        opcode, payload = client_b.receive()
+        assert opcode == 0x2 and payload == b"post-snapshot-bytes", (
+            opcode,
+            payload,
+        )
+
+        opcode, payload = agent.receive()
+        assert opcode == 0x1, opcode
+        connected = json.loads(payload.decode("utf-8"))
+        assert connected["type"] == "client_connected"
+
+        client_b.close()
+        # The original client is still attached, so client_b leaving
+        # does not flip the agent into client_disconnect; we only see
+        # that signal once the *last* client drops below.
         client.close()
         opcode, payload = agent.receive()
         assert opcode == 0x1, opcode
@@ -1068,6 +1125,13 @@ def main() -> int:
             port,
             f"/ws/client?id={session_id}&token={client_token}",
         )
+
+        # Drain the relay's client_connected handshake before checking
+        # the data round trip (the relay tells the agent every time a
+        # fresh viewer joins so the macOS controller can re-snapshot).
+        opcode, payload = agent.receive()
+        assert opcode == 0x1
+        assert json.loads(payload.decode("utf-8"))["type"] == "client_connected"
 
         agent.send_binary(b"hello from agent")
         opcode, payload = client.receive()

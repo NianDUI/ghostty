@@ -353,8 +353,38 @@ function handleControlFrame(data) {
     case "appearance":
       applyAppearance(frame);
       return;
+    case "screen":
+      applyScreenSnapshot(frame);
+      return;
     default:
       if (terminal) terminal.write(data);
+  }
+}
+
+function applyScreenSnapshot(frame) {
+  if (!terminal || typeof frame?.content !== "string") return;
+  const bytes = decodeBase64(frame.content);
+  if (!bytes) return;
+  // The agent prefixes its snapshot with `\x1b[2J\x1b[H`, but reset()
+  // also clears the active scrollback so a stale checkpoint can't
+  // bleed through after the host re-emits the current viewport.
+  if (typeof terminal.reset === "function") {
+    terminal.reset();
+  }
+  terminal.write(bytes);
+}
+
+function decodeBase64(text) {
+  try {
+    const binary = atob(text);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  } catch (error) {
+    console.error(redactErrorMessage(error));
+    return null;
   }
 }
 

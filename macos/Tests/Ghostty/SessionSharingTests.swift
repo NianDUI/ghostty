@@ -1133,6 +1133,36 @@ struct SessionSharingTests {
     }
 
     @Test
+    func inboundFrameRecognisesClientConnected() {
+        let action = SessionSharingInboundFrameAction.parse(
+            text: #"{"type":"client_connected"}"#,
+            sessionID: "abc"
+        )
+        #expect(action == .clientConnected)
+    }
+
+    @Test
+    func screenSnapshotEncodesBase64WithClearAndHomePrefix() throws {
+        let payload = SessionSharingScreenSnapshotPayload.encode(
+            viewport: "hello\nworld",
+            sessionID: "abc"
+        )
+
+        #expect(payload.type == "screen")
+        #expect(payload.id == "abc")
+
+        let bytes = try #require(Data(base64Encoded: payload.content))
+        let expected = Data("\u{1b}[2J\u{1b}[Hhello\r\nworld".utf8)
+        #expect(bytes == expected)
+
+        let json = try JSONEncoder().encode(payload)
+        let decoded = try JSONDecoder().decode(
+            SessionSharingScreenSnapshotPayload.self, from: json
+        )
+        #expect(decoded == payload)
+    }
+
+    @Test
     func appearancePayloadEncodesSnakeCaseFontSize() throws {
         let payload = SessionSharingAppearancePayload(
             type: "appearance",

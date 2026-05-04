@@ -2052,6 +2052,7 @@ private final class SessionSharingController {
         setState(.sharing)
         sendHelloIfPossible()
         sendAppearanceIfPossible()
+        sendScreenSnapshotIfPossible()
         receiveNextMessage()
     }
 
@@ -2082,6 +2083,21 @@ private final class SessionSharingController {
                 sessionID: sessionID
               )
         else { return }
+        guard let data = try? JSONEncoder().encode(payload),
+              let text = String(data: data, encoding: .utf8) else { return }
+        webSocket.send(.string(text)) { [weak self] error in
+            if let error {
+                self?.handleDisconnect(error: error)
+            }
+        }
+    }
+
+    private func sendScreenSnapshotIfPossible() {
+        guard let webSocket, let surface = surfaceView?.surface else { return }
+        guard let payload = SessionSharingScreenSnapshotPayload.capture(
+            from: surface,
+            sessionID: sessionID
+        ) else { return }
         guard let data = try? JSONEncoder().encode(payload),
               let text = String(data: data, encoding: .utf8) else { return }
         webSocket.send(.string(text)) { [weak self] error in
@@ -2143,6 +2159,13 @@ private final class SessionSharingController {
 
         case .restoreOriginalSize:
             restoreOriginalSharedResizeIfNeeded()
+            return true
+
+        case .clientConnected:
+            // Relay tells us a fresh client just joined. Re-emit the
+            // screen snapshot so the new viewer sees the current grid
+            // instead of whatever the relay backlog last checkpointed.
+            sendScreenSnapshotIfPossible()
             return true
 
         case .sendPong(let pong):
@@ -2277,6 +2300,7 @@ enum SessionSharingInboundFrameAction: Equatable {
     case sendPong(SessionSharingControlFrame)
     case resize(cols: Int, rows: Int)
     case restoreOriginalSize
+    case clientConnected
 
     static func parse(text: String, sessionID: String) -> Self {
         guard let data = text.data(using: .utf8),
@@ -2294,6 +2318,8 @@ enum SessionSharingInboundFrameAction: Equatable {
             return .ignore
         case "client_disconnect":
             return .restoreOriginalSize
+        case "client_connected":
+            return .clientConnected
         case "hello", "pong":
             return .ignore
         default:
@@ -3095,6 +3121,73 @@ struct SessionSharingAppearancePayload: Codable, Equatable {
 
     static func hexString(_ c: ghostty_config_color_s) -> String {
         String(format: "#%02x%02x%02x", c.r, c.g, c.b)
+    }
+}
+
+struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
+    let type: String
+    let id: String
+    /// Base64-encoded VT byte stream. Already prefixed with
+    /// `\x1b[2J\x1b[H` (clear + home) and uses `\r\n` separators so the
+    /// browser can pipe it directly through `term.write` after a
+    /// `terminal.reset()`.
+    let content: String
+
+    static func capture(
+        from surface: ghostty_surface_t,
+        sessionID: String
+    ) -> SessionSharingScreenSnapshotPayload? {
+        var text = ghostty_text_s()
+        let selection = ghostty_selection_s(
+            top_left: ghostty_point_s(
+                tag: GHOSTTY_POINT_VIEWPORT,
+                coord: GHOSTTY_POINT_COORD_TOP_LEFT,
+                x: 0,
+                y: 0
+            ),
+            bottom_right: ghostty_point_s(
+                tag: GHOSTTY_POINT_VIEWPORT,
+                coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
+                x: 0,
+                y: 0
+            ),
+            rectangle: false
+        )
+        guard ghostty_surface_read_text(surface, selection, &text) else {
+            return nil
+        }
+        defer { ghostty_surface_free_text(surface, &text) }
+
+        let viewport: String
+        if text.text_len > 0 {
+            viewport = String(
+                bytesNoCopy: UnsafeMutableRawPointer(mutating: text.text),
+                length: Int(text.text_len),
+                encoding: .utf8,
+                freeWhenDone: false
+            ) ?? ""
+        } else {
+            viewport = ""
+        }
+        return encode(viewport: viewport, sessionID: sessionID)
+    }
+
+    static func encode(
+        viewport: String,
+        sessionID: String
+    ) -> SessionSharingScreenSnapshotPayload {
+        // \x1b[2J clears the screen, \x1b[H moves the cursor to (1,1).
+        // The browser receives this and term.write reproduces the same
+        // grid contents (without SGR colour, see the plan for the Phase
+        // 2 follow-up that adds styled cell readback).
+        let prefix = "\u{1b}[2J\u{1b}[H"
+        let normalised = viewport.replacingOccurrences(of: "\n", with: "\r\n")
+        let bytes = Data(prefix.utf8) + Data(normalised.utf8)
+        return .init(
+            type: "screen",
+            id: sessionID,
+            content: bytes.base64EncodedString()
+        )
     }
 }
 

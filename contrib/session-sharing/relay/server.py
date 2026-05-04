@@ -259,6 +259,16 @@ class Session:
         if opcode not in (0x1, 0x2) or not payload:
             return
 
+        # The macOS agent emits a `{"type":"screen", ...}` text frame as a
+        # checkpoint: it carries the full visible viewport as VT bytes, so
+        # any frame strictly before it is redundant for a fresh client and
+        # only causes a slow top-to-bottom replay. Drop the prior backlog
+        # when we see a snapshot land. We deliberately only inspect text
+        # frames; binary payloads are raw PTY bytes and not control-shaped.
+        if opcode == 0x1 and _is_screen_snapshot(payload):
+            self.backlog = []
+            self.backlog_size = 0
+
         entry = (opcode, bytes(payload))
         self.backlog.append(entry)
         self.backlog_size += len(payload)
@@ -270,6 +280,16 @@ class Session:
             stale_opcode, stale_payload = self.backlog.pop(0)
             if stale_opcode in (0x1, 0x2):
                 self.backlog_size -= len(stale_payload)
+
+
+def _is_screen_snapshot(payload: bytes) -> bool:
+    if not payload:
+        return False
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return isinstance(decoded, dict) and decoded.get("type") == "screen"
 
 
 class RelayState:
@@ -907,6 +927,17 @@ async def handle_ws_client(
     log_event("client_connected", session_id=session.session_id, client_count=len(session.clients))
     sender_task = asyncio.create_task(client_sender(channel, state, session.session_id))
     await replay_backlog(session, channel)
+    # Tell the agent a fresh viewer just joined so it can re-emit a
+    # current-state snapshot. Older relays (and agents) just ignore this
+    # frame, so it's safe to send unconditionally.
+    if session.agent_writer:
+        try:
+            await ws_send_text(
+                session.agent_writer,
+                json.dumps({"type": "client_connected"}),
+            )
+        except Exception:
+            pass
     last_pong_at = {"value": time.time()}
     background_tasks = [
         asyncio.create_task(
