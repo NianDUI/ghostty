@@ -1,4 +1,5 @@
 import { FitAddon, init, Terminal } from "ghostty-web";
+import { buildAppearanceTheme } from "./appearance.js";
 import { redactErrorMessage } from "./redaction.js";
 import { createCoalescedScroll } from "./scroll.js";
 
@@ -355,8 +356,25 @@ function handleControlFrame(data) {
       return;
     case "pong":
       return;
+    case "appearance":
+      applyAppearance(frame);
+      return;
     default:
       if (terminal) terminal.write(data);
+  }
+}
+
+function applyAppearance(frame) {
+  const theme = buildAppearanceTheme(frame);
+  if (!theme) return;
+  if (terminal?.renderer) {
+    terminal.renderer.setTheme(theme);
+  }
+  if (terminal) {
+    terminal.options.theme = theme;
+    if (typeof frame.font_size === "number" && frame.font_size > 0) {
+      terminal.options.fontSize = frame.font_size;
+    }
   }
 }
 

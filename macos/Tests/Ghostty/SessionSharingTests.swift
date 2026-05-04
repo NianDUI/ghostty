@@ -1131,6 +1131,36 @@ struct SessionSharingTests {
         #expect(message.contains("Bearer [REDACTED]"))
         #expect(!message.contains("s3cret-token"))
     }
+
+    @Test
+    func appearancePayloadEncodesSnakeCaseFontSize() throws {
+        let payload = SessionSharingAppearancePayload(
+            type: "appearance",
+            id: "abc",
+            background: "#171412",
+            foreground: "#f5f0e8",
+            palette: Array(repeating: "#000000", count: 16),
+            fontSize: 14
+        )
+
+        let data = try JSONEncoder().encode(payload)
+        let json = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+
+        #expect(json["type"] as? String == "appearance")
+        #expect(json["id"] as? String == "abc")
+        #expect(json["background"] as? String == "#171412")
+        #expect(json["foreground"] as? String == "#f5f0e8")
+        #expect(json["font_size"] as? Double == 14)
+        #expect((json["palette"] as? [String])?.count == 16)
+        #expect(json["fontSize"] == nil)
+
+        let decoded = try JSONDecoder().decode(
+            SessionSharingAppearancePayload.self, from: data
+        )
+        #expect(decoded == payload)
+    }
 }
 
 private struct TestSandbox {

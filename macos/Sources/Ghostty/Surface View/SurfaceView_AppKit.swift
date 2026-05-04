@@ -2051,6 +2051,7 @@ private final class SessionSharingController {
         webSocket.resume()
         setState(.sharing)
         sendHelloIfPossible()
+        sendAppearanceIfPossible()
         receiveNextMessage()
     }
 
@@ -2063,6 +2064,24 @@ private final class SessionSharingController {
             cols: Int(size.columns),
             rows: Int(size.rows)
         )
+        guard let data = try? JSONEncoder().encode(payload),
+              let text = String(data: data, encoding: .utf8) else { return }
+        webSocket.send(.string(text)) { [weak self] error in
+            if let error {
+                self?.handleDisconnect(error: error)
+            }
+        }
+    }
+
+    private func sendAppearanceIfPossible() {
+        guard let webSocket else { return }
+        guard let appDelegate = NSApplication.shared.delegate as? AppDelegate,
+              let cfg = appDelegate.ghostty.config.config,
+              let payload = SessionSharingAppearancePayload.capture(
+                from: cfg,
+                sessionID: sessionID
+              )
+        else { return }
         guard let data = try? JSONEncoder().encode(payload),
               let text = String(data: data, encoding: .utf8) else { return }
         webSocket.send(.string(text)) { [weak self] error in
@@ -3009,6 +3028,74 @@ private struct SessionSharingInboundControlFrame: Codable {
     let type: String
     let cols: Int?
     let rows: Int?
+}
+
+struct SessionSharingAppearancePayload: Codable, Equatable {
+    let type: String
+    let id: String
+    let background: String
+    let foreground: String
+    let palette: [String]?
+    let fontSize: Double?
+
+    private enum CodingKeys: String, CodingKey {
+        case type, id, background, foreground, palette
+        case fontSize = "font_size"
+    }
+
+    static func capture(
+        from config: ghostty_config_t,
+        sessionID: String
+    ) -> SessionSharingAppearancePayload? {
+        var bg = ghostty_config_color_s()
+        var fg = ghostty_config_color_s()
+        let bgKey = "background"
+        let fgKey = "foreground"
+        guard ghostty_config_get(config, &bg, bgKey, UInt(bgKey.utf8.count)),
+              ghostty_config_get(config, &fg, fgKey, UInt(fgKey.utf8.count))
+        else { return nil }
+
+        var fontSize: Float = 0
+        let fsKey = "font-size"
+        let haveFont = ghostty_config_get(
+            config, &fontSize, fsKey, UInt(fsKey.utf8.count)
+        )
+
+        var palette = ghostty_config_palette_s()
+        let paletteKey = "palette"
+        let havePalette = ghostty_config_get(
+            config, &palette, paletteKey, UInt(paletteKey.utf8.count)
+        )
+        var paletteHex: [String]?
+        if havePalette {
+            paletteHex = withUnsafePointer(to: &palette.colors) { tuplePtr in
+                tuplePtr.withMemoryRebound(
+                    to: ghostty_config_color_s.self,
+                    capacity: 256
+                ) { colorsPtr in
+                    var out: [String] = []
+                    out.reserveCapacity(16)
+                    for i in 0..<16 {
+                        out.append(SessionSharingAppearancePayload.hexString(colorsPtr[i]))
+                    }
+                    return out
+                }
+            }
+        }
+
+        return .init(
+            type: "appearance",
+            id: sessionID,
+            background: hexString(bg),
+            foreground: hexString(fg),
+            palette: paletteHex,
+            fontSize: haveFont ? Double(fontSize) : nil
+        )
+    }
+
+    static func hexString(_ c: ghostty_config_color_s) -> String {
+        String(format: "#%02x%02x%02x", c.r, c.g, c.b)
+    }
 }
 
 enum SessionSharingError: LocalizedError {
