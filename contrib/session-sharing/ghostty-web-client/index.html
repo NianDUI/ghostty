@@ -395,6 +395,16 @@
           border-color: rgba(125, 227, 187, 0.48);
           color: #baf5dd;
         }
+
+        .terminal-page.desktop-width-mode .terminal-host {
+          overflow-x: auto;
+          overflow-y: hidden;
+        }
+
+        .terminal-page.desktop-width-mode .terminal-host > #terminal {
+          min-width: 860px;
+          width: 860px;
+        }
       }
 
       @media (max-width: 860px) {
@@ -433,6 +443,16 @@
             <label class="checkbox-row">
               <input id="lockHostSize" type="checkbox" />
               <span>锁定主机窗口大小（不修改 PC 端尺寸）</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="desktopWidth" type="checkbox" />
+              <span>桌面宽度（手机左右滑动查看，不换行）</span>
+            </label>
+            <label class="checkbox-row">
+              <input id="liveMirrorMode" type="checkbox" />
+              <span
+                >实时镜像（不缓存历史，手机端建议开启；切换后已有历史不会回填）</span
+              >
             </label>
             <button id="saveToken">保存并刷新会话</button>
           </div>

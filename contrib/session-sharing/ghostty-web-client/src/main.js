@@ -22,6 +22,8 @@ const mobileInput = document.querySelector("#mobileInput");
 const mobileToolbar = document.querySelector("#mobileToolbar");
 const mobileToolbarToggle = document.querySelector("#mobileToolbarToggle");
 const lockHostSizeInput = document.querySelector("#lockHostSize");
+const desktopWidthInput = document.querySelector("#desktopWidth");
+const liveMirrorModeInput = document.querySelector("#liveMirrorMode");
 
 let terminal = null;
 let fitAddon = null;
@@ -57,11 +59,28 @@ const SCROLLBACK_FETCH_BATCH = 200;
 // gestures of head-room on a phone.
 const SCROLLBACK_TOP_TRIGGER_LINES = 50;
 const LOCK_HOST_SIZE_KEY = "ghostty-sharing-lock-host-size";
+const DESKTOP_WIDTH_KEY = "ghostty-sharing-desktop-width";
+// Live-mirror mode: when on, we skip the replayBuffer accumulation and
+// the lazy `fetch_scrollback` path entirely. The terminal only renders
+// the host's current viewport plus live deltas. Default off so existing
+// desktop users keep their lazy-history scrollback; mobile users can opt
+// in once and the localStorage value persists.
+const LIVE_MIRROR_KEY = "ghostty-sharing-live-mirror";
 
 backendBaseInput.value =
   localStorage.getItem("ghostty-sharing-backend-base") ?? location.origin;
 tokenInput.value = localStorage.getItem("ghostty-sharing-token") ?? "";
 lockHostSizeInput.checked = localStorage.getItem(LOCK_HOST_SIZE_KEY) === "1";
+desktopWidthInput.checked = localStorage.getItem(DESKTOP_WIDTH_KEY) === "1";
+liveMirrorModeInput.checked = localStorage.getItem(LIVE_MIRROR_KEY) === "1";
+
+// Mirror-mode flag captured at connect time. The user can toggle the
+// checkbox mid-session; we update this immediately so all the gates
+// (replayBuffer feeding, fetch_scrollback dispatch, scrollback frame
+// handling) flip together. Toggling A→B mid-session only captures
+// history from that point forward — the older content is gone, which
+// is documented in the launcher help text.
+let activeMirrorMode = false;
 
 saveTokenButton.addEventListener("click", async () => {
   localStorage.setItem(
@@ -93,6 +112,41 @@ lockHostSizeInput.addEventListener("change", () => {
 
 function isHostSizeLocked() {
   return lockHostSizeInput?.checked ?? false;
+}
+
+// Desktop-width mode widens `#terminal` past the phone viewport so a
+// PC-shaped grid stays one-line-per-row and the user pans horizontally
+// instead of seeing wraps. The CSS does the layout work; here we only
+// toggle the class and ask FitAddon to recompute against the new width.
+function syncDesktopWidthMode() {
+  const enabled = desktopWidthInput?.checked ?? false;
+  terminalView.classList.toggle("desktop-width-mode", enabled);
+  if (fitAddon && !isHostSizeLocked()) {
+    requestViewportFit();
+  }
+}
+
+desktopWidthInput.addEventListener("change", () => {
+  localStorage.setItem(
+    DESKTOP_WIDTH_KEY,
+    desktopWidthInput.checked ? "1" : "0",
+  );
+  syncDesktopWidthMode();
+});
+
+liveMirrorModeInput.addEventListener("change", () => {
+  localStorage.setItem(
+    LIVE_MIRROR_KEY,
+    liveMirrorModeInput.checked ? "1" : "0",
+  );
+  // Apply live so the gates flip on the active session. Asymmetry is
+  // accepted: A→B leaves the replayBuffer empty until new bytes arrive,
+  // and B→A doesn't drop already-displayed scrollback rows.
+  activeMirrorMode = liveMirrorModeInput.checked;
+});
+
+function isLiveMirrorEnabled() {
+  return liveMirrorModeInput?.checked ?? false;
 }
 
 function resolvedBackendBase() {
@@ -317,6 +371,7 @@ async function connectToSession(session, { updateHistory = true } = {}) {
     activeSession = session;
     activeSessionId = session.id;
     helloReceived = false;
+    activeMirrorMode = isLiveMirrorEnabled();
     enterTerminalView(session, { updateHistory });
     document.title = session.name;
     setTerminalStatus("连接中");
@@ -364,7 +419,7 @@ async function connectToSession(session, { updateHistory = true } = {}) {
       }
 
       const bytes = new Uint8Array(event.data);
-      replayBuffer.onLive(bytes);
+      if (!activeMirrorMode) replayBuffer.onLive(bytes);
       term.write(bytes);
       if (shouldUseMobileInput()) {
         requestMobileBottomScroll();
@@ -439,7 +494,10 @@ function applyScreenSnapshot(frame) {
   if (!terminal || typeof frame?.content !== "string") return;
   const bytes = decodeBase64(frame.content);
   if (!bytes) return;
-  replayBuffer.onScreen(bytes);
+  // In live-mirror mode we never read the replayBuffer, so don't bother
+  // feeding it. The reset+write below still runs because the agent's
+  // snapshot is a re-anchor checkpoint and we want it to land cleanly.
+  if (!activeMirrorMode) replayBuffer.onScreen(bytes);
   // The agent prefixes its snapshot with `\x1b[2J\x1b[H`, but reset()
   // also clears the active scrollback so a stale checkpoint can't
   // bleed through after the host re-emits the current viewport.
@@ -451,6 +509,11 @@ function applyScreenSnapshot(frame) {
 
 function applyScrollbackResponse(frame) {
   if (!terminal || typeof frame?.content !== "string") return;
+  // Defensive: in live-mirror mode we never issue fetch_scrollback, but
+  // a late response from a request fired right before the toggle could
+  // still arrive. Drop it so it doesn't trigger a buildReplayBytes
+  // rewrite that the user just opted out of.
+  if (activeMirrorMode) return;
   const bytes = decodeBase64(frame.content);
   if (!bytes) {
     replayBuffer.fetchFailed();
@@ -467,6 +530,7 @@ function applyScrollbackResponse(frame) {
 }
 
 function maybeRequestOlderScrollback() {
+  if (activeMirrorMode) return;
   if (!terminal || !socket || socket.readyState !== WebSocket.OPEN) return;
   if (replayBuffer.isFetchInFlight()) return;
   if (replayBuffer.hasReachedTop(hostRows)) return;
@@ -664,6 +728,13 @@ function enterTerminalView(session, { updateHistory = true } = {}) {
   }
 
   requestAnimationFrame(() => {
+    // The first call to syncMobileViewportInsets ran while #terminalView
+    // was still display:none, so mobileToolbar.offsetHeight read 0 and
+    // the CSS variables fell back to a 112px estimate. Once the view is
+    // visible we re-measure so #terminal's calc() height accounts for
+    // the real toolbar — without this the bottom row sits under the
+    // toolbar until the user collapses+reopens it (which re-syncs).
+    syncMobileViewportInsets();
     if (fitAddon && !isHostSizeLocked()) fitAddon.fit();
     focusTerminal();
     window.scrollTo(0, 0);
@@ -1234,4 +1305,5 @@ window.addEventListener("popstate", async () => {
 
 setMobileToolbarCollapsed(false);
 syncMobileViewportInsets();
+syncDesktopWidthMode();
 refreshSessions();
