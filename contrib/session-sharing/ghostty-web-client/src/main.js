@@ -24,6 +24,7 @@ const mobileToolbarToggle = document.querySelector("#mobileToolbarToggle");
 const lockHostSizeInput = document.querySelector("#lockHostSize");
 const desktopWidthInput = document.querySelector("#desktopWidth");
 const liveMirrorModeInput = document.querySelector("#liveMirrorMode");
+const debugModeInput = document.querySelector("#debugMode");
 
 let terminal = null;
 let fitAddon = null;
@@ -66,6 +67,14 @@ const DESKTOP_WIDTH_KEY = "ghostty-sharing-desktop-width";
 // desktop users keep their lazy-history scrollback; mobile users can opt
 // in once and the localStorage value persists.
 const LIVE_MIRROR_KEY = "ghostty-sharing-live-mirror";
+// Debug instrumentation toggle. When off (default), the debug bar isn't
+// mounted and logEvt is a no-op — zero runtime cost. When on, we mount
+// the top-of-screen log bar, wire scroll/ResizeObserver listeners, and
+// every logEvt call records into a ring buffer downloadable via the
+// "DL" button. Toggling requires a reload because the debug
+// infrastructure (capture-phase listeners, ResizeObserver) is wired
+// once at module init.
+const DEBUG_MODE_KEY = "ghostty-sharing-debug";
 
 backendBaseInput.value =
   localStorage.getItem("ghostty-sharing-backend-base") ?? location.origin;
@@ -73,6 +82,11 @@ tokenInput.value = localStorage.getItem("ghostty-sharing-token") ?? "";
 lockHostSizeInput.checked = localStorage.getItem(LOCK_HOST_SIZE_KEY) === "1";
 desktopWidthInput.checked = localStorage.getItem(DESKTOP_WIDTH_KEY) === "1";
 liveMirrorModeInput.checked = localStorage.getItem(LIVE_MIRROR_KEY) === "1";
+const debugEnabled = localStorage.getItem(DEBUG_MODE_KEY) === "1";
+debugModeInput.checked = debugEnabled;
+debugModeInput.addEventListener("change", () => {
+  localStorage.setItem(DEBUG_MODE_KEY, debugModeInput.checked ? "1" : "0");
+});
 
 // Mirror-mode flag captured at connect time. The user can toggle the
 // checkbox mid-session; we update this immediately so all the gates
@@ -121,9 +135,34 @@ function isHostSizeLocked() {
 function syncDesktopWidthMode() {
   const enabled = desktopWidthInput?.checked ?? false;
   terminalView.classList.toggle("desktop-width-mode", enabled);
+  // Drop any leftover horizontal pan transform so re-entering the
+  // mode always starts at the left edge.
+  desktopPanX = 0;
+  terminalMount.style.transform = "";
   if (fitAddon && !isHostSizeLocked()) {
     requestViewportFit();
   }
+}
+
+// Pseudo-scrollLeft for desktop-width mode. We drive #terminal's
+// horizontal position via CSS transform rather than the parent's
+// scrollLeft because HuaweiBrowser (Chromium 114-based) silently
+// resets overflow scrollLeft between capture-phase and bubble-phase
+// of touchend regardless of touch-action or preventDefault.
+let desktopPanX = 0;
+function isDesktopWidthMode() {
+  return terminalView.classList.contains("desktop-width-mode");
+}
+function maxDesktopPan() {
+  const parent = terminalMount.parentElement;
+  if (!parent) return 0;
+  return Math.max(0, terminalMount.offsetWidth - parent.clientWidth);
+}
+function applyDesktopPan(x) {
+  const max = maxDesktopPan();
+  desktopPanX = Math.min(max, Math.max(0, x));
+  terminalMount.style.transform =
+    desktopPanX > 0 ? `translate3d(${-desktopPanX | 0}px, 0, 0)` : "";
 }
 
 desktopWidthInput.addEventListener("change", () => {
@@ -1011,6 +1050,18 @@ function syncMobileViewportInsets() {
     `${keyboardOffset}px`,
   );
 
+  // Snapshot the relevant numbers so we can correlate key viewport
+  // changes against terminal-host / #terminal layout in the log file.
+  if (typeof logEvt === "function") {
+    const vv = window.visualViewport;
+    const termRect = terminalMount?.getBoundingClientRect();
+    const hostRect = terminalMount?.parentElement?.getBoundingClientRect();
+    const toolbarRect = mobileToolbar?.getBoundingClientRect();
+    logEvt(
+      `VV mobile=${mobile ? 1 : 0} ih=${window.innerHeight} vvh=${vv ? Math.round(vv.height) : "-"} vvtop=${vv ? Math.round(vv.offsetTop) : "-"} kbd=${keyboardOffset | 0} tbh=${toolbarHeight} tbcollapsed=${mobileToolbarCollapsed ? 1 : 0} tb.oh=${mobileToolbar?.offsetHeight ?? "-"} tb.rect.bot=${toolbarRect ? Math.round(toolbarRect.bottom) : "-"} host.rect.bot=${hostRect ? Math.round(hostRect.bottom) : "-"} term.rect.bot=${termRect ? Math.round(termRect.bottom) : "-"} term.h=${termRect ? Math.round(termRect.height) : "-"}`,
+    );
+  }
+
   if (fitAddon) requestViewportFit();
   if (mobile || activeSessionId) {
     window.scrollTo(0, 0);
@@ -1026,6 +1077,106 @@ function syncMobileViewportInsets() {
 // and the terminal felt frozen.
 let touchScrollState = null;
 const TOUCH_TAP_THRESHOLD_PX = 6;
+
+// === DEBUG: top-of-screen bar + ring-buffered touch event log.
+// "DL" downloads the buffered log as a .txt; "CLR" wipes it. Gated by
+// the debug toggle in the launcher — when off, logEvt/setDebugBar are
+// no-ops and none of the listeners or observers below are wired.
+let logEvt = (_line) => {};
+let setDebugBar = (_text) => {};
+if (debugEnabled) {
+  const debugBar = document.createElement("div");
+  debugBar.style.cssText =
+    "position:fixed;top:0;left:0;right:0;z-index:9999;font:11px/1.3 ui-monospace,monospace;background:rgba(0,0,0,0.82);color:#7de3bb;padding:3px 8px;white-space:nowrap;overflow:hidden;display:flex;gap:6px;align-items:center;";
+  const debugText = document.createElement("span");
+  debugText.style.cssText =
+    "flex:1;overflow:hidden;text-overflow:ellipsis;pointer-events:none;";
+  debugText.textContent = "(waiting for touch)";
+  const debugDlBtn = document.createElement("button");
+  debugDlBtn.textContent = "DL";
+  debugDlBtn.style.cssText =
+    "font:11px ui-monospace,monospace;background:#7de3bb;color:#000;border:0;border-radius:3px;padding:2px 8px;";
+  const debugClrBtn = document.createElement("button");
+  debugClrBtn.textContent = "CLR";
+  debugClrBtn.style.cssText =
+    "font:11px ui-monospace,monospace;background:#444;color:#fff;border:0;border-radius:3px;padding:2px 8px;";
+  debugBar.append(debugText, debugDlBtn, debugClrBtn);
+  document.body.appendChild(debugBar);
+  setDebugBar = (text) => {
+    debugText.textContent = text;
+  };
+  const DEBUG_LOG_CAP = 8000;
+  const debugLogs = [];
+  const debugT0 = performance.now();
+  logEvt = (line) => {
+    const t = (performance.now() - debugT0).toFixed(1);
+    debugLogs.push(`${t.padStart(8, " ")} ${line}`);
+    if (debugLogs.length > DEBUG_LOG_CAP) debugLogs.shift();
+  };
+  debugDlBtn.addEventListener("click", () => {
+    const body = debugLogs.join("\n") + "\n";
+    const blob = new Blob([body], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `touch-log-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  debugClrBtn.addEventListener("click", () => {
+    debugLogs.length = 0;
+    setDebugBar("(cleared)");
+  });
+  logEvt(`UA ${navigator.userAgent}`);
+  // Capture-phase touchend on the window so we can read scrollLeft at
+  // the earliest possible moment, before any bubble-phase JS runs.
+  window.addEventListener(
+    "touchend",
+    () => {
+      const s = terminalMount?.parentElement;
+      if (s) logEvt(`touchend@capture sl=${s.scrollLeft | 0}`);
+    },
+    { capture: true, passive: true },
+  );
+  // Attach a scroll listener on the .terminal-host parent as soon as it
+  // exists in the DOM. Logs every scrollLeft change so we can correlate
+  // against touch events on the timeline. Also wires a ResizeObserver
+  // onto #terminal so we can see whether the inner element shrinks at
+  // touchend (which would clamp scrollLeft to 0).
+  queueMicrotask(() => {
+    const _scroller = terminalMount?.parentElement;
+    if (!_scroller) return;
+    _scroller.addEventListener(
+      "scroll",
+      () => {
+        logEvt(
+          `SCROLL sl=${_scroller.scrollLeft | 0} sw=${_scroller.scrollWidth | 0} cw=${_scroller.clientWidth | 0}`,
+        );
+      },
+      { passive: true },
+    );
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver((entries) => {
+        for (const e of entries) {
+          const w = (e.contentRect?.width ?? 0) | 0;
+          const h = (e.contentRect?.height ?? 0) | 0;
+          logEvt(`RESIZE #terminal w=${w} h=${h}`);
+        }
+      });
+      ro.observe(terminalMount);
+      const ro2 = new ResizeObserver((entries) => {
+        for (const e of entries) {
+          const w = (e.contentRect?.width ?? 0) | 0;
+          const h = (e.contentRect?.height ?? 0) | 0;
+          logEvt(`RESIZE .terminal-host w=${w} h=${h}`);
+        }
+      });
+      ro2.observe(_scroller);
+    }
+  });
+}
 // Mirror of ghostty-web's renderScrollbar layout: 8 px wide thumb in a
 // lane offset 4 px from the right edge, with 4 px top/bottom padding on
 // the track. See `node_modules/ghostty-web/dist/ghostty-web.js` ~L2186.
@@ -1110,11 +1261,20 @@ terminalMount.addEventListener(
     }
     touchScrollState = {
       type: "swipe",
+      startX: touch.clientX,
       startY: touch.clientY,
       lastY: touch.clientY,
+      lastPanX: touch.clientX,
       cellHeight: currentCellHeightPx(),
       moved: false,
     };
+    const _scroller = terminalMount.parentElement;
+    const _sl = _scroller ? _scroller.scrollLeft | 0 : 0;
+    const _sw = _scroller ? _scroller.scrollWidth | 0 : 0;
+    const _cw = _scroller ? _scroller.clientWidth | 0 : 0;
+    logEvt(
+      `START x=${touch.clientX | 0} y=${touch.clientY | 0} sl=${_sl} sw=${_sw} cw=${_cw}`,
+    );
   },
   { passive: true },
 );
@@ -1141,12 +1301,59 @@ terminalMount.addEventListener(
       if (event.cancelable) event.preventDefault();
       return;
     }
-    if (
-      Math.abs(touch.clientY - touchScrollState.startY) > TOUCH_TAP_THRESHOLD_PX
-    ) {
+    touchScrollState.lastTouchX = touch.clientX;
+    touchScrollState.lastTouchY = touch.clientY;
+    const dx = touch.clientX - touchScrollState.startX;
+    const dy = touch.clientY - touchScrollState.startY;
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+    if (Math.max(adx, ady) > TOUCH_TAP_THRESHOLD_PX) {
       touchScrollState.moved = true;
     }
+    // DEBUG: track the highest scrollLeft seen during the gesture so
+    // touchend can distinguish "Chrome committed pan asynchronously"
+    // from "something reset scrollLeft on release".
+    const _scroller = terminalMount.parentElement;
+    let _sl = 0;
+    if (_scroller) {
+      _sl = _scroller.scrollLeft | 0;
+      if (
+        touchScrollState.maxSlDuringMove === undefined ||
+        _sl > touchScrollState.maxSlDuringMove
+      ) {
+        touchScrollState.maxSlDuringMove = _sl;
+      }
+    }
+    logEvt(
+      `MOVE dx=${dx | 0} dy=${dy | 0} adx=${adx | 0} ady=${ady | 0} m=${touchScrollState.moved ? 1 : 0} sl=${_sl} cancelable=${event.cancelable ? 1 : 0}`,
+    );
     if (!touchScrollState.moved) return;
+    // Only consume the gesture as terminal scrollback when it's
+    // vertically dominant. A horizontal-leaning swipe must fall
+    // through without preventDefault so the browser's native pan on
+    // `.terminal-host` (used by desktop-width-mode) commits cleanly —
+    // calling preventDefault here makes Chrome roll back the
+    // already-applied scroll on release, which manifested as the
+    // "small horizontal swipe snaps back to the left" symptom.
+    if (ady <= adx) {
+      // Horizontal-dominant: drive #terminal's CSS transform manually.
+      // Native scrollLeft is unreliable on HuaweiBrowser (resets
+      // between capture- and bubble-phase of touchend regardless of
+      // touch-action), so we don't use it.
+      let dxStep = 0;
+      if (isDesktopWidthMode() && maxDesktopPan() > 0) {
+        dxStep = touch.clientX - touchScrollState.lastPanX;
+        if (dxStep !== 0) {
+          applyDesktopPan(desktopPanX - dxStep);
+          touchScrollState.lastPanX = touch.clientX;
+        }
+      }
+      if (event.cancelable) event.preventDefault();
+      logEvt(
+        `MOVE-pan dxStep=${dxStep | 0} panX=${desktopPanX} max=${maxDesktopPan()} cancelable=${event.cancelable ? 1 : 0}`,
+      );
+      return;
+    }
     if (typeof terminal.scrollLines !== "function") return;
     const cellHeight = touchScrollState.cellHeight || 16;
     // Drag down = scroll into older history (scrollLines wants negative).
@@ -1157,7 +1364,10 @@ terminalMount.addEventListener(
       terminal.scrollLines(lines);
       touchScrollState.lastY -= lines * cellHeight;
     }
-    if (event.cancelable) event.preventDefault();
+    if (event.cancelable) {
+      event.preventDefault();
+      logEvt(`MOVE-consume axis=V lines=${lines} (preventDefault)`);
+    }
   },
   { passive: false },
 );
@@ -1165,12 +1375,63 @@ terminalMount.addEventListener(
 function endTouchScroll() {
   if (!touchScrollState) return;
   const wasTap = touchScrollState.type === "swipe" && !touchScrollState.moved;
+  // DEBUG: write the last gesture's signature into a top-of-screen
+  // bar so we can confirm on-device whether the swipe was actually
+  // horizontal-dominant in pixels (i.e. adx > ady).
+  const scroller = terminalMount.parentElement;
+  const dx =
+    touchScrollState.lastTouchX !== undefined
+      ? Math.round(touchScrollState.lastTouchX - (touchScrollState.startX ?? 0))
+      : 0;
+  const dy =
+    touchScrollState.lastTouchY !== undefined
+      ? Math.round(touchScrollState.lastTouchY - (touchScrollState.startY ?? 0))
+      : 0;
+  const sl0 = (scroller?.scrollLeft ?? 0) | 0;
+  const maxSl = (touchScrollState.maxSlDuringMove ?? 0) | 0;
+  const axis = Math.abs(dy) > Math.abs(dx) ? "V" : "H";
+  const movedFlag = touchScrollState.moved ? 1 : 0;
+  setDebugBar(
+    `m=${movedFlag} dx=${dx} dy=${dy} ${axis} max=${maxSl} sl=${sl0}`,
+  );
+  logEvt(
+    `END m=${movedFlag} dx=${dx} dy=${dy} axis=${axis} maxSl=${maxSl} sl@end=${sl0}`,
+  );
+  if (scroller) {
+    let samples = 0;
+    const sampleAt = [50, 100, 200, 350, 600];
+    sampleAt.forEach((ms) => {
+      setTimeout(() => {
+        const slNow = scroller.scrollLeft | 0;
+        logEvt(
+          `POST t+${ms}ms sl=${slNow} sw=${scroller.scrollWidth | 0} cw=${scroller.clientWidth | 0}`,
+        );
+        samples += 1;
+        if (samples === sampleAt.length) {
+          setDebugBar(
+            `m=${movedFlag} dx=${dx} dy=${dy} ${axis} max=${maxSl} sl=${sl0}→${slNow}`,
+          );
+        }
+      }, ms);
+    });
+  }
   touchScrollState = null;
   if (wasTap && shouldUseMobileInput()) focusTerminal();
 }
 
-terminalMount.addEventListener("touchend", endTouchScroll);
+terminalMount.addEventListener("touchend", (event) => {
+  const scroller = terminalMount.parentElement;
+  if (scroller) {
+    logEvt(
+      `touchend fires sl=${scroller.scrollLeft | 0} sw=${scroller.scrollWidth | 0} cw=${scroller.clientWidth | 0} #terminal.w=${terminalMount.offsetWidth | 0} cancelable=${event.cancelable ? 1 : 0}`,
+    );
+  } else {
+    logEvt(`touchend fires no-scroller cancelable=${event.cancelable ? 1 : 0}`);
+  }
+  endTouchScroll();
+});
 terminalMount.addEventListener("touchcancel", () => {
+  logEvt(`touchcancel`);
   touchScrollState = null;
 });
 

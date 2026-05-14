@@ -397,13 +397,20 @@
         }
 
         .terminal-page.desktop-width-mode .terminal-host {
-          overflow-x: auto;
-          overflow-y: hidden;
+          /* In desktop-width mode the inner #terminal is wider than
+             the viewport. We pan it with `transform: translateX(...)`
+             from JS — using the browser's native scrollLeft was a
+             non-starter on HuaweiBrowser, which silently resets
+             scrollLeft between capture-phase and bubble-phase of
+             touchend regardless of touch-action / preventDefault. */
+          overflow: hidden;
+          touch-action: pan-y;
         }
 
         .terminal-page.desktop-width-mode .terminal-host > #terminal {
           min-width: 860px;
           width: 860px;
+          will-change: transform;
         }
       }
 
@@ -453,6 +460,10 @@
               <span
                 >实时镜像（不缓存历史，手机端建议开启；切换后已有历史不会回填）</span
               >
+            </label>
+            <label class="checkbox-row">
+              <input id="debugMode" type="checkbox" />
+              <span>调试日志栏（下次刷新生效）</span>
             </label>
             <button id="saveToken">保存并刷新会话</button>
           </div>
