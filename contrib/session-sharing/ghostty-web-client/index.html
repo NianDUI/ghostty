@@ -57,10 +57,9 @@
         padding: 0;
       }
 
-      .hero {
-        display: grid;
-        grid-template-columns: 320px 1fr;
-        gap: 18px;
+      .launcher-stack {
+        max-width: 720px;
+        margin: 0 auto;
       }
 
       .panel {
@@ -147,6 +146,39 @@
         opacity: 0.6;
       }
 
+      .icon-button {
+        width: 36px;
+        height: 36px;
+        margin: 0;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255, 255, 255, 0.6);
+        border: 1px solid rgba(42, 39, 35, 0.18);
+        border-radius: 10px;
+        color: var(--muted);
+        font-size: 18px;
+        line-height: 1;
+      }
+
+      .icon-button:hover:not(:disabled) {
+        background: var(--accent-soft);
+        color: var(--accent);
+      }
+
+      .settings-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 8px;
+      }
+
+      .settings-header .title {
+        margin: 0;
+        flex: 1;
+      }
+
       .session-list {
         display: grid;
         gap: 10px;
@@ -211,6 +243,10 @@
         margin-bottom: 10px;
         color: var(--muted);
         font-size: 13px;
+      }
+
+      .meta .icon-button {
+        margin-left: auto;
       }
 
       .hidden {
@@ -414,23 +450,46 @@
         }
       }
 
-      @media (max-width: 860px) {
-        .hero {
-          grid-template-columns: 1fr;
-        }
-      }
     </style>
   </head>
   <body>
     <div id="shell" class="shell">
       <div id="launcherView">
-        <div class="hero">
+        <div id="launcherHomeView" class="launcher-stack">
+          <div class="panel sessions">
+            <div class="meta">
+              <strong>会话列表</strong>
+              <span id="sessionMeta">未加载</span>
+              <button
+                id="openSettings"
+                class="icon-button"
+                type="button"
+                aria-label="打开设置"
+                title="设置"
+              >
+                ⚙
+              </button>
+            </div>
+            <div id="sessionList" class="session-list"></div>
+          </div>
+        </div>
+
+        <div id="launcherSettingsView" class="launcher-stack hidden">
           <div class="panel auth">
-            <h1 class="title">Session Sharing</h1>
+            <div class="settings-header">
+              <button
+                id="closeSettings"
+                class="icon-button"
+                type="button"
+                aria-label="返回会话列表"
+                title="返回"
+              >
+                ←
+              </button>
+              <h1 class="title">设置</h1>
+            </div>
             <p class="hint">
-              这个版本直接使用 `ghostty-web`
-              作为浏览器终端组件，保留会话共享自己的 token、会话列表和 WebSocket
-              接入层。
+              配置后端地址、用户令牌和显示偏好。保存后回到会话列表。
             </p>
             <label for="backendBase">Backend URL Base</label>
             <input
@@ -465,14 +524,7 @@
               <input id="debugMode" type="checkbox" />
               <span>调试日志栏（下次刷新生效）</span>
             </label>
-            <button id="saveToken">保存并刷新会话</button>
-          </div>
-          <div class="panel sessions">
-            <div class="meta">
-              <strong>会话列表</strong>
-              <span id="sessionMeta">未加载</span>
-            </div>
-            <div id="sessionList" class="session-list"></div>
+            <button id="saveToken">保存并返回</button>
           </div>
         </div>
       </div>

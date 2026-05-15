@@ -10,6 +10,10 @@ const SESSION_POLL_INTERVAL_MS = 15_000;
 
 const shell = document.querySelector("#shell");
 const launcherView = document.querySelector("#launcherView");
+const launcherHomeView = document.querySelector("#launcherHomeView");
+const launcherSettingsView = document.querySelector("#launcherSettingsView");
+const openSettingsButton = document.querySelector("#openSettings");
+const closeSettingsButton = document.querySelector("#closeSettings");
 const terminalView = document.querySelector("#terminalView");
 const terminalStatus = document.querySelector("#terminalStatus");
 const backendBaseInput = document.querySelector("#backendBase");
@@ -102,8 +106,51 @@ saveTokenButton.addEventListener("click", async () => {
     backendBaseInput.value.trim(),
   );
   localStorage.setItem("ghostty-sharing-token", tokenInput.value.trim());
+  // After save: jump to the session list only if a token is now present.
+  // Without a token the list can't load anything, so we stay on the
+  // settings page so the user can finish the only thing that matters.
+  if (tokenInput.value.trim()) {
+    showLauncherHome();
+  }
   await refreshSessions();
   scheduleSessionRefresh();
+});
+
+function hasUserToken() {
+  return Boolean(tokenInput.value.trim());
+}
+
+// Toggle between the home (session list) sub-view and the settings
+// sub-view. The terminal view is unaffected — these only matter while
+// the user is in the launcher. We disable the "返回" button when no
+// token is configured so the user can't escape the settings page into
+// an empty session list.
+function showLauncherSettings() {
+  launcherHomeView.classList.add("hidden");
+  launcherSettingsView.classList.remove("hidden");
+  closeSettingsButton.disabled = !hasUserToken();
+}
+
+function showLauncherHome() {
+  if (!hasUserToken()) {
+    showLauncherSettings();
+    return;
+  }
+  launcherSettingsView.classList.add("hidden");
+  launcherHomeView.classList.remove("hidden");
+}
+
+openSettingsButton.addEventListener("click", showLauncherSettings);
+closeSettingsButton.addEventListener("click", () => {
+  if (hasUserToken()) showLauncherHome();
+});
+// Keep the back button's enabled state in sync as the user types or
+// clears the token — without this, clearing the field mid-edit leaves
+// the button enabled and the user could escape with no token.
+tokenInput.addEventListener("input", () => {
+  if (!launcherSettingsView.classList.contains("hidden")) {
+    closeSettingsButton.disabled = !hasUserToken();
+  }
 });
 
 // Persist the lock-host-size preference and re-apply on the active
@@ -1567,4 +1614,12 @@ window.addEventListener("popstate", async () => {
 setMobileToolbarCollapsed(false);
 syncMobileViewportInsets();
 syncDesktopWidthMode();
+// First-run routing: without a token the session list is just an empty
+// state, so drop the user straight onto the settings page. After they
+// save the token the saveToken handler flips us to the home view.
+if (hasUserToken()) {
+  showLauncherHome();
+} else {
+  showLauncherSettings();
+}
 refreshSessions();
