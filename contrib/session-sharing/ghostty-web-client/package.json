@@ -8,6 +8,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test test/redaction.test.mjs test/scroll.test.mjs test/appearance.test.mjs test/scrollback.test.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
     "cap:sync": "npx cap sync android",
     "cap:open": "npx cap open android",
     "android:dev": "npm run build && npx cap sync android",
@@ -20,6 +22,7 @@
     "ghostty-web": "^0.4.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "vite": "^7.1.7"
   }
 }
