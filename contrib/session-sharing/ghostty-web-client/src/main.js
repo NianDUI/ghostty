@@ -384,13 +384,6 @@ async function ensureTerminal() {
   if (terminal) return terminal;
   await init();
   terminal = new Terminal({
-    // Fallback chain ordered desktop-first then Android — without it
-    // xterm.js falls to the browser's generic monospace, which on
-    // HuaweiBrowser/HarmonyOS misses common symbols (e.g. U+25B6 ▶
-    // renders as tofu). Listing Noto Sans Mono near the end gives a
-    // broader-coverage Android fallback when it's installed.
-    fontFamily:
-      'ui-monospace, "SF Mono", Menlo, "Cascadia Mono", "Roboto Mono", "Noto Sans Mono", monospace',
     fontSize: 14,
     cursorBlink: true,
     theme: {
