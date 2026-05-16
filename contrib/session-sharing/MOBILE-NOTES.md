@@ -32,20 +32,17 @@
 - **根因**：Android 软键盘弹起**不依赖新的 `focusin` 事件**——只要焦点输入框在、用户产生触摸交互，浏览器就会重新弹键盘。系统手势收键盘并不解除 DOM focus，`mobileInput` 始终保持 focus。
 - **修复**：`endTouchScroll` 检测到真实滑动（非 tap）时主动 `mobileInput.blur()`。下次想要键盘？点终端任意位置（tap → focusTerminal → mobileInput.focus）。
 
-### 5. 锁定模式下主机底部行被裁
+### 5. 锁定模式下主机底部行被裁 + 绝对定位错位
 
-- **现象**：主机 46 行 × cellHeight 736px，超过手机可视区 530px，canvas 溢出 → 底部 13 行（含光标）被裁。
-- **根因**：`onResize` 里强行把本地 grid 行数 snap 回 hostRows，本地 grid 永远比 viewport 高。
-- **修复**：移动端 + 锁定模式下**只锁 cols，rows 跟随 viewport**。多出的内容自然进 xterm scrollback，光标永远在可视底部。
-
-## 已知 trade-off
-
-### 6. 行数适配引入光标定位错位
-
-- **现象**：本地 grid 33 行 vs 主机 46 行时，主机发来的绝对 cursor 定位转义序列（如 Claude Code TUI 状态栏画在主机行 46）会被映射到本地行 33，导致内容**重叠**渲染（例如文件列表行上叠加了"bypass permissions"状态栏文字）。
-- **根因**：主机的 PTY 字节流里包含 `\x1b[ROW;COLH` 这种绝对寻址，是按主机自己的 grid 维度算的。我们本地 grid 行数比主机少，绝对行号被 clamp 到我们的最大行（不是主机的对应行）。
-- **未修**：要彻底解决需要保留 46 行本地 grid + 加垂直 pan（类似横向 pan 的 `translate3d`），UX 上和现在的垂直滚动（scrollback）会冲突。当前选择把光标可见性优先于绝对定位精度。
-- **缓解建议**：日常使用不开 lock-host-size，让本地 grid 完全适配可视区，host 端的 TUI 程序会重排到正确尺寸。lock-host-size 适合桌面/平板用户保留原 grid。
+- **现象**：
+  - 第一版：主机 46 行 × cellHeight 736px 超过手机可视区 530px，canvas 溢出，底部 13 行（含光标）被 `overflow:hidden` 裁掉。
+  - 改成"只锁 cols、rows 跟随 viewport"之后：底部回到可视区，但主机绝对 cursor 定位转义（如 `\x1b[46;1H`）按主机 46 行算，落到本地 33 行就被 clamp，TUI 状态栏栈到不相干内容上，出现**重叠渲染**。
+- **根因**：本地 grid 行数必须和主机一致才能让绝对寻址映射正确，但保持一致就 canvas 比可视区高，自然得裁。
+- **修复**：保留本地 grid = 主机 grid，外加**垂直 transform pan**——`#terminal` inline height 设为 `rows × cellHeight`，再用 `translate3d(0, -Y, 0)` 在 `.terminal-host` 内移动，`overflow:hidden` 配合 transform 模拟"垂直 scrollLeft"。
+  - `maxDesktopPanY` 减去 `.terminal-host` 的 `padding-top/-bottom`，避免 pan 到底时 cursor 落进 toolbar 后面。
+  - touchmove 垂直分支：pan 在 grid 边界饱和时落入 `terminal.scrollLines` —— 下拖到顶进 scrollback、上拖让 scrollback 退回再恢复 pan。
+  - `ResizeObserver` 监听 `.terminal-host`：键盘弹起、URL 栏切换等让可视区缩小的事件触发 `panToBottom()`，光标自动跟上。
+  - `panToBottom` 在 hello / applyAppearance / screen / 模式切换都会调用一次，首帧就锚到 cursor 行。
 
 ## 移动端排查工具
 
