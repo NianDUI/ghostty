@@ -54,6 +54,9 @@
   - Swift 侧 `encode` 在 snapshot 字节末尾拼 `\x1b[<y+1>;<x+1>H`，VT 1-indexed。`capture` 调新 API 拿到 cursor，传给 `encode`。
   - 因为是跨 C ABI 改动，提交前要跑 `zig build -Demit-macos-app=false` 重建 `macos/GhosttyKit.xcframework/`，否则 Xcode 报 `cannot find ghostty_surface_cursor_s`。
 - **二轮修复（关键）**：第一版分两次 lock 读 text + cursor，PTY reader 线程在两次 lock 之间会把 cursor 往前推，导致 cursor 锚点跟 snapshot 文本不在同一时刻 → 实测**比不加更糟**。改成 `ghostty_surface_read_text_styled_with_cursor` 一次 lock 原子读两份，cursor 锚点跟 dump 一致。
+- **三轮修复（最终）**：二轮锚点位置仍然错。根因是 `formatter.zig` 注释里的硬规则——"Trailing blank lines are always trimmed"。host active screen 底部的空白行（cursor 下方那几行）被 dump 吃掉，xterm viewport 底部对应到 host 的"最后非空行"而不是 active screen 真正的最后一行 → `\x1b[<y+1>;<x+1>H` 在两边落到不同的 grid cell。
+  - 中间走过弯路：切到 `POINT_ACTIVE` 让 dump 只含 active screen + 用 `\r\n` 补到 hostRows。但这砍掉了 scrollback；liveMirror 模式下 `fetch_scrollback` 是禁用的（`activeMirrorMode return;`），用户下滑回看历史**直接看不到**。
+  - 终态：`ghostty_surface_read_text_styled_with_cursor_and_trim` 在一次 lock 下原子读 text + cursor + active 尾部空行数。Swift 拿到 trailing_blank_rows，在 cursor anchor 前补对应数量的 `\r\n`。这样 `POINT_SCREEN` 保留（scrollback 还在），xterm viewport row R 又能精确对齐 host active row R-1。
 
 ## 移动端排查工具
 
