@@ -1730,13 +1730,23 @@ pub const CAPI = struct {
         const cursor = screen.cursor;
 
         // Count the trailing blank rows in the active screen so the
-        // caller can re-pad the dump (formatter trims them away).
+        // caller can re-pad the dump (formatter trims them away). The
+        // blank judgement must match formatter.zig's styled-mode rule:
+        // a cell is blank iff isEmpty() && !hasStyling(). hasTextAny()
+        // ignores cells that only carry a background colour, so it
+        // over-counts trailing rows whenever the host TUI paints a
+        // pure-bg row near the bottom (e.g. Claude Code's status-bar
+        // fill). When trailing > what the formatter trimmed, the
+        // snapshot's `\r\n` padding scrolls xterm too far, the cursor
+        // anchor `\x1b[<y+1>;<x+1>H` lands on a blank row, and any
+        // subsequent `\x1b[1A`-style relative redraw from the host
+        // stamps onto the wrong row — the duplicate-row symptom.
         var trailing: u16 = 0;
         const active_rows = screen.pages.rows;
         var pin_opt = screen.pages.getBottomRight(.active);
         while (pin_opt) |pin| {
             if (trailing >= active_rows) break;
-            if (terminal.Cell.hasTextAny(pin.cells(.all))) break;
+            if (!terminal.Cell.isBlankStyled(pin.cells(.all))) break;
             trailing += 1;
             pin_opt = pin.up(1);
         }

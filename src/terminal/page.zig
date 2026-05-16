@@ -2192,6 +2192,22 @@ pub const Cell = packed struct(u64) {
 
         return false;
     }
+
+    /// Returns true if the row of cells matches the formatter's styled-mode
+    /// blank judgment: every cell `isEmpty() && !hasStyling()`. `hasTextAny`
+    /// is *not* equivalent — it treats a row of pure background-color cells
+    /// as "no text" (blank), but `formatter.zig` keeps those rows in styled
+    /// output (their `isEmpty()` is false). Callers that need to mirror the
+    /// formatter's trim behaviour (e.g. counting trailing blank rows for
+    /// session-sharing snapshot padding) must use this one, otherwise they
+    /// over-count any row the host TUI painted with a pure bg fill.
+    pub inline fn isBlankStyled(cells: []const Cell) bool {
+        for (cells) |cell| {
+            if (!cell.isEmpty() or cell.hasStyling()) return false;
+        }
+
+        return true;
+    }
 };
 
 // Uncomment this when you want to do some math.
@@ -3915,4 +3931,40 @@ test "Page exactRowCapacity hyperlink map capacity for many cells" {
         const cloned_cell = &cloned.rows.ptr(cloned.memory)[0].cells.ptr(cloned.memory)[x];
         try testing.expect(cloned_cell.hyperlink);
     }
+}
+
+test "Cell isBlankStyled treats pure-bg-color row as non-blank unlike hasTextAny" {
+    // Three cell archetypes the formatter encounters on a row.
+    const empty_cell: Cell = .{
+        .content_tag = .codepoint,
+        .content = .{ .codepoint = 0 },
+    };
+    const bg_only_cell: Cell = .{
+        .content_tag = .bg_color_palette,
+        .content = .{ .color_palette = 1 }, // red bg, no text
+    };
+    const text_cell: Cell = .{
+        .content_tag = .codepoint,
+        .content = .{ .codepoint = 'A' },
+    };
+
+    const empty_row = [_]Cell{ empty_cell, empty_cell, empty_cell };
+    const bg_row = [_]Cell{ bg_only_cell, bg_only_cell, bg_only_cell };
+    const text_row = [_]Cell{ empty_cell, text_cell, empty_cell };
+
+    // hasTextAny looks at codepoints only: bg-only rows report "no text",
+    // so the session-sharing trailing-blank counter (which was using this)
+    // would happily count them as blank trailing rows. That's the bug.
+    try testing.expect(!Cell.hasTextAny(&empty_row));
+    try testing.expect(!Cell.hasTextAny(&bg_row));
+    try testing.expect(Cell.hasTextAny(&text_row));
+
+    // isBlankStyled mirrors formatter.zig's styled-mode judgment: a row of
+    // bg-only cells is *not* blank because each cell's `isEmpty()` returns
+    // false (bg_color_* tags are non-empty by definition). The formatter
+    // keeps those rows in the dump, so a trailing-row counter MUST also
+    // treat them as non-blank to stay in sync with what the dump emits.
+    try testing.expect(Cell.isBlankStyled(&empty_row));
+    try testing.expect(!Cell.isBlankStyled(&bg_row));
+    try testing.expect(!Cell.isBlankStyled(&text_row));
 }

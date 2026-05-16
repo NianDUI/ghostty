@@ -57,6 +57,11 @@
 - **三轮修复（最终）**：二轮锚点位置仍然错。根因是 `formatter.zig` 注释里的硬规则——"Trailing blank lines are always trimmed"。host active screen 底部的空白行（cursor 下方那几行）被 dump 吃掉，xterm viewport 底部对应到 host 的"最后非空行"而不是 active screen 真正的最后一行 → `\x1b[<y+1>;<x+1>H` 在两边落到不同的 grid cell。
   - 中间走过弯路：切到 `POINT_ACTIVE` 让 dump 只含 active screen + 用 `\r\n` 补到 hostRows。但这砍掉了 scrollback；liveMirror 模式下 `fetch_scrollback` 是禁用的（`activeMirrorMode return;`），用户下滑回看历史**直接看不到**。
   - 终态：`ghostty_surface_read_text_styled_with_cursor_and_trim` 在一次 lock 下原子读 text + cursor + active 尾部空行数。Swift 拿到 trailing_blank_rows，在 cursor anchor 前补对应数量的 `\r\n`。这样 `POINT_SCREEN` 保留（scrollback 还在），xterm viewport row R 又能精确对齐 host active row R-1。
+- **四轮修复（多 tab 切换时偶发复发）**：spinner 重复行在多个 surface 来回切 session 时仍偶发。`touch-log` 抓到一个 `bytes=190 tail=\x0d\x0a × 11 + \x1b[2;37H` 的异常 screen frame——cursor 在 row 2 但 trailing 只有 11，host rows 是 48，pad 数学怎么都不对。根因是 trailing 算法的"空白"判定跟 formatter 不一致：
+  - `embedded.zig` 用 `Cell.hasTextAny`（`page.zig:2188`）——对 `bg_color_palette`/`bg_color_rgb` 类型 cell 返回 false → 整行纯背景色 → 算空白
+  - `formatter.zig:1131-1142` 在 styled 模式判 blank 用 `cell.isEmpty() && !cell.hasStyling()`——bg color cell 的 `isEmpty()` 是 false → 不算空白 → **保留**这行不 trim
+  - Host TUI 在 active 底部画纯背景色行（Claude Code 的状态栏填充、xterm 的颜色块等都会触发）时：formatter 保留，trailing 算法 over-count → snapshot 的 `\r\n` pad 多于 formatter 实际 trim 数 → xterm 滚屏过头 → cursor anchor 落到空白行 → host 后续的 `\x1b[1A\x1b[2K` 之类相对寻址叠到错的行 → 重复行。
+  - 修复：`page.zig` 加 `Cell.isBlankStyled` 公共方法（判定跟 formatter styled 模式一致），`embedded.zig` 的 trailing 计算改用它，删掉之前的本地 helper。配套单元测试证明两个算法在纯背景色行上的差异。
 
 ## 移动端排查工具
 
