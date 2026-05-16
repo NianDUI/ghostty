@@ -186,6 +186,7 @@ function syncDesktopWidthMode() {
   // mode always starts at the left edge.
   desktopPanX = 0;
   terminalMount.style.transform = "";
+  applyDesktopWidthSize();
   if (fitAddon && !isHostSizeLocked()) {
     requestViewportFit();
   }
@@ -210,6 +211,62 @@ function applyDesktopPan(x) {
   desktopPanX = Math.min(max, Math.max(0, x));
   terminalMount.style.transform =
     desktopPanX > 0 ? `translate3d(${-desktopPanX | 0}px, 0, 0)` : "";
+}
+
+// Adapt #terminal's pixel width to the live grid so a wide host
+// (e.g. 120 cols on a phone) doesn't get clipped or wrapped inside
+// the default 860px frame. Only takes effect while desktop-width-mode
+// is on — otherwise the inline width is cleared and the CSS 100% /
+// 860px cascade owns the layout again.
+function currentCellWidthPx() {
+  // Truth source: the canvas's internal pixel resolution. It's set
+  // by the renderer based on its own font metrics, independent of any
+  // CSS constraint, so dividing by DPR + cols always yields the real
+  // per-cell CSS width.
+  const canvas = terminal?.element?.querySelector?.("canvas");
+  const cols = terminal?.cols ?? 0;
+  if (canvas && canvas.width > 0 && cols > 0) {
+    const dpr = window.devicePixelRatio || 1;
+    return canvas.width / dpr / cols;
+  }
+  const metric = terminal?.renderer?.getMetrics?.();
+  if (metric && metric.width > 0) return metric.width;
+  // Last-resort heuristic. Err on the high side — under-allocating
+  // clips the right edge; over-allocating just adds harmless pan range.
+  const fontSize = terminal?.options?.fontSize ?? 14;
+  return fontSize;
+}
+function applyDesktopWidthSize() {
+  const inMode = isDesktopWidthMode();
+  logEvt(`applyDW enter mode=${inMode ? 1 : 0} cols=${terminal?.cols ?? 0}`);
+  if (!inMode) {
+    terminalMount.style.width = "";
+    terminalMount.style.minWidth = "";
+    return;
+  }
+  // Defer one frame so the renderer has applied the latest grid
+  // resize before we read canvas.width. The hello / appearance /
+  // toggle paths all call this synchronously right after changing
+  // grid state — without the rAF, canvas.width still reflects the
+  // previous frame's cols.
+  requestAnimationFrame(() => {
+    let pixels = 860;
+    const cols = terminal?.cols ?? 0;
+    let cellWidth = 0;
+    const canvas = terminal?.element?.querySelector?.("canvas");
+    const canvasW = canvas?.width ?? 0;
+    if (cols > 0) {
+      cellWidth = currentCellWidthPx();
+      // +16px slack so the rightmost column isn't fighting xterm's
+      // scrollbar lane on the last few rendered glyphs.
+      pixels = Math.max(860, Math.ceil(cols * cellWidth) + 16);
+    }
+    terminalMount.style.width = `${pixels}px`;
+    terminalMount.style.minWidth = `${pixels}px`;
+    logEvt(
+      `DW cols=${cols} cellW=${cellWidth.toFixed(2)} canvasW=${canvasW} dpr=${window.devicePixelRatio || 1} px=${pixels}`,
+    );
+  });
 }
 
 desktopWidthInput.addEventListener("change", () => {
@@ -281,6 +338,51 @@ async function ensureTerminal() {
     },
   });
   terminal.open(terminalMount);
+  // Neutralise ghostty-web's helper textarea on mobile. It races our
+  // mobileInput by calling .focus() inside its own touchend handler,
+  // which on Android re-raises the soft keyboard right after a swipe.
+  // On desktop the original behaviour is fine — we only patch mobile.
+  for (const helper of terminalMount.querySelectorAll("textarea")) {
+    const originalFocus = helper.focus.bind(helper);
+    helper.focus = function (opts) {
+      if (shouldUseMobileInput()) {
+        logEvt("helper focus suppressed");
+        return;
+      }
+      originalFocus(opts);
+    };
+  }
+  // Belt-and-braces: even with the .focus() override, the browser
+  // can still auto-focus a focusable element on tap (ghostty-web's
+  // helper textarea is in the tap target). The override only catches
+  // explicit JS .focus() calls; the native tap-to-focus bypasses it
+  // and the keyboard pops up anyway. Catch any focus that lands on
+  // something *other than* mobileInput on mobile and blur it back
+  // out. Tap-to-bring-keyboard still works because endTouchScroll's
+  // wasTap branch calls focusTerminal → mobileInput.focus(), which
+  // matches the allow-list here.
+  document.addEventListener(
+    "focusin",
+    (event) => {
+      if (!shouldUseMobileInput()) return;
+      const target = event.target;
+      if (!target || target === mobileInput) return;
+      // Only police focus inside the terminal view — the settings
+      // page legitimately wants its backend / token inputs to take
+      // focus when the user taps them.
+      if (!terminalView.contains(target)) return;
+      if (
+        target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement
+      ) {
+        if (typeof target.blur === "function") {
+          target.blur();
+          logEvt(`blur stolen ${target.tagName.toLowerCase()}`);
+        }
+      }
+    },
+    { capture: true },
+  );
   fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
   fitAddon.fit();
@@ -292,6 +394,11 @@ async function ensureTerminal() {
     }
   });
   terminal.onResize(({ cols, rows }) => {
+    // Recompute the inline #terminal pixel width on every grid change,
+    // regardless of which side initiated it (FitAddon, hello, host
+    // resize). This is the catch-all path — the explicit calls in
+    // hello / applyAppearance / toggle are belt-and-braces.
+    applyDesktopWidthSize();
     // When the operator opted into "lock host size" we never push the
     // browser's grid up to the host. fitAddon.observeResize keeps
     // firing fit() in the background as the browser viewport
@@ -526,9 +633,13 @@ function handleControlFrame(data) {
     if (terminal) terminal.write(data);
     return;
   }
+  logEvt(`ctrl type=${frame.type}`);
 
   switch (frame.type) {
     case "hello":
+      logEvt(
+        `hello cols=${frame.cols} rows=${frame.rows} name=${frame.name ?? "-"}`,
+      );
       if (frame.name && activeSession) {
         activeSession = { ...activeSession, name: frame.name };
       }
@@ -542,6 +653,11 @@ function handleControlFrame(data) {
         hostCols = frame.cols;
         helloReceived = true;
         terminal.resize(frame.cols, frame.rows);
+        // Recompute #terminal width now that we know how many host
+        // columns we need to fit — without this the grid stays clipped
+        // inside the default 860px frame when desktop-width + lock are
+        // both on and the host announces > ~100 cols.
+        applyDesktopWidthSize();
       }
       return;
     case "resize":
@@ -670,6 +786,9 @@ function applyAppearance(frame) {
       terminal.options.fontSize = frame.font_size;
     }
   }
+  // Font size affects cell width, which feeds the desktop-width
+  // calculation. Recompute so a smaller font frees up pan range.
+  applyDesktopWidthSize();
 }
 
 function sendControlFrame(frame) {
@@ -1177,6 +1296,20 @@ if (debugEnabled) {
     setDebugBar("(cleared)");
   });
   logEvt(`UA ${navigator.userAgent}`);
+  // Log every focus change so we can identify what raised the
+  // mobile soft keyboard. focusin bubbles unlike focus, so a single
+  // capture-phase listener at document covers everything.
+  document.addEventListener(
+    "focusin",
+    (e) => {
+      const tgt = e.target;
+      const id = tgt?.id || "";
+      const tag = tgt?.tagName || "?";
+      const cls = String(tgt?.className || "").slice(0, 30);
+      logEvt(`focusin <${tag}#${id}.${cls}>`);
+    },
+    { capture: true },
+  );
   // Capture-phase touchend on the window so we can read scrollLeft at
   // the earliest possible moment, before any bubble-phase JS runs.
   window.addEventListener(
@@ -1466,6 +1599,28 @@ function endTouchScroll() {
   if (wasTap && shouldUseMobileInput()) focusTerminal();
 }
 
+// On Android, ghostty-web reacts to the synthetic click / pointerup
+// that follows touchend by focusing its hidden helper textarea, which
+// re-raises the soft keyboard right after a swipe completes (even when
+// our endTouchScroll didn't call focusTerminal). After a moved swipe
+// we mark a short window during which any pointerup / click bubbling
+// up through terminalMount is swallowed in capture phase so the
+// follow-up focus call never lands.
+let suppressTerminalClickUntil = 0;
+function suppressTerminalFollowupClick(event) {
+  if (performance.now() < suppressTerminalClickUntil) {
+    event.stopPropagation();
+    event.preventDefault();
+    logEvt(`SUPPRESS ${event.type} after swipe`);
+  }
+}
+terminalMount.addEventListener("click", suppressTerminalFollowupClick, {
+  capture: true,
+});
+terminalMount.addEventListener("pointerup", suppressTerminalFollowupClick, {
+  capture: true,
+});
+
 terminalMount.addEventListener("touchend", (event) => {
   const scroller = terminalMount.parentElement;
   if (scroller) {
@@ -1474,6 +1629,17 @@ terminalMount.addEventListener("touchend", (event) => {
     );
   } else {
     logEvt(`touchend fires no-scroller cancelable=${event.cancelable ? 1 : 0}`);
+  }
+  // A moved swipe is the only case where ghostty-web could re-raise
+  // the keyboard against the user's intent — for a tap we still want
+  // the focus + keyboard.
+  if (
+    touchScrollState &&
+    touchScrollState.type === "swipe" &&
+    touchScrollState.moved
+  ) {
+    if (event.cancelable) event.preventDefault();
+    suppressTerminalClickUntil = performance.now() + 500;
   }
   endTouchScroll();
 });
@@ -1545,9 +1711,16 @@ mobileInput.addEventListener("keydown", (event) => {
   }
 });
 
-mobileInput.addEventListener("blur", () => {
-  scheduleMobileRefocus();
-});
+// Intentionally NOT auto-refocusing on blur. The previous behaviour
+// scheduled a 60ms refocus every time mobileInput lost focus, which
+// fought the user's intent to dismiss the keyboard via a system
+// gesture — after the dismissal the keyboard would pop back up, and
+// a swipe started in that window looked like "swiping raises the
+// keyboard". Now blur is permanent: to bring the keyboard back, the
+// user taps the terminal (endTouchScroll wasTap → focusTerminal) or
+// a toolbar button (click handler → focusTerminal). Typing-time
+// refocus still happens from the input / keydown / compositionend
+// handlers above, so keystroke flow inside the textarea is unchanged.
 
 mobileToolbarToggle.addEventListener("click", toggleMobileToolbar);
 
