@@ -32,6 +32,7 @@ const debugModeInput = document.querySelector("#debugMode");
 
 let terminal = null;
 let fitAddon = null;
+let globalTerminalListenersInstalled = false;
 let socket = null;
 let activeSession = null;
 let activeSessionId = null;
@@ -380,6 +381,37 @@ function wsBaseURL(pathname) {
   return parsed;
 }
 
+// Tear down the xterm instance + DOM nodes it created, so the next
+// `ensureTerminal()` call rebuilds from scratch. `terminal.reset()` /
+// `\x1b[3J` cannot clean cross-session leaks like cursor blink state,
+// IME composer fragments, or stale renderer textures — only a fresh
+// instance is guaranteed-clean. Caller is responsible for clearing
+// `replayBuffer` and other module state separately.
+function disposeTerminal() {
+  if (!terminal) return;
+  try {
+    fitAddon?.dispose?.();
+  } catch (_) {}
+  try {
+    terminal.dispose();
+  } catch (_) {}
+  fitAddon = null;
+  terminal = null;
+  if (terminalMount) terminalMount.innerHTML = "";
+  // Pan transforms live on the mount element; once we wipe the DOM
+  // they're effectively meaningless but the inline style hangs around
+  // and the next mount inherits it.
+  if (terminalMount) {
+    terminalMount.style.transform = "";
+    terminalMount.style.width = "";
+    terminalMount.style.minWidth = "";
+    terminalMount.style.height = "";
+    terminalMount.style.minHeight = "";
+  }
+  desktopPanX = 0;
+  desktopPanY = 0;
+}
+
 async function ensureTerminal() {
   if (terminal) return terminal;
   await init();
@@ -397,8 +429,13 @@ async function ensureTerminal() {
   // expanding, or the URL bar showing/hiding all shrink the visible
   // area without firing terminal.onResize. Without this, panY would
   // be left at its previous value while the new bottom edge is
-  // further down, hiding the cursor row again.
-  if (typeof ResizeObserver !== "undefined") {
+  // further down, hiding the cursor row again. Guarded so repeat
+  // ensureTerminal calls (after disposeTerminal) don't accumulate
+  // ResizeObserver leaks.
+  if (
+    !globalTerminalListenersInstalled &&
+    typeof ResizeObserver !== "undefined"
+  ) {
     const hostObserver = new ResizeObserver(() => {
       if (shouldUseMobileInput() && isDesktopWidthMode()) {
         panToBottom();
@@ -429,28 +466,31 @@ async function ensureTerminal() {
   // out. Tap-to-bring-keyboard still works because endTouchScroll's
   // wasTap branch calls focusTerminal → mobileInput.focus(), which
   // matches the allow-list here.
-  document.addEventListener(
-    "focusin",
-    (event) => {
-      if (!shouldUseMobileInput()) return;
-      const target = event.target;
-      if (!target || target === mobileInput) return;
-      // Only police focus inside the terminal view — the settings
-      // page legitimately wants its backend / token inputs to take
-      // focus when the user taps them.
-      if (!terminalView.contains(target)) return;
-      if (
-        target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLInputElement
-      ) {
-        if (typeof target.blur === "function") {
-          target.blur();
-          logEvt(`blur stolen ${target.tagName.toLowerCase()}`);
+  if (!globalTerminalListenersInstalled) {
+    document.addEventListener(
+      "focusin",
+      (event) => {
+        if (!shouldUseMobileInput()) return;
+        const target = event.target;
+        if (!target || target === mobileInput) return;
+        // Only police focus inside the terminal view — the settings
+        // page legitimately wants its backend / token inputs to take
+        // focus when the user taps them.
+        if (!terminalView.contains(target)) return;
+        if (
+          target instanceof HTMLTextAreaElement ||
+          target instanceof HTMLInputElement
+        ) {
+          if (typeof target.blur === "function") {
+            target.blur();
+            logEvt(`blur stolen ${target.tagName.toLowerCase()}`);
+          }
         }
-      }
-    },
-    { capture: true },
-  );
+      },
+      { capture: true },
+    );
+    globalTerminalListenersInstalled = true;
+  }
   fitAddon = new FitAddon();
   terminal.loadAddon(fitAddon);
   fitAddon.fit();
@@ -640,6 +680,15 @@ async function connectToSession(session, { updateHistory = true } = {}) {
     activeSessionId = session.id;
     helloReceived = false;
     activeMirrorMode = isLiveMirrorEnabled();
+    // Tear the prior xterm instance down before the terminal element
+    // is un-hidden. `reset()` + `\x1b[3J` weren't enough — cross-session
+    // residue still leaked through (renderer textures, IME composer
+    // shards, the alt-buffer/scrollback split, etc). Rebuilding via
+    // `ensureTerminal()` below is the only guaranteed-clean reset.
+    // Covers every entry path: launcher click, direct URL deep-link,
+    // first session after page load, auto-reconnect after socket drop.
+    disposeTerminal();
+    replayBuffer.onScreen(new Uint8Array(0));
     enterTerminalView(session, { updateHistory });
     document.title = session.name;
     setTerminalStatus("连接中");
@@ -1060,6 +1109,13 @@ function leaveTerminalView({ updateHistory = true } = {}) {
     socket.close();
     socket = null;
   }
+  // Tear the xterm instance down on exit too — covers paths where the
+  // user leaves the terminal view and stays in launcher for a while
+  // (the DOM still shows the prior buffer if they switch tabs/apps
+  // and come back). `connectToSession` repeats this on enter; both
+  // directions kept symmetric on purpose.
+  disposeTerminal();
+  replayBuffer.onScreen(new Uint8Array(0));
 
   shell.classList.remove("terminal-mode");
   document.body.classList.remove("terminal-mode");

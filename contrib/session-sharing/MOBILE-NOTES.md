@@ -63,6 +63,21 @@
   - Host TUI 在 active 底部画纯背景色行（Claude Code 的状态栏填充、xterm 的颜色块等都会触发）时：formatter 保留，trailing 算法 over-count → snapshot 的 `\r\n` pad 多于 formatter 实际 trim 数 → xterm 滚屏过头 → cursor anchor 落到空白行 → host 后续的 `\x1b[1A\x1b[2K` 之类相对寻址叠到错的行 → 重复行。
   - 修复：`page.zig` 加 `Cell.isBlankStyled` 公共方法（判定跟 formatter styled 模式一致），`embedded.zig` 的 trailing 计算改用它，删掉之前的本地 helper。配套单元测试证明两个算法在纯背景色行上的差异。
 
+### 7. 会话切换时上一个会话的内容残留
+
+- **现象**：在 session A 里看了一阵 → 退出回到启动器（不刷新页面）→ 点进 session B，开屏前一瞬看到 session A 的 buffer，等到新 screen frame 到达才被覆盖。直接通过 URL `?id=` 进入第二个 session 时也会有。
+- **根因**：
+  - `leaveTerminalView` 只关 socket + 切回 launcher，**xterm 和 replayBuffer 都是模块级单例不动**。
+  - `connectToSession` 原本在 `enterTerminalView`（解除 `#terminalView` 隐藏）**之后**才 `term.reset()`，中间至少一帧（~16ms）旧 buffer 暴露。
+  - 即便 `reset()` 跑了，xterm.js 的 `reset()` **不清 scrollback**（VT RIS 只管 active buffer / cursor / state）——下拉时旧历史还在。
+- **修复演进**：
+  - **一轮（不够）**：`leaveTerminalView` 调 `terminal.reset()`。结果直接 URL 深链 / 刷新后首次进入跳过 leave，仍有残留。
+  - **二轮（不够）**：`connectToSession` 进入前**在 `enterTerminalView` 之前** 也跑 `terminal.reset()` + 写 `\x1b[3J`（erase saved lines 清 scrollback）+ `replayBuffer.onScreen(new Uint8Array(0))`。实测仍偶发残留——`reset()` 是 VT RIS，但 xterm.js 内部的 renderer textures / 合成层 / IME composer state / alt-buffer 切换状态都不靠 VT 状态机走，会幸存。
+  - **终态**：`disposeTerminal()` 销毁 xterm 实例 + dispose fitAddon + 清 `terminalMount.innerHTML` + 重置 pan 状态。`connectToSession` 在 `enterTerminalView` 之前调一次（每个进入路径都过），`leaveTerminalView` 也调一次（守 launcher 长时间停留场景）。下次 `ensureTerminal()` 通过 `if (terminal) return terminal` 的 null check 自动重建。
+    - 配套：`ensureTerminal` 内挂的 `document.addEventListener("focusin", ...)` 和 `ResizeObserver(terminalMount.parentElement)` 用 `globalTerminalListenersInstalled` flag 守起来，避免重建累积 listener leak。
+    - 性能代价：每次进入会话重建 xterm，~100-300ms 初始化（创建 canvas renderer + fitAddon.fit + addons）。换得视觉绝对干净。
+  - `replayBuffer.onScreen(new Uint8Array(0))` 仍保留——空字节走 scrollback.js 里 "新 snapshot 到达 → 丢掉所有旧记忆" 那条路径（`snapshotBody / olderChunks / liveBuffer` 一次性清）。
+
 ## 移动端排查工具
 
 启动器里有"调试日志栏"开关。打开后页面顶部出现 [DL] [CLR] 按钮：
