@@ -3186,10 +3186,13 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
         // the active grid, oldest line first. Writing the result back
         // through term.write naturally recreates the host's scrollback
         // on the browser: the older rows scroll off into xterm.js's
-        // scrollback buffer as the newer rows fill the visible area.
-        // We use the styled variant so SGR colours survive the trip;
-        // the browser xterm parses SGR natively and renders host
-        // colours instead of falling back to monochrome.
+        // scrollback buffer as the newer rows fill the visible area —
+        // mobile clients in live-mirror mode rely on this since the
+        // lazy `fetch_scrollback` path is disabled there. We rely on
+        // a trailing-blank-row padding step in `encode` to keep the
+        // cursor anchor aligned even after the formatter's trailing
+        // blank trim (see `formatter.zig` "Trailing blank lines are
+        // always trimmed").
         let selection = ghostty_selection_s(
             top_left: ghostty_point_s(
                 tag: GHOSTTY_POINT_SCREEN,
@@ -3207,15 +3210,18 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
         )
         var text = ghostty_text_s()
         var cursor = ghostty_surface_cursor_s()
-        // Atomic read: text dump and cursor position must come from
-        // the same mutex hold. With separate lock/unlock pairs the
-        // PTY reader thread could advance the cursor between them,
-        // and the appended `\x1b[<row>;<col>H` would anchor xterm to
-        // a position that no longer matches the dumped grid — in
-        // testing that actually made spinner overdraw worse, not
-        // better.
-        guard ghostty_surface_read_text_styled_with_cursor(
-            surface, selection, &text, &cursor
+        var trailingBlankRows: UInt16 = 0
+        // Atomic read: text dump + cursor position + trailing blank
+        // count must all come from the same mutex hold. With separate
+        // lock/unlock pairs the PTY reader thread could advance the
+        // cursor or rewrite the bottom rows between calls, leaving the
+        // appended `\x1b[<row>;<col>H` anchor disagreeing with the
+        // dumped grid. The trailing blank count tells us how many
+        // `\r\n` padding rows to re-add so xterm's viewport bottom
+        // lines up with host's active screen bottom (formatter drops
+        // trailing blank rows unconditionally).
+        guard ghostty_surface_read_text_styled_with_cursor_and_trim(
+            surface, selection, &text, &cursor, &trailingBlankRows
         ) else {
             return nil
         }
@@ -3232,9 +3238,13 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
         } else {
             body = ""
         }
+        Ghostty.logger.info(
+            "[session-sharing] snapshot capture cursor x=\(cursor.x, privacy: .public) y=\(cursor.y, privacy: .public) trailing_blanks=\(trailingBlankRows, privacy: .public) body_bytes=\(body.utf8.count, privacy: .public)"
+        )
         return encode(
             body: body,
             sessionID: sessionID,
+            trailingBlankRows: Int(trailingBlankRows),
             cursorRow: Int(cursor.y),
             cursorCol: Int(cursor.x)
         )
@@ -3243,6 +3253,7 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
     static func encode(
         body: String,
         sessionID: String,
+        trailingBlankRows: Int = 0,
         cursorRow: Int? = nil,
         cursorCol: Int? = nil
     ) -> SessionSharingScreenSnapshotPayload {
@@ -3265,12 +3276,30 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
         } else {
             cursorSuffixData = Data()
         }
+        // Trailing-blank padding. The formatter strips blank rows from
+        // the bottom of the dump unconditionally, so an active screen
+        // that ends in empty rows leaves xterm's viewport bottom on
+        // the last non-blank row instead of the actual active bottom.
+        // Replaying one `\r\n` per trimmed row before the cursor
+        // anchor restores the alignment so `\x1b[<cursor.y+1>;..H`
+        // maps to the same grid cell on both sides.
+        let paddingData: Data
+        if trailingBlankRows > 0 {
+            paddingData = Data(
+                String(repeating: "\r\n", count: trailingBlankRows).utf8
+            )
+        } else {
+            paddingData = Data()
+        }
         var bodyData = Data(normaliseLineEndings(body).utf8)
-        let budget = snapshotByteBudget - prefixData.count - cursorSuffixData.count
+        let budget = snapshotByteBudget
+            - prefixData.count
+            - cursorSuffixData.count
+            - paddingData.count
         if budget > 0, bodyData.count > budget {
             bodyData = trimToTail(bodyData, byteBudget: budget)
         }
-        let bytes = prefixData + bodyData + cursorSuffixData
+        let bytes = prefixData + bodyData + paddingData + cursorSuffixData
         return .init(
             type: "screen",
             id: sessionID,

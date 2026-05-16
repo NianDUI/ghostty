@@ -1179,6 +1179,12 @@ GHOSTTY_API bool ghostty_surface_read_text_styled_with_cursor(ghostty_surface_t,
                                                                  ghostty_selection_s,
                                                                  ghostty_text_s*,
                                                                  ghostty_surface_cursor_s*);
+GHOSTTY_API bool ghostty_surface_read_text_styled_with_cursor_and_trim(
+    ghostty_surface_t,
+    ghostty_selection_s,
+    ghostty_text_s*,
+    ghostty_surface_cursor_s*,
+    uint16_t*);
 GHOSTTY_API void ghostty_surface_free_text(ghostty_surface_t, ghostty_text_s*);
 
 #ifdef __APPLE__

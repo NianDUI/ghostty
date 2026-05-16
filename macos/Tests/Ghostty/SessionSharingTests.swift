@@ -1189,6 +1189,36 @@ struct SessionSharingTests {
     }
 
     @Test
+    func screenSnapshotPadsTrailingBlankRowsExplicitly() throws {
+        // trailingBlankRows = 3: 3 padding `\r\n` between body and
+        // cursor anchor, so xterm's viewport bottom catches up with
+        // host's active screen bottom (which had 3 blank rows the
+        // formatter trimmed).
+        let padded = SessionSharingScreenSnapshotPayload.encode(
+            body: "row0\r\nrow1",
+            sessionID: "abc",
+            trailingBlankRows: 3,
+            cursorRow: 3,
+            cursorCol: 0
+        )
+        let bytes = try #require(Data(base64Encoded: padded.content))
+        #expect(
+            bytes == Data(
+                "\u{1b}[2J\u{1b}[Hrow0\r\nrow1\r\n\r\n\r\n\u{1b}[4;1H".utf8
+            )
+        )
+
+        // Default (no padding) preserves the legacy encoder output for
+        // recordings that don't supply the trim count.
+        let unpadded = SessionSharingScreenSnapshotPayload.encode(
+            body: "row0\r\nrow1",
+            sessionID: "abc"
+        )
+        let unpaddedBytes = try #require(Data(base64Encoded: unpadded.content))
+        #expect(unpaddedBytes == Data("\u{1b}[2J\u{1b}[Hrow0\r\nrow1".utf8))
+    }
+
+    @Test
     func screenSnapshotIdempotentlyNormalisesCRLF() throws {
         // The styled .vt readback already emits \r\n separators, so the
         // encoder must not turn each \r\n into \r\r\n. Bytes coming
