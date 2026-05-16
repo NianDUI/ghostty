@@ -2180,8 +2180,18 @@ private final class SessionSharingController {
 
         case .clientConnected:
             // Relay tells us a fresh client just joined. Re-emit the
-            // screen snapshot so the new viewer sees the current grid
-            // instead of whatever the relay backlog last checkpointed.
+            // metadata the browser needs to bootstrap (hello carries
+            // host cols/rows, appearance carries colours / font size)
+            // alongside the screen snapshot. The relay only retains
+            // hello/appearance across screen checkpoints (relay
+            // `_is_essential_metadata`), so without re-sending them
+            // here a client that reconnects after the initial burst
+            // would land on whatever the relay still has backlogged —
+            // typically just binary PTY bytes, which doesn't include
+            // grid dimensions and forces FitAddon to pick a width
+            // narrower than the host, causing wrap.
+            sendHelloIfPossible()
+            sendAppearanceIfPossible()
             sendScreenSnapshotIfPossible()
             return true
 
