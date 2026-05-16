@@ -182,9 +182,10 @@ function isHostSizeLocked() {
 function syncDesktopWidthMode() {
   const enabled = desktopWidthInput?.checked ?? false;
   terminalView.classList.toggle("desktop-width-mode", enabled);
-  // Drop any leftover horizontal pan transform so re-entering the
-  // mode always starts at the left edge.
+  // Drop any leftover pan transform so re-entering the mode always
+  // starts at the top-left corner.
   desktopPanX = 0;
+  desktopPanY = 0;
   terminalMount.style.transform = "";
   applyDesktopWidthSize();
   if (fitAddon && !isHostSizeLocked()) {
@@ -192,25 +193,60 @@ function syncDesktopWidthMode() {
   }
 }
 
-// Pseudo-scrollLeft for desktop-width mode. We drive #terminal's
-// horizontal position via CSS transform rather than the parent's
-// scrollLeft because HuaweiBrowser (Chromium 114-based) silently
-// resets overflow scrollLeft between capture-phase and bubble-phase
-// of touchend regardless of touch-action or preventDefault.
+// Pseudo-scroll for desktop-width mode. We drive #terminal's position
+// via CSS transform rather than the parent's scroll because
+// HuaweiBrowser (Chromium 114-based) silently resets overflow scroll
+// between capture-phase and bubble-phase of touchend regardless of
+// touch-action or preventDefault. We pan both axes so a locked host
+// grid larger than the mobile viewport (e.g. 188×46 in a 346×530
+// area) can still expose every row + column.
 let desktopPanX = 0;
+let desktopPanY = 0;
 function isDesktopWidthMode() {
   return terminalView.classList.contains("desktop-width-mode");
 }
-function maxDesktopPan() {
+function maxDesktopPanX() {
   const parent = terminalMount.parentElement;
   if (!parent) return 0;
   return Math.max(0, terminalMount.offsetWidth - parent.clientWidth);
 }
+function maxDesktopPanY() {
+  const parent = terminalMount.parentElement;
+  if (!parent) return 0;
+  // .terminal-host carries padding-bottom = toolbar + keyboard offset
+  // on mobile so the fixed toolbar doesn't sit on top of content.
+  // clientHeight includes padding by definition, so panning all the
+  // way to (offsetHeight − clientHeight) would land the bottom of
+  // #terminal inside that padding region — i.e. behind the toolbar.
+  // Subtract the paddings to get the actual visible content height.
+  const cs = window.getComputedStyle(parent);
+  const padTop = parseFloat(cs.paddingTop) || 0;
+  const padBottom = parseFloat(cs.paddingBottom) || 0;
+  const visible = parent.clientHeight - padTop - padBottom;
+  return Math.max(0, terminalMount.offsetHeight - visible);
+}
+// Kept under its old name because the horizontal touchmove branch
+// reads it. The Y-axis counterpart lives at maxDesktopPanY.
+function maxDesktopPan() {
+  return maxDesktopPanX();
+}
+function commitDesktopPan() {
+  if (desktopPanX > 0 || desktopPanY > 0) {
+    terminalMount.style.transform = `translate3d(${-desktopPanX | 0}px, ${-desktopPanY | 0}px, 0)`;
+  } else {
+    terminalMount.style.transform = "";
+  }
+}
 function applyDesktopPan(x) {
-  const max = maxDesktopPan();
-  desktopPanX = Math.min(max, Math.max(0, x));
-  terminalMount.style.transform =
-    desktopPanX > 0 ? `translate3d(${-desktopPanX | 0}px, 0, 0)` : "";
+  desktopPanX = Math.min(maxDesktopPanX(), Math.max(0, x));
+  commitDesktopPan();
+}
+function applyDesktopPanY(y) {
+  desktopPanY = Math.min(maxDesktopPanY(), Math.max(0, y));
+  commitDesktopPan();
+}
+function panToBottom() {
+  applyDesktopPanY(maxDesktopPanY());
 }
 
 // Adapt #terminal's pixel width to the live grid so a wide host
@@ -237,35 +273,53 @@ function currentCellWidthPx() {
   return fontSize;
 }
 function applyDesktopWidthSize() {
-  const inMode = isDesktopWidthMode();
-  logEvt(`applyDW enter mode=${inMode ? 1 : 0} cols=${terminal?.cols ?? 0}`);
-  if (!inMode) {
+  if (!isDesktopWidthMode()) {
     terminalMount.style.width = "";
     terminalMount.style.minWidth = "";
+    terminalMount.style.height = "";
+    terminalMount.style.minHeight = "";
     return;
   }
   // Defer one frame so the renderer has applied the latest grid
-  // resize before we read canvas.width. The hello / appearance /
-  // toggle paths all call this synchronously right after changing
-  // grid state — without the rAF, canvas.width still reflects the
-  // previous frame's cols.
+  // resize before we read canvas.{width,height}. The hello /
+  // appearance / toggle paths all call this synchronously right
+  // after changing grid state — without the rAF, the canvas
+  // attributes still reflect the previous frame's grid.
   requestAnimationFrame(() => {
-    let pixels = 860;
     const cols = terminal?.cols ?? 0;
-    let cellWidth = 0;
-    const canvas = terminal?.element?.querySelector?.("canvas");
-    const canvasW = canvas?.width ?? 0;
+    const rows = terminal?.rows ?? 0;
+    let widthPx = 860;
     if (cols > 0) {
-      cellWidth = currentCellWidthPx();
       // +16px slack so the rightmost column isn't fighting xterm's
       // scrollbar lane on the last few rendered glyphs.
-      pixels = Math.max(860, Math.ceil(cols * cellWidth) + 16);
+      widthPx = Math.max(860, Math.ceil(cols * currentCellWidthPx()) + 16);
     }
-    terminalMount.style.width = `${pixels}px`;
-    terminalMount.style.minWidth = `${pixels}px`;
-    logEvt(
-      `DW cols=${cols} cellW=${cellWidth.toFixed(2)} canvasW=${canvasW} dpr=${window.devicePixelRatio || 1} px=${pixels}`,
-    );
+    terminalMount.style.width = `${widthPx}px`;
+    terminalMount.style.minWidth = `${widthPx}px`;
+
+    // Height: only override the CSS calc if the host's grid is
+    // taller than the parent viewport. Otherwise leave the inline
+    // styles cleared so the existing media-query height (viewport −
+    // toolbar) keeps applying.
+    const parentH = terminalMount.parentElement?.clientHeight ?? 0;
+    if (rows > 0) {
+      const natural = Math.ceil(rows * currentCellHeightPx()) + 4;
+      if (natural > parentH) {
+        terminalMount.style.height = `${natural}px`;
+        terminalMount.style.minHeight = `${natural}px`;
+      } else {
+        terminalMount.style.height = "";
+        terminalMount.style.minHeight = "";
+      }
+    }
+
+    // Re-anchor the pan to the bottom-right after a size change so
+    // the cursor row (host's grid bottom) stays in view. Without
+    // this, the user lands on the top of the grid after every
+    // resize/hello.
+    if (shouldUseMobileInput()) {
+      panToBottom();
+    }
   });
 }
 
@@ -338,6 +392,20 @@ async function ensureTerminal() {
     },
   });
   terminal.open(terminalMount);
+  // Re-anchor the pan to the bottom-right whenever .terminal-host
+  // resizes — the soft keyboard appearing, the mobile toolbar
+  // expanding, or the URL bar showing/hiding all shrink the visible
+  // area without firing terminal.onResize. Without this, panY would
+  // be left at its previous value while the new bottom edge is
+  // further down, hiding the cursor row again.
+  if (typeof ResizeObserver !== "undefined") {
+    const hostObserver = new ResizeObserver(() => {
+      if (shouldUseMobileInput() && isDesktopWidthMode()) {
+        panToBottom();
+      }
+    });
+    hostObserver.observe(terminalMount.parentElement);
+  }
   // Neutralise ghostty-web's helper textarea on mobile. It races our
   // mobileInput by calling .focus() inside its own touchend handler,
   // which on Android re-raises the soft keyboard right after a swipe.
@@ -414,15 +482,8 @@ async function ensureTerminal() {
     // off-host but the user wouldn't see anything change because
     // the host is still rendering at its own dimensions.
     if (isHostSizeLocked()) {
-      // Mobile compromise: snap cols back to the host's value but let
-      // rows track FitAddon's container-derived count. A 46-row host
-      // grid would otherwise overflow a ~33-row mobile viewport and
-      // the bottom (where the cursor lives) gets clipped.
-      const desiredCols = hostCols;
-      const desiredRows =
-        shouldUseMobileInput() && helloReceived ? rows : hostRows;
-      if (helloReceived && (cols !== desiredCols || rows !== desiredRows)) {
-        terminal.resize(desiredCols, desiredRows);
+      if (helloReceived && (cols !== hostCols || rows !== hostRows)) {
+        terminal.resize(hostCols, hostRows);
       }
       return;
     }
@@ -666,21 +727,16 @@ function handleControlFrame(data) {
         hostRows = frame.rows;
         hostCols = frame.cols;
         helloReceived = true;
-        // On a mobile viewport that's shorter than the host's grid,
-        // mirroring rows verbatim (e.g. 46) draws a canvas taller than
-        // #terminal and overflow:hidden clips the bottom — the cursor
-        // row ends up off-screen. Keep cols locked but let our local
-        // rows reflect what actually fits the viewport; xterm scrolls
-        // older lines into scrollback so the cursor stays in view.
-        const localRows =
-          shouldUseMobileInput() && isHostSizeLocked()
-            ? terminal.rows
-            : frame.rows;
-        terminal.resize(frame.cols, localRows);
-        // Recompute #terminal width now that we know how many host
-        // columns we need to fit — without this the grid stays clipped
-        // inside the default 860px frame when desktop-width + lock are
-        // both on and the host announces > ~100 cols.
+        // Mirror the host's grid verbatim. We previously trimmed rows
+        // on mobile to avoid the canvas-overflow clip at the bottom,
+        // but that made absolute cursor positioning escapes from live
+        // frames (host computed them against its 46-row grid) land at
+        // the wrong visual row in our shorter grid — TUI status bars
+        // ended up stacked on top of unrelated content. With rows
+        // preserved, applyDesktopWidthSize sizes #terminal to the
+        // natural canvas height and we expose the off-screen rows via
+        // vertical transform pan.
+        terminal.resize(frame.cols, frame.rows);
         applyDesktopWidthSize();
       }
       return;
@@ -1265,6 +1321,13 @@ function syncMobileViewportInsets() {
   if (mobile || activeSessionId) {
     window.scrollTo(0, 0);
   }
+  // The parent's clientHeight just changed (keyboard popped, URL bar
+  // toggled, etc.) so the natural-vs-parent decision in
+  // applyDesktopWidthSize might flip, and our existing panY value is
+  // no longer at the new bottom. Recompute + snap.
+  if (mobile && isDesktopWidthMode() && terminal) {
+    applyDesktopWidthSize();
+  }
 }
 
 // Touch interaction: a tap focuses the hidden mobile input (which raises
@@ -1478,6 +1541,7 @@ terminalMount.addEventListener(
       startY: touch.clientY,
       lastY: touch.clientY,
       lastPanX: touch.clientX,
+      lastPanY: touch.clientY,
       cellHeight: currentCellHeightPx(),
       moved: false,
     };
@@ -1567,6 +1631,38 @@ terminalMount.addEventListener(
       );
       return;
     }
+    // Vertical-dominant: if a locked host grid overflows the mobile
+    // viewport, pan #terminal on the Y axis instead of routing into
+    // xterm scrollback. The pan is symmetric with the horizontal
+    // path and bypasses the same HuaweiBrowser scrollTop quirks.
+    // We still need to coordinate with xterm's own scrollback so
+    // the user can read history older than the host's live grid:
+    //   - drag DOWN (older) at panY=0 → fall through to scrollLines
+    //     so xterm scrolls into its scrollback
+    //   - drag UP (newer) while scrollback is active → fall through
+    //     to scrollLines so xterm unwinds back to the live area
+    //     before resuming pan toward the grid bottom
+    if (isDesktopWidthMode() && maxDesktopPanY() > 0) {
+      const dyStep = touch.clientY - touchScrollState.lastPanY;
+      if (dyStep === 0) {
+        if (event.cancelable) event.preventDefault();
+        return;
+      }
+      const draggingDown = dyStep > 0;
+      const viewportY =
+        typeof terminal.getViewportY === "function"
+          ? terminal.getViewportY()
+          : (terminal.viewportY ?? 0);
+      const panToScrollback = draggingDown && desktopPanY === 0;
+      const unwindScrollback = !draggingDown && viewportY > 0;
+      if (!panToScrollback && !unwindScrollback) {
+        applyDesktopPanY(desktopPanY - dyStep);
+        touchScrollState.lastPanY = touch.clientY;
+        if (event.cancelable) event.preventDefault();
+        return;
+      }
+      // Fall through — scrollLines handles the saturated direction.
+    }
     if (typeof terminal.scrollLines !== "function") return;
     const cellHeight = touchScrollState.cellHeight || 16;
     // Drag down = scroll into older history (scrollLines wants negative).
@@ -1579,7 +1675,6 @@ terminalMount.addEventListener(
     }
     if (event.cancelable) {
       event.preventDefault();
-      logEvt(`MOVE-consume axis=V lines=${lines} (preventDefault)`);
     }
   },
   { passive: false },
