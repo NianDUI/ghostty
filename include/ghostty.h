@@ -1124,7 +1124,6 @@ GHOSTTY_API void ghostty_surface_set_focus(ghostty_surface_t, bool);
 GHOSTTY_API void ghostty_surface_set_occlusion(ghostty_surface_t, bool);
 GHOSTTY_API void ghostty_surface_set_size(ghostty_surface_t, uint32_t, uint32_t);
 GHOSTTY_API ghostty_surface_size_s ghostty_surface_size(ghostty_surface_t);
-GHOSTTY_API ghostty_surface_cursor_s ghostty_surface_cursor_position(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_set_color_scheme(ghostty_surface_t,
                                                      ghostty_color_scheme_e);
 GHOSTTY_API ghostty_input_mods_e ghostty_surface_key_translation_mods(ghostty_surface_t,
@@ -1175,10 +1174,6 @@ GHOSTTY_API bool ghostty_surface_read_text(ghostty_surface_t,
 GHOSTTY_API bool ghostty_surface_read_text_styled(ghostty_surface_t,
                                                      ghostty_selection_s,
                                                      ghostty_text_s*);
-GHOSTTY_API bool ghostty_surface_read_text_styled_with_cursor(ghostty_surface_t,
-                                                                 ghostty_selection_s,
-                                                                 ghostty_text_s*,
-                                                                 ghostty_surface_cursor_s*);
 GHOSTTY_API bool ghostty_surface_read_text_styled_with_cursor_and_trim(
     ghostty_surface_t,
     ghostty_selection_s,

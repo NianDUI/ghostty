@@ -1693,57 +1693,19 @@ pub const CAPI = struct {
     }
 
     /// Atomic combo of `ghostty_surface_read_text_styled` +
-    /// `ghostty_surface_cursor_position` + active screen trailing
-    /// blank-row count: holds the renderer mutex for all three reads
-    /// so they describe the same instant. The session-sharing
-    /// snapshot path needs this — reading them under separate locks
-    /// lets the PTY reader thread advance the cursor (or rewrite
-    /// trailing rows) between calls, which makes the appended
-    /// `\x1b[<row>;<col>H` anchor point disagree with the dumped
-    /// grid. `trailing_blank_rows` is the number of consecutive empty
-    /// rows at the bottom of the active screen — the formatter's
-    /// `Trailing blank lines are always trimmed` behaviour drops
-    /// those from the dump, so callers can replay the gap as `\r\n`
-    /// padding to keep xterm's viewport aligned with host's active
-    /// screen.
-    export fn ghostty_surface_read_text_styled_with_cursor(
-        surface: *Surface,
-        sel: Selection,
-        result_text: *Text,
-        result_cursor: *SurfaceCursor,
-    ) bool {
-        var trailing_blanks: u16 = 0;
-        return readTextStyledWithCursorLocked(
-            surface,
-            sel,
-            result_text,
-            result_cursor,
-            &trailing_blanks,
-        );
-    }
-
-    /// Same as `ghostty_surface_read_text_styled_with_cursor` but also
-    /// reports how many trailing rows at the bottom of the active
-    /// screen are entirely blank. Used by the session-sharing
-    /// snapshot encoder to re-pad the dump so the cursor anchor
-    /// escape lands on the correct grid row.
+    /// cursor position + active screen trailing blank-row count: holds
+    /// the renderer mutex for all three reads so they describe the
+    /// same instant. The session-sharing snapshot path needs this —
+    /// reading them under separate locks lets the PTY reader thread
+    /// advance the cursor (or rewrite trailing rows) between calls,
+    /// which makes the appended `\x1b[<row>;<col>H` anchor point
+    /// disagree with the dumped grid. `trailing_blank_rows` is the
+    /// number of consecutive empty rows at the bottom of the active
+    /// screen — the formatter's `Trailing blank lines are always
+    /// trimmed` behaviour drops those from the dump, so callers can
+    /// replay the gap as `\r\n` padding to keep xterm's viewport
+    /// aligned with host's active screen.
     export fn ghostty_surface_read_text_styled_with_cursor_and_trim(
-        surface: *Surface,
-        sel: Selection,
-        result_text: *Text,
-        result_cursor: *SurfaceCursor,
-        result_trailing_blank_rows: *u16,
-    ) bool {
-        return readTextStyledWithCursorLocked(
-            surface,
-            sel,
-            result_text,
-            result_cursor,
-            result_trailing_blank_rows,
-        );
-    }
-
-    fn readTextStyledWithCursorLocked(
         surface: *Surface,
         sel: Selection,
         result_text: *Text,
@@ -1859,20 +1821,6 @@ pub const CAPI = struct {
             .cell_width_px = surface.core_surface.size.cell.width,
             .cell_height_px = surface.core_surface.size.cell.height,
         };
-    }
-
-    /// Return the cursor position on the active screen. Used by the
-    /// session-sharing snapshot path so the browser can re-anchor
-    /// xterm.js's cursor to host's actual position after replaying
-    /// the snapshot bytes — without it, relative cursor moves emitted
-    /// by TUIs (e.g. Ink-based redraws) land on the wrong row in the
-    /// mirror and stack rather than overwrite.
-    export fn ghostty_surface_cursor_position(surface: *Surface) SurfaceCursor {
-        surface.core_surface.renderer_state.mutex.lock();
-        defer surface.core_surface.renderer_state.mutex.unlock();
-        const cursor = surface.core_surface.renderer_state.terminal
-            .screens.active.cursor;
-        return .{ .x = cursor.x, .y = cursor.y };
     }
 
     /// Update the color scheme of the surface.

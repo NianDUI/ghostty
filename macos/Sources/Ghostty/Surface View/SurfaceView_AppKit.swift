@@ -3238,9 +3238,6 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
         } else {
             body = ""
         }
-        Ghostty.logger.info(
-            "[session-sharing] snapshot capture cursor x=\(cursor.x, privacy: .public) y=\(cursor.y, privacy: .public) trailing_blanks=\(trailingBlankRows, privacy: .public) body_bytes=\(body.utf8.count, privacy: .public)"
-        )
         return encode(
             body: body,
             sessionID: sessionID,
