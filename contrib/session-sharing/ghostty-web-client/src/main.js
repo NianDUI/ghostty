@@ -385,6 +385,11 @@ async function ensureTerminal() {
   await init();
   terminal = new Terminal({
     fontSize: 14,
+    // Slight vertical breathing room — host renders compact rows but
+    // on mobile the same metric reads as crammed. 1.1 stays close
+    // enough that absolute cursor positioning still lands the way the
+    // host expects.
+    lineHeight: 1.1,
     cursorBlink: true,
     theme: {
       background: "#171412",
