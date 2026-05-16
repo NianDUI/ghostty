@@ -1288,6 +1288,13 @@ pub const CAPI = struct {
         cell_height_px: u32,
     };
 
+    const SurfaceCursor = extern struct {
+        // Zero-indexed (0..columns-1, 0..rows-1) cursor position on
+        // the active screen. Mirrors `Screen.Cursor.x`/`.y`.
+        x: u16,
+        y: u16,
+    };
+
     // ghostty_clipboard_content_s
     const ClipboardContent = extern struct {
         mime: [*:0]const u8,
@@ -1752,6 +1759,20 @@ pub const CAPI = struct {
             .cell_width_px = surface.core_surface.size.cell.width,
             .cell_height_px = surface.core_surface.size.cell.height,
         };
+    }
+
+    /// Return the cursor position on the active screen. Used by the
+    /// session-sharing snapshot path so the browser can re-anchor
+    /// xterm.js's cursor to host's actual position after replaying
+    /// the snapshot bytes — without it, relative cursor moves emitted
+    /// by TUIs (e.g. Ink-based redraws) land on the wrong row in the
+    /// mirror and stack rather than overwrite.
+    export fn ghostty_surface_cursor_position(surface: *Surface) SurfaceCursor {
+        surface.core_surface.renderer_state.mutex.lock();
+        defer surface.core_surface.renderer_state.mutex.unlock();
+        const cursor = surface.core_surface.renderer_state.terminal
+            .screens.active.cursor;
+        return .{ .x = cursor.x, .y = cursor.y };
     }
 
     /// Update the color scheme of the surface.

@@ -44,6 +44,16 @@
   - `ResizeObserver` 监听 `.terminal-host`：键盘弹起、URL 栏切换等让可视区缩小的事件触发 `panToBottom()`，光标自动跟上。
   - `panToBottom` 在 hello / applyAppearance / screen / 模式切换都会调用一次，首帧就锚到 cursor 行。
 
+### 6. liveMirror 模式下 spinner 行在 scrollback 里堆副本
+
+- **现象**：开了"实时镜像模式"后，Claude Code 的状态行（"Compacting conversation... 30s/31s/32s..."、"Concocting..."）每 tick 一次在 web 端就多一行，停下来不消失，scrollback 里全是同一行的不同时间戳。
+- **根因**：`SessionSharingScreenSnapshotPayload.encode` 拿 `ghostty_surface_read_text_styled` 把整屏当 plain bytes，前缀 `\x1b[2J\x1b[H`、内容、**没有 cursor 位置**。xterm 写完 snapshot 后 cursor 落在内容最后一行，但主机此刻的 cursor 还在 spinner 行。后续 Ink/log-update 系 TUI 发的"光标上移 N 行 + 重绘"是**相对定位** → xterm 从 snapshot 尾巴上移 N，主机从 spinner 行上移 N，两边落到不同的行；每次 tick 在 xterm 的新行上写一份，老行就被 commit 进 scrollback。
+  - 非 liveMirror 模式之所以没事：`replayBuffer` 在重连时把 `terminal.reset()` + 全量 replay 再跑一遍，间接把 cursor 校准了。liveMirror 直接 bypass 这套，所以漏。
+- **修复**：
+  - Zig 侧新增 `ghostty_surface_cursor_position` C API（`src/apprt/embedded.zig` + `include/ghostty.h`），上锁 `renderer_state.mutex` 读 `screens.active.cursor.{x,y}`。
+  - Swift 侧 `encode` 在 snapshot 字节末尾拼 `\x1b[<y+1>;<x+1>H`，VT 1-indexed。`capture` 调新 API 拿到 cursor，传给 `encode`。
+  - 因为是跨 C ABI 改动，提交前要跑 `zig build -Demit-macos-app=false` 重建 `macos/GhosttyKit.xcframework/`，否则 Xcode 报 `cannot find ghostty_surface_cursor_s`。
+
 ## 移动端排查工具
 
 启动器里有"调试日志栏"开关。打开后页面顶部出现 [DL] [CLR] 按钮：

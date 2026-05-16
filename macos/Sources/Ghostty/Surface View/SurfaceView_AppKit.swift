@@ -3222,12 +3222,20 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
         } else {
             body = ""
         }
-        return encode(body: body, sessionID: sessionID)
+        let cursor = ghostty_surface_cursor_position(surface)
+        return encode(
+            body: body,
+            sessionID: sessionID,
+            cursorRow: Int(cursor.y),
+            cursorCol: Int(cursor.x)
+        )
     }
 
     static func encode(
         body: String,
-        sessionID: String
+        sessionID: String,
+        cursorRow: Int? = nil,
+        cursorCol: Int? = nil
     ) -> SessionSharingScreenSnapshotPayload {
         // \x1b[2J clears the screen, \x1b[H moves the cursor to (1,1).
         // The browser receives this and term.write reproduces the same
@@ -3235,12 +3243,25 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
         // colours land for free because xterm.js parses SGR natively).
         let prefix = "\u{1b}[2J\u{1b}[H"
         let prefixData = Data(prefix.utf8)
+        // VT cursor positioning is 1-indexed (rows + columns); the C
+        // API exposes the 0-indexed grid offset. Tail the snapshot
+        // with `\x1b[<y+1>;<x+1>H` so xterm's cursor lands at the
+        // host's actual position after replaying the bytes — without
+        // it, relative cursor moves emitted by TUIs (e.g. Ink-based
+        // spinner redraws) land on the wrong row in the mirror and
+        // stack rather than overwrite.
+        let cursorSuffixData: Data
+        if let row = cursorRow, let col = cursorCol, row >= 0, col >= 0 {
+            cursorSuffixData = Data("\u{1b}[\(row + 1);\(col + 1)H".utf8)
+        } else {
+            cursorSuffixData = Data()
+        }
         var bodyData = Data(normaliseLineEndings(body).utf8)
-        let budget = snapshotByteBudget - prefixData.count
+        let budget = snapshotByteBudget - prefixData.count - cursorSuffixData.count
         if budget > 0, bodyData.count > budget {
             bodyData = trimToTail(bodyData, byteBudget: budget)
         }
-        let bytes = prefixData + bodyData
+        let bytes = prefixData + bodyData + cursorSuffixData
         return .init(
             type: "screen",
             id: sessionID,

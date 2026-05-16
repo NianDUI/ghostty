@@ -1163,6 +1163,32 @@ struct SessionSharingTests {
     }
 
     @Test
+    func screenSnapshotAppendsCursorPositioningWhenProvided() throws {
+        // Without a cursor argument, the snapshot must remain byte-for-byte
+        // identical to the legacy output so existing recordings replay
+        // unchanged through xterm.js.
+        let baseline = SessionSharingScreenSnapshotPayload.encode(
+            body: "hello",
+            sessionID: "abc"
+        )
+        let baselineBytes = try #require(Data(base64Encoded: baseline.content))
+        #expect(baselineBytes == Data("\u{1b}[2J\u{1b}[Hhello".utf8))
+
+        // With a cursor, the encoded payload tails with
+        // `\x1b[<row>;<col>H` (1-indexed) so xterm anchors its cursor
+        // to the host's actual position rather than the end of the
+        // snapshot text.
+        let withCursor = SessionSharingScreenSnapshotPayload.encode(
+            body: "hello",
+            sessionID: "abc",
+            cursorRow: 22,
+            cursorCol: 4
+        )
+        let cursorBytes = try #require(Data(base64Encoded: withCursor.content))
+        #expect(cursorBytes == Data("\u{1b}[2J\u{1b}[Hhello\u{1b}[23;5H".utf8))
+    }
+
+    @Test
     func screenSnapshotIdempotentlyNormalisesCRLF() throws {
         // The styled .vt readback already emits \r\n separators, so the
         // encoder must not turn each \r\n into \r\r\n. Bytes coming
