@@ -1692,6 +1692,50 @@ pub const CAPI = struct {
         return true;
     }
 
+    /// Atomic combo of `ghostty_surface_read_text_styled` +
+    /// `ghostty_surface_cursor_position`: holds the renderer mutex for
+    /// both the dump and the cursor read so they describe the same
+    /// instant. The session-sharing snapshot path needs this — reading
+    /// text and cursor under separate locks lets the PTY reader thread
+    /// advance the cursor between calls, which makes the appended
+    /// `\x1b[<row>;<col>H` anchor point disagree with the dumped grid.
+    export fn ghostty_surface_read_text_styled_with_cursor(
+        surface: *Surface,
+        sel: Selection,
+        result_text: *Text,
+        result_cursor: *SurfaceCursor,
+    ) bool {
+        const core_surface = &surface.core_surface;
+        core_surface.renderer_state.mutex.lock();
+        defer core_surface.renderer_state.mutex.unlock();
+
+        const core_sel = sel.core(
+            core_surface.renderer_state.terminal.screens.active,
+        ) orelse return false;
+
+        const styled = core_surface.dumpStyledTextLocked(
+            global.alloc,
+            core_sel,
+        ) catch |err| {
+            log.warn("error reading styled text err={}", .{err});
+            return false;
+        };
+
+        const cursor = core_surface.renderer_state.terminal
+            .screens.active.cursor;
+
+        result_text.* = .{
+            .tl_px_x = -1,
+            .tl_px_y = -1,
+            .offset_start = 0,
+            .offset_len = 0,
+            .text = styled.ptr,
+            .text_len = styled.len,
+        };
+        result_cursor.* = .{ .x = cursor.x, .y = cursor.y };
+        return true;
+    }
+
     fn readTextLocked(
         surface: *Surface,
         core_sel: terminal.Selection,

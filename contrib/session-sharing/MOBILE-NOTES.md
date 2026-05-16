@@ -53,6 +53,7 @@
   - Zig 侧新增 `ghostty_surface_cursor_position` C API（`src/apprt/embedded.zig` + `include/ghostty.h`），上锁 `renderer_state.mutex` 读 `screens.active.cursor.{x,y}`。
   - Swift 侧 `encode` 在 snapshot 字节末尾拼 `\x1b[<y+1>;<x+1>H`，VT 1-indexed。`capture` 调新 API 拿到 cursor，传给 `encode`。
   - 因为是跨 C ABI 改动，提交前要跑 `zig build -Demit-macos-app=false` 重建 `macos/GhosttyKit.xcframework/`，否则 Xcode 报 `cannot find ghostty_surface_cursor_s`。
+- **二轮修复（关键）**：第一版分两次 lock 读 text + cursor，PTY reader 线程在两次 lock 之间会把 cursor 往前推，导致 cursor 锚点跟 snapshot 文本不在同一时刻 → 实测**比不加更糟**。改成 `ghostty_surface_read_text_styled_with_cursor` 一次 lock 原子读两份，cursor 锚点跟 dump 一致。
 
 ## 移动端排查工具
 

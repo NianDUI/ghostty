@@ -3206,7 +3206,17 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
             rectangle: false
         )
         var text = ghostty_text_s()
-        guard ghostty_surface_read_text_styled(surface, selection, &text) else {
+        var cursor = ghostty_surface_cursor_s()
+        // Atomic read: text dump and cursor position must come from
+        // the same mutex hold. With separate lock/unlock pairs the
+        // PTY reader thread could advance the cursor between them,
+        // and the appended `\x1b[<row>;<col>H` would anchor xterm to
+        // a position that no longer matches the dumped grid — in
+        // testing that actually made spinner overdraw worse, not
+        // better.
+        guard ghostty_surface_read_text_styled_with_cursor(
+            surface, selection, &text, &cursor
+        ) else {
             return nil
         }
         defer { ghostty_surface_free_text(surface, &text) }
@@ -3222,7 +3232,6 @@ struct SessionSharingScreenSnapshotPayload: Codable, Equatable {
         } else {
             body = ""
         }
-        let cursor = ghostty_surface_cursor_position(surface)
         return encode(
             body: body,
             sessionID: sessionID,
