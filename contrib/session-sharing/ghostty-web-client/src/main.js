@@ -399,6 +399,13 @@ async function ensureTerminal() {
     // resize). This is the catch-all path — the explicit calls in
     // hello / applyAppearance / toggle are belt-and-braces.
     applyDesktopWidthSize();
+    // Re-anchor the viewport to the bottom after any resize. With a
+    // locked host grid taller than the mobile viewport, xterm
+    // otherwise leaves the visible window on the top rows and the
+    // cursor stays clipped at the bottom.
+    if (shouldUseMobileInput()) {
+      requestMobileBottomScroll();
+    }
     // When the operator opted into "lock host size" we never push the
     // browser's grid up to the host. fitAddon.observeResize keeps
     // firing fit() in the background as the browser viewport
@@ -407,8 +414,15 @@ async function ensureTerminal() {
     // off-host but the user wouldn't see anything change because
     // the host is still rendering at its own dimensions.
     if (isHostSizeLocked()) {
-      if (helloReceived && (cols !== hostCols || rows !== hostRows)) {
-        terminal.resize(hostCols, hostRows);
+      // Mobile compromise: snap cols back to the host's value but let
+      // rows track FitAddon's container-derived count. A 46-row host
+      // grid would otherwise overflow a ~33-row mobile viewport and
+      // the bottom (where the cursor lives) gets clipped.
+      const desiredCols = hostCols;
+      const desiredRows =
+        shouldUseMobileInput() && helloReceived ? rows : hostRows;
+      if (helloReceived && (cols !== desiredCols || rows !== desiredRows)) {
+        terminal.resize(desiredCols, desiredRows);
       }
       return;
     }
@@ -652,7 +666,17 @@ function handleControlFrame(data) {
         hostRows = frame.rows;
         hostCols = frame.cols;
         helloReceived = true;
-        terminal.resize(frame.cols, frame.rows);
+        // On a mobile viewport that's shorter than the host's grid,
+        // mirroring rows verbatim (e.g. 46) draws a canvas taller than
+        // #terminal and overflow:hidden clips the bottom — the cursor
+        // row ends up off-screen. Keep cols locked but let our local
+        // rows reflect what actually fits the viewport; xterm scrolls
+        // older lines into scrollback so the cursor stays in view.
+        const localRows =
+          shouldUseMobileInput() && isHostSizeLocked()
+            ? terminal.rows
+            : frame.rows;
+        terminal.resize(frame.cols, localRows);
         // Recompute #terminal width now that we know how many host
         // columns we need to fit — without this the grid stays clipped
         // inside the default 860px frame when desktop-width + lock are
@@ -707,6 +731,15 @@ function applyScreenSnapshot(frame) {
     terminal.reset();
   }
   terminal.write(bytes);
+  // When the locked host grid is taller than the mobile viewport
+  // (e.g. host 46 rows in a 33-row visible window), the snapshot
+  // lands but xterm's viewport stays at the top → the user sees the
+  // top portion of the grid, cursor is clipped below. Re-anchor to
+  // the bottom so the live area (where new content lands) is in
+  // view.
+  if (shouldUseMobileInput()) {
+    requestMobileBottomScroll();
+  }
 }
 
 function applyScrollbackResponse(frame) {
@@ -1595,8 +1628,28 @@ function endTouchScroll() {
       }, ms);
     });
   }
+  const wasMovedSwipe =
+    touchScrollState.type === "swipe" && touchScrollState.moved;
   touchScrollState = null;
-  if (wasTap && shouldUseMobileInput()) focusTerminal();
+  if (wasTap && shouldUseMobileInput()) {
+    focusTerminal();
+    return;
+  }
+  // After a real swipe, force-blur mobileInput so the Android soft
+  // keyboard doesn't auto-pop back up. The keyboard returns whenever
+  // the focused input receives a user-interaction signal, even
+  // without a new focusin event — dismissing it via system gesture
+  // leaves mobileInput focused, and the very next touchend revives
+  // it. Dropping focus here means the next tap is what brings the
+  // keyboard back, which matches user intent.
+  if (
+    wasMovedSwipe &&
+    shouldUseMobileInput() &&
+    document.activeElement === mobileInput
+  ) {
+    mobileInput.blur();
+    logEvt("blur mobileInput after swipe");
+  }
 }
 
 // On Android, ghostty-web reacts to the synthetic click / pointerup
