@@ -781,6 +781,20 @@ function applyScreenSnapshot(frame) {
   if (!terminal || typeof frame?.content !== "string") return;
   const bytes = decodeBase64(frame.content);
   if (!bytes) return;
+  // Tail diagnostic: lets the touch-log show whether the agent
+  // appended the cursor anchor escape (\x1b[<row>;<col>H) to the
+  // snapshot. The duplicate-spinner bug needs that anchor to land.
+  if (debugEnabled) {
+    const tailLen = Math.min(30, bytes.length);
+    const tail = bytes.subarray(bytes.length - tailLen);
+    let repr = "";
+    for (const b of tail) {
+      if (b === 0x1b) repr += "\\x1b";
+      else if (b >= 0x20 && b < 0x7f) repr += String.fromCharCode(b);
+      else repr += `\\x${b.toString(16).padStart(2, "0")}`;
+    }
+    logEvt(`screen bytes=${bytes.length} tail=${repr}`);
+  }
   // In live-mirror mode we never read the replayBuffer, so don't bother
   // feeding it. The reset+write below still runs because the agent's
   // snapshot is a re-anchor checkpoint and we want it to land cleanly.
