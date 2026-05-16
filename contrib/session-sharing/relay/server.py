@@ -263,11 +263,24 @@ class Session:
         # checkpoint: it carries the full visible viewport as VT bytes, so
         # any frame strictly before it is redundant for a fresh client and
         # only causes a slow top-to-bottom replay. Drop the prior backlog
-        # when we see a snapshot land. We deliberately only inspect text
-        # frames; binary payloads are raw PTY bytes and not control-shaped.
+        # when we see a snapshot land — except for metadata frames like
+        # `hello` and `appearance` that aren't redundant with the
+        # snapshot (they tell the client the host's cols/rows and the
+        # colour scheme, which the screen frame doesn't re-state). A
+        # fresh client that connects after a screen frame still needs
+        # those, otherwise the grid stays at FitAddon's default and
+        # wide host content wraps inside the browser. We deliberately
+        # only inspect text frames; binary payloads are raw PTY bytes
+        # and not control-shaped.
         if opcode == 0x1 and _is_screen_snapshot(payload):
-            self.backlog = []
-            self.backlog_size = 0
+            preserved: list[tuple[int, bytes]] = []
+            preserved_size = 0
+            for entry_opcode, entry_payload in self.backlog:
+                if entry_opcode == 0x1 and _is_essential_metadata(entry_payload):
+                    preserved.append((entry_opcode, entry_payload))
+                    preserved_size += len(entry_payload)
+            self.backlog = preserved
+            self.backlog_size = preserved_size
 
         entry = (opcode, bytes(payload))
         self.backlog.append(entry)
@@ -290,6 +303,28 @@ def _is_screen_snapshot(payload: bytes) -> bool:
     except (UnicodeDecodeError, json.JSONDecodeError):
         return False
     return isinstance(decoded, dict) and decoded.get("type") == "screen"
+
+
+# Frame types whose value to a fresh client outlasts the screen
+# checkpoint. `hello` carries the host's cols/rows (without it the
+# browser falls back to FitAddon and wraps wide content); `appearance`
+# carries colours / font-size. Both are sent once at agent connect
+# time and never re-emitted unless the agent reconnects, so dropping
+# them on every screen checkpoint silently broke late-joining clients.
+_ESSENTIAL_BACKLOG_TYPES = frozenset({"hello", "appearance"})
+
+
+def _is_essential_metadata(payload: bytes) -> bool:
+    if not payload:
+        return False
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(decoded, dict)
+        and decoded.get("type") in _ESSENTIAL_BACKLOG_TYPES
+    )
 
 
 class RelayState:
@@ -813,6 +848,30 @@ async def ws_client_loop(
 
 
 async def replay_backlog(session: Session, channel: ClientChannel) -> None:
+    # Diagnostic: which frame types are we replaying and how many bytes
+    # each. The hello/appearance preserve fix lives or dies based on
+    # whether these entries actually survive across screen checkpoints,
+    # and there's no easy way to introspect backlog state from outside.
+    summary = []
+    for opcode, payload in session.backlog:
+        kind = "bin"
+        if opcode == 0x1:
+            try:
+                decoded = json.loads(payload.decode("utf-8"))
+                kind = (
+                    decoded.get("type", "txt")
+                    if isinstance(decoded, dict)
+                    else "txt"
+                )
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                kind = "txt"
+        summary.append(f"{kind}:{len(payload)}")
+    log_event(
+        "replay_backlog",
+        session_id=session.session_id,
+        entries=len(session.backlog),
+        kinds=",".join(summary),
+    )
     for opcode, payload in session.backlog:
         if opcode in (0x1, 0x2):
             channel.try_enqueue(opcode, payload)
