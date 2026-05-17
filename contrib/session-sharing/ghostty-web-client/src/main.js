@@ -246,8 +246,48 @@ function applyDesktopPanY(y) {
   desktopPanY = Math.min(maxDesktopPanY(), Math.max(0, y));
   commitDesktopPan();
 }
+// Vertical pan strategy:
+//
+// - Default to "pan to grid bottom" so the host TUI's status bar /
+//   spinner area (which lives at the bottom of the grid, e.g. Claude
+//   Code's footer) sits just above the mobile toolbar. The input
+//   prompt and cursor are above that — both still visible because
+//   the locked grid is ~48 rows and the viewport holds ~27, leaving
+//   plenty of margin once we've anchored to the bottom.
+//
+// - Fall back to "no pan" only when grid-bottom anchoring would
+//   scroll the host cursor off the top of the viewport. That's the
+//   freshly-opened-shell case (cursor on row 2 of a 48-row grid)
+//   where the prompt is near the very top and there's nothing
+//   interesting at the bottom yet.
+//
+// Earlier attempts tried to anchor the cursor row to the visible
+// bottom (panToCursor). That hides the status bar whenever the host
+// cursor sits at the input row, which is exactly where Claude Code
+// keeps it — the status bar with model/token/spinner data ends up
+// pushed behind the toolbar. Switching to grid-bottom-anchored with
+// the cursor-out-of-viewport guard recovers the status bar without
+// losing the freshly-opened-shell case.
 function panToBottom() {
-  applyDesktopPanY(maxDesktopPanY());
+  const max = maxDesktopPanY();
+  if (max <= 0 || !terminal) {
+    applyDesktopPanY(max);
+    return;
+  }
+  const cursorY = terminal.buffer?.active?.cursorY;
+  const cellH = currentCellHeightPx();
+  if (cursorY == null || !(cellH > 0)) {
+    applyDesktopPanY(max);
+    return;
+  }
+  // cursor row top edge in #terminal coords. If panning all the way
+  // to grid-bottom would put it above the visible area (negative
+  // viewport y), the host cursor isn't anywhere near the bottom yet
+  // (early-session case). Use pan = 0 so the top of the grid is the
+  // reference frame; once the cursor moves further down the natural
+  // grid-bottom anchor takes over.
+  const cursorTopPx = cursorY * cellH;
+  applyDesktopPanY(cursorTopPx >= max ? max : 0);
 }
 
 // Adapt #terminal's pixel width to the live grid so a wide host
@@ -381,6 +421,61 @@ function wsBaseURL(pathname) {
   return parsed;
 }
 
+// Live-frame coalescing + visibility throttle.
+//
+// Hot path is socket onmessage → scheduleTermWrite. Multiple writes
+// inside one animation-frame merge into a single `terminal.write`,
+// which saves a JS call per chunk on busy spinner TUIs. When the
+// page is hidden we keep accumulating bytes but skip the flush
+// entirely — a backgrounded WebView shouldn't be burning CPU/GPU on
+// invisible repaints. A 1 MB cap bounds the buffer so a long
+// background stretch can't OOM the WebView; the snapshot frame
+// re-anchors anyway, so dropping the oldest queued bytes is safe.
+const PENDING_WRITE_CAP_BYTES = 1024 * 1024;
+let pendingWriteChunks = [];
+let pendingWriteSize = 0;
+let pendingWriteRafScheduled = false;
+
+function scheduleTermWrite(bytes) {
+  if (!terminal || !bytes || bytes.length === 0) return;
+  pendingWriteChunks.push(bytes);
+  pendingWriteSize += bytes.length;
+  while (
+    pendingWriteSize > PENDING_WRITE_CAP_BYTES &&
+    pendingWriteChunks.length > 1
+  ) {
+    const dropped = pendingWriteChunks.shift();
+    pendingWriteSize -= dropped.length;
+  }
+  if (document.hidden) return;
+  if (pendingWriteRafScheduled) return;
+  pendingWriteRafScheduled = true;
+  window.requestAnimationFrame(() => {
+    pendingWriteRafScheduled = false;
+    flushPendingWrites();
+  });
+}
+
+function flushPendingWrites() {
+  if (!terminal || pendingWriteChunks.length === 0) return;
+  const total = pendingWriteSize;
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of pendingWriteChunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  pendingWriteChunks = [];
+  pendingWriteSize = 0;
+  terminal.write(combined);
+}
+
+function dropPendingWrites() {
+  pendingWriteChunks = [];
+  pendingWriteSize = 0;
+  pendingWriteRafScheduled = false;
+}
+
 // Tear down the xterm instance + DOM nodes it created, so the next
 // `ensureTerminal()` call rebuilds from scratch. `terminal.reset()` /
 // `\x1b[3J` cannot clean cross-session leaks like cursor blink state,
@@ -389,6 +484,10 @@ function wsBaseURL(pathname) {
 // `replayBuffer` and other module state separately.
 function disposeTerminal() {
   if (!terminal) return;
+  // Any rAF-queued bytes belong to the terminal we're about to throw
+  // away; flushing them onto the next instance would smear stale
+  // frames into a fresh session.
+  dropPendingWrites();
   try {
     fitAddon?.dispose?.();
   } catch (_) {}
@@ -417,7 +516,10 @@ async function ensureTerminal() {
   await init();
   terminal = new Terminal({
     fontSize: 14,
-    cursorBlink: true,
+    // cursorBlink off — the blink redraw is ~2 Hz on a busy mobile
+    // canvas renderer; with a live mirror feeding spinner frames at
+    // 1-30 Hz the extra repaint compounds heat / battery on top.
+    cursorBlink: false,
     theme: {
       background: "#171412",
       foreground: "#f5f0e8",
@@ -737,7 +839,7 @@ async function connectToSession(session, { updateHistory = true } = {}) {
 
       const bytes = new Uint8Array(event.data);
       if (!activeMirrorMode) replayBuffer.onLive(bytes);
-      term.write(bytes);
+      scheduleTermWrite(bytes);
       if (shouldUseMobileInput()) {
         requestMobileBottomScroll();
       }
@@ -846,6 +948,10 @@ function applyScreenSnapshot(frame) {
   // The agent prefixes its snapshot with `\x1b[2J\x1b[H`, but reset()
   // also clears the active scrollback so a stale checkpoint can't
   // bleed through after the host re-emits the current viewport.
+  // Drop anything coalesced for the next rAF: those bytes are
+  // pre-snapshot live frames; the snapshot is a re-anchor checkpoint
+  // and any earlier delta is by definition redundant once we've reset.
+  dropPendingWrites();
   if (typeof terminal.reset === "function") {
     terminal.reset();
   }
@@ -877,6 +983,7 @@ function applyScrollbackResponse(frame) {
     count: Number.isInteger(frame.count) ? frame.count : 0,
     total: Number.isInteger(frame.total) ? frame.total : null,
   });
+  dropPendingWrites();
   if (typeof terminal.reset === "function") {
     terminal.reset();
   }
@@ -1876,7 +1983,13 @@ terminalView.addEventListener("pointerdown", (event) => {
 });
 window.addEventListener("focus", focusTerminal);
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") focusTerminal();
+  if (document.visibilityState === "visible") {
+    // Drain anything that accumulated while the page was hidden so
+    // the user sees the latest host state immediately instead of an
+    // old snapshot until the next live frame arrives.
+    flushPendingWrites();
+    focusTerminal();
+  }
 });
 
 mobileInput.addEventListener("input", () => {
