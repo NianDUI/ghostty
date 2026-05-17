@@ -7,6 +7,7 @@ const ZigTerminal = @import("../Terminal.zig");
 const Stream = @import("../stream_terminal.zig").Stream;
 const ScreenSet = @import("../ScreenSet.zig");
 const PageList = @import("../PageList.zig");
+const apc = @import("../apc.zig");
 const kitty = @import("../kitty/key.zig");
 const kitty_gfx_c = @import("kitty_graphics.zig");
 const modes = @import("../modes.zig");
@@ -310,6 +311,8 @@ pub const Option = enum(c_int) {
     kitty_image_medium_file = 16,
     kitty_image_medium_temp_file = 17,
     kitty_image_medium_shared_mem = 18,
+    apc_max_bytes = 19,
+    apc_max_bytes_kitty = 20,
 
     /// Input type expected for setting the option.
     pub fn InType(comptime self: Option) type {
@@ -331,6 +334,7 @@ pub const Option = enum(c_int) {
             .kitty_image_medium_temp_file,
             .kitty_image_medium_shared_mem,
             => ?*const bool,
+            .apc_max_bytes, .apc_max_bytes_kitty => ?*const usize,
         };
     }
 };
@@ -423,6 +427,19 @@ fn setTyped(
                     .kitty_image_medium_shared_mem => screen.kitty_images.image_limits.shared_memory = val,
                     else => unreachable,
                 }
+            }
+        },
+        .apc_max_bytes => {
+            wrapper.stream.handler.apc_handler.max_bytes = if (value) |ptr|
+                .initFull(ptr.*)
+            else
+                .{};
+        },
+        .apc_max_bytes_kitty => {
+            if (value) |ptr| {
+                wrapper.stream.handler.apc_handler.max_bytes.put(.kitty, ptr.*);
+            } else {
+                wrapper.stream.handler.apc_handler.max_bytes.remove(.kitty);
             }
         },
     }
@@ -1033,6 +1050,29 @@ test "vt_write split escape sequence" {
     defer testing.allocator.free(str);
     // If the escape sequence leaked, we'd see "[1mBold" as literal text.
     try testing.expectEqualStrings("Hello Bold", str);
+}
+
+test "vt_write split combining mark after base at right edge" {
+    var t: Terminal = null;
+    try testing.expectEqual(Result.success, new(
+        &lib.alloc.test_allocator,
+        &t,
+        .{
+            .cols = 2,
+            .rows = 2,
+            .max_scrollback = 0,
+        },
+    ));
+    defer free(t);
+
+    // Put "å" in the final column, then send its combining low line in a
+    // separate write so the mark arrives while the cursor has a pending wrap.
+    vt_write(t, "xå", 3);
+    vt_write(t, "\xcc\xb2", 2);
+
+    const str = try t.?.terminal.plainString(testing.allocator);
+    defer testing.allocator.free(str);
+    try testing.expectEqualStrings("xå̲", str);
 }
 
 test "get cols and rows" {
