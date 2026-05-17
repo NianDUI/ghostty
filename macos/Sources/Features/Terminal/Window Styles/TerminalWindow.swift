@@ -378,7 +378,7 @@ class TerminalWindow: NSWindow {
         button.action = #selector(TerminalController.splitZoom(_:))
         button.isBordered = false
         button.allowsExpansionToolTips = true
-        button.toolTip = "Reset Zoom"
+        button.toolTip = LocalizedString.text("Reset Zoom")
         button.contentTintColor = isMainWindow ? .controlAccentColor : .secondaryLabelColor
         button.state = .on
         button.image = NSImage(named: "ResetZoom")

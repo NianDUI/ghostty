@@ -92,7 +92,7 @@ struct TerminalCommandPaletteView: View {
         // convey it'll go all the way through.
         let title: String
         if case .updateAvailable = updateViewModel.state {
-            title = "Update Ghostty and Restart"
+            title = LocalizedString.text("Update Ghostty and Restart")
         } else {
             title = updateViewModel.text
         }
@@ -108,8 +108,8 @@ struct TerminalCommandPaletteView: View {
         })
 
         options.append(CommandOption(
-            title: "Cancel or Skip Update",
-            description: "Dismiss the current update process"
+            title: LocalizedString.text("Cancel or Skip Update"),
+            description: LocalizedString.text("Dismiss the current update process")
         ) {
             updateViewModel.state.cancel()
         })
@@ -125,8 +125,8 @@ struct TerminalCommandPaletteView: View {
             .map { c in
                 let symbols = appDelegate.ghostty.config.keyboardShortcut(for: c.action)?.keyList
                 return CommandOption(
-                    title: c.title,
-                    description: c.description,
+                    title: LocalizedString.text(c.title),
+                    description: LocalizedString.text(c.description),
                     symbols: symbols
                 ) {
                     onAction(c.action)
@@ -150,7 +150,7 @@ struct TerminalCommandPaletteView: View {
                 } else if !terminalTitle.isEmpty {
                     displayTitle = terminalTitle
                 } else {
-                    displayTitle = "Untitled"
+                    displayTitle = LocalizedString.text("Untitled")
                 }
                 let pwd = surface.pwd?.abbreviatedPath
                 let subtitle: String? = if let pwd, !displayTitle.contains(pwd) {
@@ -160,7 +160,7 @@ struct TerminalCommandPaletteView: View {
                 }
 
                 return CommandOption(
-                    title: "Focus: \(displayTitle)",
+                    title: LocalizedString.format("Focus: %@", displayTitle),
                     subtitle: subtitle,
                     leadingIcon: "rectangle.on.rectangle",
                     leadingColor: displayColor?.displayColor.map { Color($0) },

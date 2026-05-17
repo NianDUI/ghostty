@@ -29,7 +29,7 @@ class PermissionRequest {
         _ key: String,
         message: String,
         informative: String = "",
-        allowText: String = "Allow",
+        allowText: String? = nil,
         allowDuration: AllowDuration = .once,
         rememberDuration: Duration? = .seconds(86400),
         window: NSWindow? = nil,
@@ -46,9 +46,13 @@ class PermissionRequest {
         alert.informativeText = informative
         alert.alertStyle = .informational
 
-        // Add buttons (they appear in reverse order)
-        alert.addButton(withTitle: allowText)
-        alert.addButton(withTitle: "Don't Allow")
+        // Add buttons (they appear in reverse order). Look the caller's
+        // allowText up through LocalizedString so well-known keys
+        // ("Allow", "Authorize", etc.) get translated automatically while
+        // arbitrary strings still pass through unchanged.
+        let resolvedAllow = allowText.map { LocalizedString.text($0) } ?? LocalizedString.text("Allow")
+        alert.addButton(withTitle: resolvedAllow)
+        alert.addButton(withTitle: LocalizedString.text("Don't Allow"))
 
         // Create checkbox for remembering if duration is provided
         var checkbox: NSButton?
@@ -162,22 +166,29 @@ class PermissionRequest {
     private static func formatRememberText(for duration: Duration) -> String {
         let seconds = duration.timeInterval
 
-        // Warning: this probably isn't localization friendly at all so we're
-        // going to have to redo this for that.
         switch seconds {
         case 0..<60:
-            return "Remember my decision for \(Int(seconds)) seconds"
+            return LocalizedString.format("Remember my decision for %d seconds", Int(seconds))
         case 60..<3600:
             let minutes = Int(seconds / 60)
-            return "Remember my decision for \(minutes) minute\(minutes == 1 ? "" : "s")"
+            let key = minutes == 1
+                ? "Remember my decision for %d minute"
+                : "Remember my decision for %d minutes"
+            return LocalizedString.format(key, minutes)
         case 3600..<86400:
             let hours = Int(seconds / 3600)
-            return "Remember my decision for \(hours) hour\(hours == 1 ? "" : "s")"
+            let key = hours == 1
+                ? "Remember my decision for %d hour"
+                : "Remember my decision for %d hours"
+            return LocalizedString.format(key, hours)
         case 86400:
-            return "Remember my decision for one day"
+            return LocalizedString.text("Remember my decision for one day")
         default:
             let days = Int(seconds / 86400)
-            return "Remember my decision for \(days) day\(days == 1 ? "" : "s")"
+            let key = days == 1
+                ? "Remember my decision for %d day"
+                : "Remember my decision for %d days"
+            return LocalizedString.format(key, days)
         }
     }
 

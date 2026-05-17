@@ -77,3 +77,273 @@
 "Window" = "窗口";
 "Zoom Split" = "放大分屏";
 "Zoom" = "缩放";
+
+/* === Alerts: quit / close confirmation === */
+"Quit Ghostty?" = "退出 Ghostty？";
+"All terminal sessions will be terminated." = "所有终端会话将被终止。";
+"Close Ghostty" = "退出 Ghostty";
+"Cancel" = "取消";
+"OK" = "好";
+"Allow" = "允许";
+"Don't Allow" = "不允许";
+"Allow Ghostty to execute \"%@\"?" = "允许 Ghostty 执行 \"%@\"？";
+"Failed to Set Default Terminal" = "无法设为默认终端";
+"Ghostty could not be set as the default terminal application.\n\nError: %@" = "Ghostty 无法被设为默认终端应用程序。\n\n错误：%@";
+
+/* === Alerts: change title === */
+"Change Tab Title" = "更改标签页标题";
+"Change Terminal Title" = "更改终端标题";
+"Leave blank to restore the default." = "留空以恢复默认值。";
+
+/* === Alerts: close terminal / tab / window === */
+"Close Terminal?" = "关闭终端？";
+"The terminal still has a running process. If you close the terminal the process will be killed." = "终端中仍有进程在运行。如果关闭此终端，该进程将被终止。";
+"Close All Windows?" = "关闭所有窗口？";
+"Close Tab?" = "关闭标签页？";
+"The terminal still has a running process. If you close the tab the process will be killed." = "终端中仍有进程在运行。如果关闭此标签页，该进程将被终止。";
+"Close Other Tabs?" = "关闭其他标签页？";
+"At least one other tab still has a running process. If you close the tab the process will be killed." = "至少还有一个其他标签页中有进程在运行。如果关闭这些标签页，进程将被终止。";
+"Close Tabs on the Right?" = "关闭右侧标签页？";
+"At least one tab to the right still has a running process. If you close the tab the process will be killed." = "右侧至少还有一个标签页中有进程在运行。如果关闭这些标签页，进程将被终止。";
+"Close Window?" = "关闭窗口？";
+"All terminal sessions in this window will be terminated." = "此窗口中的所有终端会话将被终止。";
+
+/* === Alerts: new tab errors === */
+"Cannot Create New Tab" = "无法创建新标签页";
+"New tabs are unsupported while in non-native fullscreen. Exit fullscreen and try again." = "在非原生全屏模式下不支持新建标签页。请退出全屏后再试。";
+"Tabs aren't supported in the Quick Terminal." = "快速终端不支持标签页。";
+"Tabs are disabled" = "标签页已禁用";
+"Enable window decorations to use tabs" = "启用窗口装饰以使用标签页";
+
+/* === Clipboard confirmation window titles === */
+"Warning: Potentially Unsafe Paste" = "警告：可能不安全的粘贴";
+"Authorize Clipboard Access" = "授权剪贴板访问";
+
+/* === Permission remember-decision checkbox === */
+"Remember my decision for %d seconds" = "在 %d 秒内记住我的决定";
+"Remember my decision for %d minute" = "在 %d 分钟内记住我的决定";
+"Remember my decision for %d minutes" = "在 %d 分钟内记住我的决定";
+"Remember my decision for %d hour" = "在 %d 小时内记住我的决定";
+"Remember my decision for %d hours" = "在 %d 小时内记住我的决定";
+"Remember my decision for one day" = "在一天内记住我的决定";
+"Remember my decision for %d day" = "在 %d 天内记住我的决定";
+"Remember my decision for %d days" = "在 %d 天内记住我的决定";
+
+/* === Command Palette UI === */
+"Execute a command…" = "执行命令…";
+"No matches" = "没有匹配项";
+"Update Ghostty and Restart" = "更新 Ghostty 并重启";
+"Cancel or Skip Update" = "取消或跳过更新";
+"Dismiss the current update process" = "关闭当前的更新流程";
+"Untitled" = "未命名";
+"Focus: %@" = "聚焦：%@";
+
+/* === Command Palette: command titles (from src/input/command.zig) === */
+"Change Tab Title…" = "更改标签页标题…";
+"Change Terminal Title…" = "更改终端标题…";
+"Check for Updates" = "检查更新";
+"Clear Screen" = "清屏";
+"Close Other Tabs" = "关闭其他标签页";
+"Close Terminal" = "关闭终端";
+"Copy Screen as ANSI Sequences to Temporary File and Copy Path" = "将屏幕内容以 ANSI 序列保存到临时文件并复制路径";
+"Copy Screen as ANSI Sequences to Temporary File and Open" = "将屏幕内容以 ANSI 序列保存到临时文件并打开";
+"Copy Screen as ANSI Sequences to Temporary File and Paste Path" = "将屏幕内容以 ANSI 序列保存到临时文件并粘贴路径";
+"Copy Screen as HTML to Temporary File and Copy Path" = "将屏幕内容以 HTML 保存到临时文件并复制路径";
+"Copy Screen as HTML to Temporary File and Open" = "将屏幕内容以 HTML 保存到临时文件并打开";
+"Copy Screen as HTML to Temporary File and Paste Path" = "将屏幕内容以 HTML 保存到临时文件并粘贴路径";
+"Copy Screen to Temporary File and Copy Path" = "将屏幕内容保存到临时文件并复制路径";
+"Copy Screen to Temporary File and Open" = "将屏幕内容保存到临时文件并打开";
+"Copy Screen to Temporary File and Paste Path" = "将屏幕内容保存到临时文件并粘贴路径";
+"Copy Selection as ANSI Sequences to Clipboard" = "将选区以 ANSI 序列复制到剪贴板";
+"Copy Selection as ANSI Sequences to Temporary File and Copy Path" = "将选区以 ANSI 序列保存到临时文件并复制路径";
+"Copy Selection as ANSI Sequences to Temporary File and Open" = "将选区以 ANSI 序列保存到临时文件并打开";
+"Copy Selection as ANSI Sequences to Temporary File and Paste Path" = "将选区以 ANSI 序列保存到临时文件并粘贴路径";
+"Copy Selection as HTML to Clipboard" = "将选区以 HTML 复制到剪贴板";
+"Copy Selection as HTML to Temporary File and Copy Path" = "将选区以 HTML 保存到临时文件并复制路径";
+"Copy Selection as HTML to Temporary File and Open" = "将选区以 HTML 保存到临时文件并打开";
+"Copy Selection as HTML to Temporary File and Paste Path" = "将选区以 HTML 保存到临时文件并粘贴路径";
+"Copy Selection as Plain Text to Clipboard" = "将选区以纯文本复制到剪贴板";
+"Copy Selection to Temporary File and Copy Path" = "将选区保存到临时文件并复制路径";
+"Copy Selection to Temporary File and Open" = "将选区保存到临时文件并打开";
+"Copy Selection to Temporary File and Paste Path" = "将选区保存到临时文件并粘贴路径";
+"Copy Terminal Title to Clipboard" = "复制终端标题到剪贴板";
+"Copy to Clipboard" = "复制到剪贴板";
+"Copy URL to Clipboard" = "复制 URL 到剪贴板";
+"End Search" = "结束搜索";
+"Focus Split: Down" = "聚焦分屏：下方";
+"Focus Split: Left" = "聚焦分屏：左侧";
+"Focus Split: Next" = "聚焦分屏：下一个";
+"Focus Split: Previous" = "聚焦分屏：上一个";
+"Focus Split: Right" = "聚焦分屏：右侧";
+"Focus Split: Up" = "聚焦分屏：上方";
+"Focus Window: Next" = "聚焦窗口：下一个";
+"Focus Window: Previous" = "聚焦窗口：上一个";
+"Move Tab Left" = "向左移动标签页";
+"Move Tab Right" = "向右移动标签页";
+"Next Search Result" = "下一个搜索结果";
+"Open Config" = "打开配置文件";
+"Paste from Clipboard" = "从剪贴板粘贴";
+"Paste from Selection" = "从选区粘贴";
+"Previous Search Result" = "上一个搜索结果";
+"Quit" = "退出";
+"Reload Config" = "重新加载配置";
+"Reset Window Size" = "重置窗口大小";
+"Scroll Page Down" = "向下翻页";
+"Scroll Page Up" = "向上翻页";
+"Scroll to Bottom" = "滚动到底部";
+"Scroll to Selection" = "滚动到选中内容";
+"Scroll to Top" = "滚动到顶部";
+"Search Selection" = "搜索选中内容";
+"Share Terminal Session" = "共享终端会话";
+"Show On-Screen Keyboard" = "显示屏幕键盘";
+"Show the GTK Inspector" = "显示 GTK 检查器";
+"Start Search" = "开始搜索";
+"Toggle Background Opacity" = "切换背景不透明度";
+"Toggle Float on Top" = "切换置顶";
+"Toggle Fullscreen" = "切换全屏";
+"Toggle Inspector" = "切换检查器";
+"Toggle Maximize" = "切换最大化";
+"Toggle Mouse Reporting" = "切换鼠标事件上报";
+"Toggle Read-Only Mode" = "切换只读模式";
+"Toggle Secure Input" = "切换安全输入";
+"Toggle Split Zoom" = "切换分屏放大";
+"Toggle Tab Overview" = "切换标签页概览";
+"Toggle Window Decorations" = "切换窗口装饰";
+
+/* === Command Palette: command descriptions (from src/input/command.zig) === */
+"Check for updates to the application." = "检查应用程序的更新。";
+"Clear the screen and scrollback." = "清空屏幕和回滚缓冲区。";
+"Close all tabs in this window except the current one." = "关闭此窗口中除当前以外的所有标签页。";
+"Close all tabs to the right of the current one." = "关闭当前标签页右侧的所有标签页。";
+"Close all windows." = "关闭所有窗口。";
+"Close the current tab." = "关闭当前标签页。";
+"Close the current terminal." = "关闭当前终端。";
+"Close the current window." = "关闭当前窗口。";
+"Copy the screen contents as ANSI escape sequences to a temporary file and copy the path to the clipboard." = "将屏幕内容以 ANSI 转义序列保存到临时文件，并将路径复制到剪贴板。";
+"Copy the screen contents as ANSI escape sequences to a temporary file and open it." = "将屏幕内容以 ANSI 转义序列保存到临时文件并打开。";
+"Copy the screen contents as ANSI escape sequences to a temporary file and paste the path to the file." = "将屏幕内容以 ANSI 转义序列保存到临时文件，并将路径粘贴到该文件位置。";
+"Copy the screen contents as HTML to a temporary file and copy the path to the clipboard." = "将屏幕内容以 HTML 保存到临时文件，并将路径复制到剪贴板。";
+"Copy the screen contents as HTML to a temporary file and open it." = "将屏幕内容以 HTML 保存到临时文件并打开。";
+"Copy the screen contents as HTML to a temporary file and paste the path to the file." = "将屏幕内容以 HTML 保存到临时文件，并将路径粘贴到该文件位置。";
+"Copy the screen contents to a temporary file and copy the path to the clipboard." = "将屏幕内容保存到临时文件，并将路径复制到剪贴板。";
+"Copy the screen contents to a temporary file and open it." = "将屏幕内容保存到临时文件并打开。";
+"Copy the screen contents to a temporary file and paste the path to the file." = "将屏幕内容保存到临时文件，并将路径粘贴到该文件位置。";
+"Copy the selected text as ANSI escape sequences to the clipboard." = "将选中文本以 ANSI 转义序列复制到剪贴板。";
+"Copy the selected text as HTML to the clipboard." = "将选中文本以 HTML 复制到剪贴板。";
+"Copy the selected text as plain text to the clipboard." = "将选中文本以纯文本复制到剪贴板。";
+"Copy the selected text to the clipboard in both plain and styled formats." = "将选中文本以纯文本和带格式两种形式复制到剪贴板。";
+"Copy the selection contents as ANSI escape sequences to a temporary file and copy the path to the clipboard." = "将选区内容以 ANSI 转义序列保存到临时文件，并将路径复制到剪贴板。";
+"Copy the selection contents as ANSI escape sequences to a temporary file and open it." = "将选区内容以 ANSI 转义序列保存到临时文件并打开。";
+"Copy the selection contents as ANSI escape sequences to a temporary file and paste the path to the file." = "将选区内容以 ANSI 转义序列保存到临时文件，并将路径粘贴到该文件位置。";
+"Copy the selection contents as HTML to a temporary file and copy the path to the clipboard." = "将选区内容以 HTML 保存到临时文件，并将路径复制到剪贴板。";
+"Copy the selection contents as HTML to a temporary file and open it." = "将选区内容以 HTML 保存到临时文件并打开。";
+"Copy the selection contents as HTML to a temporary file and paste the path to the file." = "将选区内容以 HTML 保存到临时文件，并将路径粘贴到该文件位置。";
+"Copy the selection contents to a temporary file and copy the path to the clipboard." = "将选区内容保存到临时文件，并将路径复制到剪贴板。";
+"Copy the selection contents to a temporary file and open it." = "将选区内容保存到临时文件并打开。";
+"Copy the selection contents to a temporary file and paste the path to the file." = "将选区内容保存到临时文件，并将路径粘贴到该文件位置。";
+"Copy the terminal title to the clipboard. If the terminal title is not set this has no effect." = "复制终端标题到剪贴板。如果终端标题未设置则无效。";
+"Copy the URL under the cursor to the clipboard." = "将光标下方的 URL 复制到剪贴板。";
+"Decrease the font size by 1 point." = "字号减小 1 磅。";
+"End the current search if any and hide any GUI elements." = "结束当前搜索（如有）并隐藏相关界面元素。";
+"Equalize the size of all splits." = "均分所有分屏的大小。";
+"Focus the next split, if any." = "聚焦下一个分屏（如有）。";
+"Focus the next window, if any." = "聚焦下一个窗口（如有）。";
+"Focus the previous split, if any." = "聚焦上一个分屏（如有）。";
+"Focus the previous window, if any." = "聚焦上一个窗口（如有）。";
+"Focus the split above, if it exists." = "聚焦上方分屏（若存在）。";
+"Focus the split below, if it exists." = "聚焦下方分屏（若存在）。";
+"Focus the split to the left, if it exists." = "聚焦左侧分屏（若存在）。";
+"Focus the split to the right, if it exists." = "聚焦右侧分屏（若存在）。";
+"Increase the font size by 1 point." = "字号增大 1 磅。";
+"Move the current tab to the left." = "将当前标签页向左移动。";
+"Move the current tab to the right." = "将当前标签页向右移动。";
+"Navigate to the next search result, if any." = "跳到下一个搜索结果（如有）。";
+"Navigate to the previous search result, if any." = "跳到上一个搜索结果（如有）。";
+"Open a new tab." = "打开新标签页。";
+"Open a new window." = "打开新窗口。";
+"Open the config file." = "打开配置文件。";
+"Paste the contents of the main clipboard." = "粘贴主剪贴板的内容。";
+"Paste the contents of the selection clipboard." = "粘贴选区剪贴板的内容。";
+"Prompt for a new title for the current tab." = "提示输入当前标签页的新标题。";
+"Prompt for a new title for the current terminal." = "提示输入当前终端的新标题。";
+"Put a little Ghostty in your terminal." = "在你的终端里放一点 Ghostty。";
+"Quit the application." = "退出应用程序。";
+"Redo the last undone action." = "重做上一个被撤销的操作。";
+"Reload the config file." = "重新加载配置文件。";
+"Reset the font size to the default." = "将字号重置为默认值。";
+"Reset the terminal to a clean state." = "将终端重置为干净状态。";
+"Reset the window size to the default." = "将窗口大小重置为默认值。";
+"Scroll the screen down by a page." = "将屏幕向下翻一页。";
+"Scroll the screen up by a page." = "将屏幕向上翻一页。";
+"Scroll to the bottom of the screen." = "滚动到屏幕底部。";
+"Scroll to the selected text." = "滚动到选中文本处。";
+"Scroll to the top of the screen." = "滚动到屏幕顶部。";
+"Select all text on the screen." = "选择屏幕上的所有文本。";
+"Show the GTK inspector." = "显示 GTK 检查器。";
+"Show the on-screen keyboard if present." = "若可用，显示屏幕键盘。";
+"Split the terminal down." = "向下分屏。";
+"Split the terminal to the left." = "向左分屏。";
+"Split the terminal to the right." = "向右分屏。";
+"Split the terminal up." = "向上分屏。";
+"Start a search for the current text selection." = "对当前选中文本开始搜索。";
+"Start a search if one isn't already active." = "若没有正在进行的搜索，开始一个新搜索。";
+"Toggle read-only mode for the current surface." = "切换当前界面的只读模式。";
+"Toggle secure input mode." = "切换安全输入模式。";
+"Toggle session sharing: open the configuration sheet, or stop the active share if one is running." = "切换会话共享：打开配置面板，或停止当前正在进行的共享。";
+"Toggle the background opacity of a window that started transparent." = "切换以透明方式启动的窗口的背景不透明度。";
+"Toggle the float on top state of the current window." = "切换当前窗口的置顶状态。";
+"Toggle the fullscreen state of the current window." = "切换当前窗口的全屏状态。";
+"Toggle the inspector." = "切换检查器。";
+"Toggle the maximized state of the current window." = "切换当前窗口的最大化状态。";
+"Toggle the tab overview." = "切换标签页概览。";
+"Toggle the window decorations." = "切换窗口装饰。";
+"Toggle the zoom state of the current split." = "切换当前分屏的放大状态。";
+"Toggle whether mouse events are reported to terminal applications." = "切换是否将鼠标事件上报给终端程序。";
+"Undo the last action." = "撤销上一个操作。";
+
+/* === Update popover (UpdatePopoverView) === */
+"Enable automatic updates?" = "启用自动更新？";
+"Ghostty can automatically check for updates in the background." = "Ghostty 可以在后台自动检查更新。";
+"Not Now" = "暂不";
+"Checking for updates…" = "正在检查更新…";
+"Update Available" = "有可用更新";
+"Version:" = "版本：";
+"Size:" = "大小：";
+"Released:" = "发布日期：";
+"Skip" = "跳过";
+"Later" = "稍后";
+"Install and Relaunch" = "安装并重新启动";
+"Downloading Update" = "正在下载更新";
+"Preparing Update" = "正在准备更新";
+"Restart Required" = "需要重新启动";
+"The update is ready. Please restart the application to complete the installation." = "更新已就绪。请重新启动应用程序以完成安装。";
+"Restart Later" = "稍后重启";
+"Restart Now" = "立即重启";
+"No Updates Found" = "未找到更新";
+"You're already running the latest version." = "你已在使用最新版本。";
+"Update Failed" = "更新失败";
+"Retry" = "重试";
+
+/* === Configuration errors panel === */
+"Ignore" = "忽略";
+
+/* === About panel === */
+"Docs" = "文档";
+"Copy Icon Config" = "复制图标配置";
+"Ghostty Application Icon" = "Ghostty 应用图标";
+
+/* === Terminal view === */
+"Loading" = "加载中";
+"Debug build warning" = "调试构建警告";
+"Tab Color" = "标签页颜色";
+"Reset Zoom" = "重置缩放";
+
+/* === Surface view: search / key table / key sequence === */
+"Search" = "搜索";
+"Key Table" = "按键表";
+"Key Sequence" = "按键序列";
+"A key table is a named set of keybindings, activated by some other key. Keys are interpreted using this table until it is deactivated." = "按键表是一组命名的快捷键绑定，由另一个按键激活。在该表被停用前，按键将按此表解释。";
+"A key sequence is a series of key presses that trigger an action. A pending key sequence is currently active." = "按键序列是触发某个操作的连续按键。当前有一个待处理的按键序列。";
+"Disable" = "禁用";
+"Terminal pane" = "终端窗格";
+"Read-only terminal" = "只读终端";

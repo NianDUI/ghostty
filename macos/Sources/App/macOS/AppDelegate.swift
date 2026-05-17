@@ -411,10 +411,10 @@ class AppDelegate: NSObject,
 
         // We have some visible window. Show an app-wide modal to confirm quitting.
         let alert = NSAlert()
-        alert.messageText = "Quit Ghostty?"
-        alert.informativeText = "All terminal sessions will be terminated."
-        alert.addButton(withTitle: "Close Ghostty")
-        alert.addButton(withTitle: "Cancel")
+        alert.messageText = LocalizedString.text("Quit Ghostty?")
+        alert.informativeText = LocalizedString.text("All terminal sessions will be terminated.")
+        alert.addButton(withTitle: LocalizedString.text("Close Ghostty"))
+        alert.addButton(withTitle: LocalizedString.text("Cancel"))
         alert.alertStyle = .warning
         switch alert.runModal() {
         case .alertFirstButtonReturn:
@@ -504,9 +504,9 @@ class AppDelegate: NSObject,
             // may want to show this as a sheet on the focused window (especially if we're
             // opening a tab). I'm not sure.
             let alert = NSAlert()
-            alert.messageText = "Allow Ghostty to execute \"\(filename)\"?"
-            alert.addButton(withTitle: "Allow")
-            alert.addButton(withTitle: "Cancel")
+            alert.messageText = LocalizedString.format("Allow Ghostty to execute \"%@\"?", filename)
+            alert.addButton(withTitle: LocalizedString.text("Allow"))
+            alert.addButton(withTitle: LocalizedString.text("Cancel"))
             alert.alertStyle = .warning
             switch alert.runModal() {
             case .alertFirstButtonReturn:
@@ -1334,12 +1334,11 @@ extension AppDelegate {
             guard let error else { return }
             Task { @MainActor in
                 let alert = NSAlert()
-                alert.messageText = "Failed to Set Default Terminal"
-                alert.informativeText = """
-                Ghostty could not be set as the default terminal application.
-
-                Error: \(error.localizedDescription)
-                """
+                alert.messageText = LocalizedString.text("Failed to Set Default Terminal")
+                alert.informativeText = LocalizedString.format(
+                    "Ghostty could not be set as the default terminal application.\n\nError: %@",
+                    error.localizedDescription
+                )
                 alert.alertStyle = .warning
                 alert.runModal()
             }
