@@ -446,7 +446,12 @@
         .terminal-page.desktop-width-mode .terminal-host > #terminal {
           min-width: 860px;
           width: 860px;
-          will-change: transform;
+          /* No `will-change: transform` here. With it the browser
+             keeps #terminal as a permanent GPU compositor layer for
+             the whole session. Letting Chromium promote on demand
+             (the first JS transform handles that itself) costs one
+             layer creation when a swipe starts and zero CPU while
+             idle. */
         }
       }
 

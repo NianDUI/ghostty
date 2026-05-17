@@ -424,17 +424,22 @@ function wsBaseURL(pathname) {
 // Live-frame coalescing + visibility throttle.
 //
 // Hot path is socket onmessage → scheduleTermWrite. Multiple writes
-// inside one animation-frame merge into a single `terminal.write`,
-// which saves a JS call per chunk on busy spinner TUIs. When the
-// page is hidden we keep accumulating bytes but skip the flush
-// entirely — a backgrounded WebView shouldn't be burning CPU/GPU on
-// invisible repaints. A 1 MB cap bounds the buffer so a long
-// background stretch can't OOM the WebView; the snapshot frame
-// re-anchors anyway, so dropping the oldest queued bytes is safe.
+// inside one ~50 ms window merge into a single `terminal.write`,
+// pinning effective render rate at ~20 FPS regardless of how fast
+// the host emits. Spinner TUIs at 60+ Hz were making the phone hot
+// because xterm's canvas renderer repaints on every write; 20 FPS
+// is well below the perceptual threshold for a text-mode spinner
+// but cuts the repaint count by 3×. When the page is hidden we
+// keep accumulating bytes but skip the flush entirely — a
+// backgrounded WebView shouldn't be burning CPU/GPU on invisible
+// repaints. A 1 MB cap bounds the buffer so a long background
+// stretch can't OOM the WebView; the snapshot frame re-anchors
+// anyway, so dropping the oldest queued bytes is safe.
 const PENDING_WRITE_CAP_BYTES = 1024 * 1024;
+const PENDING_WRITE_THROTTLE_MS = 50;
 let pendingWriteChunks = [];
 let pendingWriteSize = 0;
-let pendingWriteRafScheduled = false;
+let pendingWriteTimer = null;
 
 function scheduleTermWrite(bytes) {
   if (!terminal || !bytes || bytes.length === 0) return;
@@ -448,15 +453,18 @@ function scheduleTermWrite(bytes) {
     pendingWriteSize -= dropped.length;
   }
   if (document.hidden) return;
-  if (pendingWriteRafScheduled) return;
-  pendingWriteRafScheduled = true;
-  window.requestAnimationFrame(() => {
-    pendingWriteRafScheduled = false;
+  if (pendingWriteTimer != null) return;
+  pendingWriteTimer = window.setTimeout(() => {
+    pendingWriteTimer = null;
     flushPendingWrites();
-  });
+  }, PENDING_WRITE_THROTTLE_MS);
 }
 
 function flushPendingWrites() {
+  if (pendingWriteTimer != null) {
+    window.clearTimeout(pendingWriteTimer);
+    pendingWriteTimer = null;
+  }
   if (!terminal || pendingWriteChunks.length === 0) return;
   const total = pendingWriteSize;
   const combined = new Uint8Array(total);
@@ -473,7 +481,10 @@ function flushPendingWrites() {
 function dropPendingWrites() {
   pendingWriteChunks = [];
   pendingWriteSize = 0;
-  pendingWriteRafScheduled = false;
+  if (pendingWriteTimer != null) {
+    window.clearTimeout(pendingWriteTimer);
+    pendingWriteTimer = null;
+  }
 }
 
 // Tear down the xterm instance + DOM nodes it created, so the next
