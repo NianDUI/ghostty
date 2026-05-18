@@ -130,8 +130,16 @@ function renderSession(session) {
   const item = document.createElement("button");
   item.type = "button";
   item.className = `session ${session.online ? "" : "offline"}`.trim();
+  // The host may register without a name (the macOS sharing sheet now
+  // allows blank) and the PTY title may not have arrived yet, so fall
+  // back to a short id-prefix placeholder instead of rendering an empty
+  // <strong>.
+  const displayName =
+    typeof session.name === "string" && session.name.trim() !== ""
+      ? session.name
+      : `未命名 · ${session.id.slice(0, 8)}`;
   item.innerHTML = `
-    <div><strong>${escapeHtml(session.name)}</strong></div>
+    <div><strong>${escapeHtml(displayName)}</strong></div>
     <div style="margin-top: 6px; font-size: 12px; color: #6d655c;">${escapeHtml(session.id)}</div>
     <div class="status ${session.online ? "online" : "offline"}">${session.online ? "在线" : "离线"}</div>
   `;

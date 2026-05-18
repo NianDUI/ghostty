@@ -327,6 +327,44 @@ def _is_essential_metadata(payload: bytes) -> bool:
     )
 
 
+# Upper bound matches the register payload's name length cap.
+_NAME_UPDATE_MAX_LENGTH = 256
+
+
+def _handle_name_update(state: "RelayState", session: "Session", payload: bytes) -> bool:
+    """Apply a `name_update` control frame in-place on `session`.
+
+    Returns ``True`` when the frame was consumed (so the caller should
+    skip forwarding it to clients and skip appending it to the backlog).
+    Returns ``False`` for any frame that isn't a well-formed
+    `name_update`, leaving the normal forward path untouched.
+
+    String assignment to ``session.name`` is atomic in CPython, so no
+    additional locking is required for the read path in
+    `handle_sessions`.
+    """
+    try:
+        decoded = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if not isinstance(decoded, dict) or decoded.get("type") != "name_update":
+        return False
+    new_name = decoded.get("name")
+    if not isinstance(new_name, str) or len(new_name) > _NAME_UPDATE_MAX_LENGTH:
+        # Malformed name_update: consume the frame so it doesn't pollute
+        # the backlog, but don't touch session.name.
+        return True
+    if session.name != new_name:
+        session.name = new_name
+        state.increment_metric("name_update_total")
+        log_event(
+            "name_update",
+            session_id=session.session_id,
+            session_name=new_name,
+        )
+    return True
+
+
 class RelayState:
     def __init__(self, config: RelayConfig) -> None:
         self.config = config
@@ -789,6 +827,13 @@ async def ws_agent_loop(
                 last_pong_at["value"] = time.time()
                 continue
             if opcode in (0x1, 0x2):
+                # `name_update` is a control frame consumed by the relay
+                # alone: it updates Session.name (which feeds /api/sessions)
+                # without being forwarded or appended to the backlog. The
+                # macOS host emits it when the user left the sharing name
+                # field blank, so the session list mirrors the PTY title.
+                if opcode == 0x1 and _handle_name_update(state, session, payload):
+                    continue
                 await forward_to_clients(session, opcode, payload)
     finally:
         async with state.lock:

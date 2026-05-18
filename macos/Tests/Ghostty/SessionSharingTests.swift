@@ -361,13 +361,36 @@ struct SessionSharingTests {
     }
 
     @Test
-    func sheetValidationRequiresCompleteFields() {
+    func sheetValidationRequiresRelayAndToken() {
+        // Missing relay is rejected regardless of name.
+        #expect(
+            SessionSharingSheetValidation.message(
+                name: "any",
+                relay: "",
+                token: "token"
+            ) == "共享配置不完整"
+        )
+        // Missing token is rejected regardless of name.
+        #expect(
+            SessionSharingSheetValidation.message(
+                name: "any",
+                relay: "127.0.0.1:18080",
+                token: ""
+            ) == "共享配置不完整"
+        )
+    }
+
+    @Test
+    func sheetValidationAllowsEmptyName() {
+        // An empty name is intentionally allowed: the relay will live-sync
+        // the macOS tab title into Session.name. See SurfaceView_AppKit
+        // SessionSharingSheetValidation for the rationale.
         #expect(
             SessionSharingSheetValidation.message(
                 name: "",
                 relay: "127.0.0.1:18080",
                 token: "token"
-            ) == "共享配置不完整"
+            ) == nil
         )
     }
 

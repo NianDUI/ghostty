@@ -622,12 +622,18 @@ extension Ghostty {
                 withTimeInterval: 0.075,
                 repeats: false
             ) { [weak self] _ in
+                guard let self else { return }
+                // Forward the PTY title to the sharing controller. It
+                // internally gates on whether sharing is active and
+                // whether the user supplied an explicit name, so it's
+                // safe to call unconditionally.
+                self.sessionSharing.notifyTitleChanged(title)
                 // Set the title if it wasn't manually set.
-                guard self?.titleFromTerminal == nil else {
-                    self?.titleFromTerminal = title
+                guard self.titleFromTerminal == nil else {
+                    self.titleFromTerminal = title
                     return
                 }
-                self?.title = title
+                self.title = title
             }
         }
 
@@ -1951,6 +1957,10 @@ private final class SessionSharingController {
     private var isStopping = false
     private var didPersistConfig = false
     private var originalSharedResizeCheckpoint: SharedResizeCheckpoint?
+    // Last PTY-derived title we pushed to the relay as a `name_update`
+    // frame. Used to suppress no-op resends so each title change only
+    // emits a single control frame.
+    private var lastSentTitleUpdate: String?
 
     init(
         surfaceView: Ghostty.SurfaceView,
@@ -1987,6 +1997,9 @@ private final class SessionSharingController {
         webSocket?.cancel(with: .goingAway, reason: nil)
         webSocket = nil
         reconnectPolicy.reset()
+        // Drop the title-sync dedupe key so the next session re-publishes
+        // even if the title hasn't changed in the meantime.
+        lastSentTitleUpdate = nil
         restoreOriginalSharedResizeIfNeeded()
         isStopping = false
         setState(SessionSharingLifecycle.stateAfterStop(userInitiated: userInitiated))
@@ -2019,8 +2032,13 @@ private final class SessionSharingController {
 
     private func presentSettingsSheet(on parentWindow: NSWindow?) {
         let persisted = store.load()
+        // Always open the sheet with an empty name field so the choice is
+        // per-session: leaving it blank opts into live-syncing the macOS
+        // tab title to the relay's session list, while typing a name
+        // locks it. We deliberately ignore persisted.lastSessionName so
+        // a name set in one tab does not bleed into another.
         let defaults = SessionSharingSheetDefaults(
-            name: persisted.lastSessionName ?? Self.defaultSessionName(),
+            name: "",
             relay: persisted.relay ?? persisted.relayHistory.first ?? "",
             token: persisted.token ?? store.readKeychainToken(forRelay: persisted.relay ?? ""),
             relayHistory: persisted.relayHistory
@@ -2062,7 +2080,7 @@ private final class SessionSharingController {
                     relay: relay,
                     token: token,
                     relayHistory: self.store.updatedHistory(relay, existing: defaults.relayHistory),
-                    lastSessionName: name
+                    lastSessionName: nil
                 ))
             }
 
@@ -2146,6 +2164,12 @@ private final class SessionSharingController {
         sendHelloIfPossible()
         sendAppearanceIfPossible()
         sendScreenSnapshotIfPossible()
+        // Try to publish the current PTY title right away so the relay's
+        // session list isn't stuck at an empty name during the gap before
+        // the next `setTitle` callback fires.
+        if let currentTitle = surfaceView?.title {
+            notifyTitleChanged(currentTitle)
+        }
         receiveNextMessage()
     }
 
@@ -2210,6 +2234,37 @@ private final class SessionSharingController {
         ) else { return }
         guard let data = try? JSONEncoder().encode(payload),
               let text = String(data: data, encoding: .utf8) else { return }
+        webSocket.send(.string(text)) { [weak self] error in
+            if let error {
+                self?.handleDisconnect(error: error)
+            }
+        }
+    }
+
+    /// Called from `SurfaceView.setTitle`'s debounced callback whenever
+    /// the PTY-reported title changes. When the user opted into title
+    /// sync by leaving the sharing sheet's name field blank, we forward
+    /// the new value to the relay as a `name_update` control frame so
+    /// the relay's session list reflects the macOS tab title (e.g.
+    /// `~/WorkSpace`). When the user supplied an explicit name the
+    /// choice is locked and nothing is sent.
+    func notifyTitleChanged(_ value: String) {
+        guard sessionName.isEmpty else { return }
+        sendNameUpdateIfPossible(value)
+    }
+
+    private func sendNameUpdateIfPossible(_ value: String) {
+        guard let webSocket else { return }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Skip empty values: register already left Session.name empty
+        // and there is nothing meaningful to publish until the PTY
+        // actually reports a title.
+        guard !trimmed.isEmpty else { return }
+        guard trimmed != lastSentTitleUpdate else { return }
+        let payload = SessionSharingControlFrame.nameUpdate(id: sessionID, name: trimmed)
+        guard let data = try? JSONEncoder().encode(payload),
+              let text = String(data: data, encoding: .utf8) else { return }
+        lastSentTitleUpdate = trimmed
         webSocket.send(.string(text)) { [weak self] error in
             if let error {
                 self?.handleDisconnect(error: error)
@@ -2398,11 +2453,6 @@ private final class SessionSharingController {
         }
     }
 
-    private static func defaultSessionName() -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        return "Ghostty-\(formatter.string(from: Date()))"
-    }
 }
 
 struct SessionSharingReconnectPolicy {
@@ -2884,11 +2934,11 @@ private struct SessionSharingSheetDefaults {
 
 enum SessionSharingSheetValidation {
     static func message(name: String, relay: String, token: String) -> String? {
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        _ = name
         let trimmedRelay = relay.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !trimmedName.isEmpty, !trimmedRelay.isEmpty, !trimmedToken.isEmpty else {
+        guard !trimmedRelay.isEmpty, !trimmedToken.isEmpty else {
             return "共享配置不完整"
         }
 
@@ -3177,6 +3227,14 @@ struct SessionSharingControlFrame: Codable, Equatable {
 
     static func pong(id: String) -> Self {
         .init(type: "pong", id: id, name: nil, cols: nil, rows: nil)
+    }
+
+    /// Live-sync of the macOS tab title into the relay's `Session.name`.
+    /// The relay consumes this frame to update its session list and does
+    /// not forward it to web clients; see `ws_agent_loop` in
+    /// `contrib/session-sharing/relay/server.py`.
+    static func nameUpdate(id: String, name: String) -> Self {
+        .init(type: "name_update", id: id, name: name, cols: nil, rows: nil)
     }
 }
 
