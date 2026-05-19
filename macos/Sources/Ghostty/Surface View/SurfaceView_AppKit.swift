@@ -5,6 +5,7 @@ import CoreText
 import UserNotifications
 import Security
 import Network
+import CryptoKit
 import GhosttyKit
 
 extension Ghostty {
@@ -401,6 +402,15 @@ extension Ghostty {
 
         func stopSessionSharing() {
             sessionSharing.stopSharing(userInitiated: true)
+        }
+
+        /// Disable upload acceptance for the current share session.
+        /// Idempotent. The user has no opt-back-in path inside the same
+        /// share session — they have to stop & restart sharing to flip
+        /// it back on. That's a deliberate one-way switch: it matches
+        /// the "I notice something off, kill the door" mental model.
+        func stopAcceptingUploadsForSession() {
+            sessionSharing.setUploadPolicy(.disabled)
         }
 
         fileprivate func sendSharedBytes(_ data: Data) {
@@ -1961,6 +1971,8 @@ private final class SessionSharingController {
     // frame. Used to suppress no-op resends so each title change only
     // emits a single control frame.
     private var lastSentTitleUpdate: String?
+    private var uploadManager: SessionSharingUploadManager?
+    private var uploadPolicy: SessionSharingUploadPolicy = .defaultEnabled
 
     init(
         surfaceView: Ghostty.SurfaceView,
@@ -2000,9 +2012,22 @@ private final class SessionSharingController {
         // Drop the title-sync dedupe key so the next session re-publishes
         // even if the title hasn't changed in the meantime.
         lastSentTitleUpdate = nil
+        // Releasing the upload manager prevents already-dispatched pulls
+        // from injecting paths into a torn-down surface; in-flight work
+        // is allowed to finish (it captures `self?` weakly).
+        uploadManager = nil
         restoreOriginalSharedResizeIfNeeded()
         isStopping = false
         setState(SessionSharingLifecycle.stateAfterStop(userInitiated: userInitiated))
+    }
+
+    /// Update the session-scoped upload policy. Called when the user
+    /// flips the badge menu's "停止接受上传" toggle. New uploads see the
+    /// new policy immediately; in-flight pulls finish under whatever
+    /// policy they started with.
+    func setUploadPolicy(_ next: SessionSharingUploadPolicy) {
+        uploadPolicy = next
+        uploadManager?.updatePolicy(next)
     }
 
     func captureOriginalSharedResizeIfNeeded(cols: Int, rows: Int) {
@@ -2041,7 +2066,10 @@ private final class SessionSharingController {
             name: "",
             relay: persisted.relay ?? persisted.relayHistory.first ?? "",
             token: persisted.token ?? store.readKeychainToken(forRelay: persisted.relay ?? ""),
-            relayHistory: persisted.relayHistory
+            relayHistory: persisted.relayHistory,
+            webUploadEnabled: persisted.webUploadEnabled,
+            uploadsAutoCleanEnabled: persisted.uploadsAutoCleanEnabled,
+            uploadsAutoCleanDays: persisted.uploadsAutoCleanDays
         )
 
         let alert = NSAlert()
@@ -2065,6 +2093,9 @@ private final class SessionSharingController {
             let token = content.tokenField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             let name = content.nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
             let saveConfig = content.saveCheckbox.state == .on
+            let uploadEnabled = content.uploadCheckbox.state == .on
+            let autoCleanEnabled = content.autoCleanCheckbox.state == .on
+            let autoCleanDays = content.selectedAutoCleanDays
 
             if let validationMessage = SessionSharingSheetValidation.message(
                 name: name,
@@ -2075,12 +2106,22 @@ private final class SessionSharingController {
                 return
             }
 
+            // Reconcile the LaunchAgent every time the sheet is OK'd —
+            // even when "保存配置" is off — so a one-off share still
+            // gives the user the cleaner they ticked. The installer is
+            // idempotent so calling it on every OK is cheap.
+            SessionSharingUploadAutoCleanInstaller.reconcile(
+                enabled: autoCleanEnabled, days: autoCleanDays)
+
             if saveConfig {
                 self.store.save(.init(
                     relay: relay,
                     token: token,
                     relayHistory: self.store.updatedHistory(relay, existing: defaults.relayHistory),
-                    lastSessionName: nil
+                    lastSessionName: nil,
+                    webUploadEnabled: uploadEnabled,
+                    uploadsAutoCleanEnabled: autoCleanEnabled,
+                    uploadsAutoCleanDays: autoCleanDays
                 ))
             }
 
@@ -2088,7 +2129,8 @@ private final class SessionSharingController {
                 relay: relay,
                 userToken: token,
                 sessionName: name,
-                persistConfig: saveConfig
+                persistConfig: saveConfig,
+                uploadEnabled: uploadEnabled
             )
         }
 
@@ -2104,7 +2146,13 @@ private final class SessionSharingController {
         }
     }
 
-    private func startSharing(relay: String, userToken: String, sessionName: String, persistConfig: Bool) {
+    private func startSharing(
+        relay: String,
+        userToken: String,
+        sessionName: String,
+        persistConfig: Bool,
+        uploadEnabled: Bool = true
+    ) {
         stopActiveConnectionForRestart()
         self.relayAddress = relay
         self.userToken = userToken
@@ -2114,6 +2162,13 @@ private final class SessionSharingController {
         self.shouldReconnect = true
         self.reconnectPolicy.reset()
         self.isStopping = false
+        // Snapshot the share-time decision into the policy that the
+        // upload manager will read on every upload_ready frame. The
+        // sizes come from the defaults — the share sheet doesn't expose
+        // them in v0 to keep the dialog simple.
+        self.uploadPolicy = uploadEnabled
+            ? .defaultEnabled
+            : .disabled
         attachOutputCallback()
         setState(.connecting)
 
@@ -2161,6 +2216,7 @@ private final class SessionSharingController {
         self.webSocket = webSocket
         webSocket.resume()
         setState(.sharing)
+        ensureUploadManager()
         sendHelloIfPossible()
         sendAppearanceIfPossible()
         sendScreenSnapshotIfPossible()
@@ -2171,6 +2227,41 @@ private final class SessionSharingController {
             notifyTitleChanged(currentTitle)
         }
         receiveNextMessage()
+    }
+
+    private func ensureUploadManager() {
+        if uploadManager != nil { return }
+        let manager = SessionSharingUploadManager(
+            sessionID: sessionID,
+            relayAddress: relayAddress,
+            uploadsRoot: SessionSharingUploadPaths.defaultUploadsRoot(),
+            auditLogURL: SessionSharingUploadPaths.defaultAuditLogURL(),
+            policy: uploadPolicy,
+            injectPath: { [weak self] payload in
+                // The upload manager runs its pull on a background task,
+                // so hop to the main queue before touching the AppKit
+                // view. We follow the same pattern as handleIncoming.
+                let data = Data(payload.utf8)
+                DispatchQueue.main.async { [weak self] in
+                    self?.surfaceView?.sendSharedBytes(data)
+                }
+            },
+            sendAck: { [weak self] envelope in
+                self?.sendUploadAck(envelope)
+            }
+        )
+        uploadManager = manager
+    }
+
+    private func sendUploadAck(_ envelope: SessionSharingUploadAckEnvelope) {
+        guard let webSocket else { return }
+        guard let data = try? JSONEncoder().encode(envelope),
+              let text = String(data: data, encoding: .utf8) else { return }
+        webSocket.send(.string(text)) { [weak self] error in
+            if let error {
+                self?.handleDisconnect(error: error)
+            }
+        }
     }
 
     private func sendHelloIfPossible() {
@@ -2347,6 +2438,14 @@ private final class SessionSharingController {
             sendScrollbackResponseIfPossible(before: before, count: count)
             return true
 
+        case .handleUploadReady(let envelope):
+            // The relay has staged a browser-side upload and is asking us
+            // to pull it. Hand off to the upload manager; it owns policy,
+            // disk, hashing and the path-injection ack.
+            ensureUploadManager()
+            uploadManager?.handle(envelope)
+            return true
+
         case .sendPong(let pong):
             guard let webSocket else { return true }
             guard let pongData = try? JSONEncoder().encode(pong),
@@ -2476,6 +2575,7 @@ enum SessionSharingInboundFrameAction: Equatable {
     case restoreOriginalSize
     case clientConnected
     case fetchScrollback(before: Int, count: Int)
+    case handleUploadReady(SessionSharingUploadReadyEnvelope)
 
     static func parse(text: String, sessionID: String) -> Self {
         guard let data = text.data(using: .utf8),
@@ -2498,6 +2598,19 @@ enum SessionSharingInboundFrameAction: Equatable {
         case "fetch_scrollback":
             if let before = frame.before, let count = frame.count, before >= 0, count > 0 {
                 return .fetchScrollback(before: before, count: count)
+            }
+            return .ignore
+        case "upload_ready":
+            // upload_ready carries its own dense schema (upload_id, name,
+            // size, sha256, pull_token, pull_url); decode against the
+            // dedicated envelope rather than overload
+            // SessionSharingInboundControlFrame with upload fields. If the
+            // envelope is malformed we *consume* the frame (.ignore)
+            // instead of letting bogus bytes leak into the terminal.
+            if let envelope = try? JSONDecoder().decode(
+                SessionSharingUploadReadyEnvelope.self, from: data
+            ), envelope.isValid {
+                return .handleUploadReady(envelope)
             }
             return .ignore
         case "hello", "pong", "scrollback":
@@ -2925,11 +3038,79 @@ enum SessionSharingLifecycle {
     }
 }
 
+struct SessionSharingPersistedConfig: Codable, Equatable {
+    // Hoisted up so SessionSharingSheetDefaults can reference the type.
+    // The actual implementation still lives below; this is just a
+    // compile-time forward declaration via `typealias`.
+    var relay: String?
+    var token: String?
+    var relayHistory: [String]
+    var lastSessionName: String?
+    var webUploadEnabled: Bool
+    var uploadsAutoCleanEnabled: Bool
+    var uploadsAutoCleanDays: Int
+
+    init(
+        relay: String? = nil,
+        token: String? = nil,
+        relayHistory: [String] = [],
+        lastSessionName: String? = nil,
+        webUploadEnabled: Bool = true,
+        uploadsAutoCleanEnabled: Bool = true,
+        uploadsAutoCleanDays: Int = SessionSharingUploadAutoCleanInstaller.defaultDays
+    ) {
+        self.relay = relay
+        self.token = token
+        self.relayHistory = relayHistory
+        self.lastSessionName = lastSessionName
+        self.webUploadEnabled = webUploadEnabled
+        self.uploadsAutoCleanEnabled = uploadsAutoCleanEnabled
+        self.uploadsAutoCleanDays = uploadsAutoCleanDays
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case relay, token, relayHistory, lastSessionName, webUploadEnabled
+        case uploadsAutoCleanEnabled, uploadsAutoCleanDays
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        relay = try container.decodeIfPresent(String.self, forKey: .relay)
+        token = try container.decodeIfPresent(String.self, forKey: .token)
+        relayHistory = try container
+            .decodeIfPresent([String].self, forKey: .relayHistory) ?? []
+        lastSessionName = try container.decodeIfPresent(
+            String.self, forKey: .lastSessionName)
+        // Older configs (pre-upload) don't have this key; default to
+        // true so existing users get the new feature out of the box.
+        // If you'd rather have opt-in, flip this default.
+        webUploadEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .webUploadEnabled) ?? true
+        // Same logic for the auto-clean fields. Older configs default to
+        // enabled with the installer's default retention window so
+        // existing users start getting tidy uploads/ trees automatically.
+        uploadsAutoCleanEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .uploadsAutoCleanEnabled) ?? true
+        let storedDays = try container.decodeIfPresent(
+            Int.self, forKey: .uploadsAutoCleanDays)
+            ?? SessionSharingUploadAutoCleanInstaller.defaultDays
+        // Snap to one of the allowed retention buckets so a corrupted
+        // config (or a manual edit) can never schedule a 0-day prune.
+        uploadsAutoCleanDays = SessionSharingUploadAutoCleanInstaller
+            .allowedDays.contains(storedDays)
+            ? storedDays
+            : SessionSharingUploadAutoCleanInstaller.defaultDays
+    }
+}
+
 private struct SessionSharingSheetDefaults {
     let name: String
     let relay: String
     let token: String
     let relayHistory: [String]
+    let webUploadEnabled: Bool
+    let uploadsAutoCleanEnabled: Bool
+    let uploadsAutoCleanDays: Int
 }
 
 enum SessionSharingSheetValidation {
@@ -2963,6 +3144,9 @@ private final class SessionSharingSheetContentView: NSObject, NSControlTextEditi
     let relayField: NSComboBox
     let tokenField: NSSecureTextField
     let saveCheckbox: NSButton
+    let uploadCheckbox: NSButton
+    let autoCleanCheckbox: NSButton
+    let autoCleanDaysPopUp: NSPopUpButton
     let validationLabel: NSTextField
     var validationDidChange: ((String?) -> Void)?
 
@@ -2971,12 +3155,39 @@ private final class SessionSharingSheetContentView: NSObject, NSControlTextEditi
         relayField = NSComboBox()
         tokenField = NSSecureTextField(string: defaults.token)
         saveCheckbox = NSButton(checkboxWithTitle: "保存配置", target: nil, action: nil)
+        uploadCheckbox = NSButton(
+            checkboxWithTitle: "允许 Web 客户端上传文件",
+            target: nil, action: nil)
+        autoCleanCheckbox = NSButton(
+            checkboxWithTitle: "自动清理",
+            target: nil, action: nil)
+        autoCleanDaysPopUp = NSPopUpButton(
+            frame: NSRect(x: 0, y: 0, width: 64, height: 22), pullsDown: false)
         validationLabel = NSTextField(labelWithString: "")
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 174))
+        // Bumped from 198 → 226 to fit the new "auto-clean" row.
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 226))
         self.container = container
         saveCheckbox.state = .on
+        uploadCheckbox.state = defaults.webUploadEnabled ? .on : .off
+        uploadCheckbox.toolTip = "Web 客户端上传完成后会在终端光标处注入文件路径。"
+        autoCleanCheckbox.state = defaults.uploadsAutoCleanEnabled ? .on : .off
+        autoCleanCheckbox.toolTip = "每天 03:15 通过 launchd 清理早于设定天数的上传文件。"
+        for days in SessionSharingUploadAutoCleanInstaller.allowedDays {
+            autoCleanDaysPopUp.addItem(withTitle: "\(days) 天前")
+            autoCleanDaysPopUp.item(at: autoCleanDaysPopUp.numberOfItems - 1)?
+                .representedObject = days
+        }
+        Self.selectDays(
+            defaults.uploadsAutoCleanDays, in: autoCleanDaysPopUp)
+        // Wire enable/disable so the popup tracks the checkbox visually
+        // and the user can't pick a retention while auto-clean is off.
+        autoCleanDaysPopUp.isEnabled = autoCleanCheckbox.state == .on
 
         super.init()
+
+        // target = self must wait for super.init().
+        autoCleanCheckbox.target = self
+        autoCleanCheckbox.action = #selector(autoCleanCheckboxToggled(_:))
 
         relayField.isEditable = true
         relayField.addItems(withObjectValues: defaults.relayHistory)
@@ -2992,11 +3203,21 @@ private final class SessionSharingSheetContentView: NSObject, NSControlTextEditi
         validationLabel.maximumNumberOfLines = 0
         validationLabel.isHidden = true
 
+        let autoCleanRow = NSStackView(views: [
+            autoCleanCheckbox, autoCleanDaysPopUp,
+            NSTextField(labelWithString: "的上传文件"),
+        ])
+        autoCleanRow.orientation = .horizontal
+        autoCleanRow.spacing = 6
+        autoCleanRow.alignment = .firstBaseline
+
         let grid = NSGridView(views: [
             [Self.label("会话名称"), nameField],
             [Self.label("中转服务器"), relayField],
             [Self.label("认证令牌"), tokenField],
             [NSView(), saveCheckbox],
+            [NSView(), uploadCheckbox],
+            [NSView(), autoCleanRow],
             [NSView(), validationLabel],
         ])
         grid.rowSpacing = 10
@@ -3033,24 +3254,34 @@ private final class SessionSharingSheetContentView: NSObject, NSControlTextEditi
         label.alignment = .right
         return label
     }
-}
 
-struct SessionSharingPersistedConfig: Codable, Equatable {
-    var relay: String?
-    var token: String?
-    var relayHistory: [String]
-    var lastSessionName: String?
-
-    init(
-        relay: String? = nil,
-        token: String? = nil,
-        relayHistory: [String] = [],
-        lastSessionName: String? = nil
+    /// Locate (and select) the menu item whose representedObject matches
+    /// the desired retention. Falls back to the installer's default if
+    /// the value is missing — the persisted-config decoder already
+    /// clamps to allowedDays, so this is belt-and-braces.
+    fileprivate static func selectDays(
+        _ days: Int, in popUp: NSPopUpButton
     ) {
-        self.relay = relay
-        self.token = token
-        self.relayHistory = relayHistory
-        self.lastSessionName = lastSessionName
+        let target = SessionSharingUploadAutoCleanInstaller.allowedDays
+            .contains(days)
+            ? days
+            : SessionSharingUploadAutoCleanInstaller.defaultDays
+        for index in 0..<popUp.numberOfItems {
+            let value = popUp.item(at: index)?.representedObject as? Int
+            if value == target {
+                popUp.selectItem(at: index)
+                return
+            }
+        }
+    }
+
+    fileprivate var selectedAutoCleanDays: Int {
+        (autoCleanDaysPopUp.selectedItem?.representedObject as? Int)
+            ?? SessionSharingUploadAutoCleanInstaller.defaultDays
+    }
+
+    @objc private func autoCleanCheckboxToggled(_ sender: NSButton) {
+        autoCleanDaysPopUp.isEnabled = sender.state == .on
     }
 }
 
@@ -3244,6 +3475,676 @@ private struct SessionSharingInboundControlFrame: Codable {
     let rows: Int?
     let before: Int?
     let count: Int?
+}
+
+/// Relay → agent: a browser-uploaded file is staged on the relay and the
+/// agent should pull it. The agent is the one that decides whether to
+/// accept (per `SessionSharingUploadPolicy`), so the relay only stages
+/// the file; nothing lands on disk until the agent calls the pull URL.
+struct SessionSharingUploadReadyEnvelope: Codable, Equatable {
+    let type: String
+    let uploadID: String
+    let name: String
+    let size: Int64
+    let sha256: String?
+    let pullToken: String
+    let pullURL: String
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case uploadID = "upload_id"
+        case name
+        case size
+        case sha256
+        case pullToken = "pull_token"
+        case pullURL = "pull_url"
+    }
+
+    /// Minimum-viable shape check. Anything beyond this is the manager's
+    /// job — e.g. policy/size/extension rules — but `parse` short-circuits
+    /// on these so we don't ack on a frame that's literally unusable.
+    var isValid: Bool {
+        type == "upload_ready"
+            && !uploadID.isEmpty
+            && !name.isEmpty
+            && size > 0
+            && !pullToken.isEmpty
+            && pullURL.hasPrefix("/api/upload/")
+    }
+}
+
+/// agent → relay → all clients: result of a single upload attempt.
+struct SessionSharingUploadAckEnvelope: Codable, Equatable {
+    let type: String
+    let uploadID: String
+    let ok: Bool
+    let path: String?
+    let bytesWritten: Int64?
+    let reason: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case uploadID = "upload_id"
+        case ok
+        case path
+        case bytesWritten = "bytes_written"
+        case reason
+    }
+
+    static func success(
+        uploadID: String, path: String, bytesWritten: Int64
+    ) -> Self {
+        .init(
+            type: "upload_ack",
+            uploadID: uploadID,
+            ok: true,
+            path: path,
+            bytesWritten: bytesWritten,
+            reason: nil
+        )
+    }
+
+    static func failure(uploadID: String, reason: String) -> Self {
+        .init(
+            type: "upload_ack",
+            uploadID: uploadID,
+            ok: false,
+            path: nil,
+            bytesWritten: nil,
+            reason: reason
+        )
+    }
+}
+
+enum SessionSharingUploadRejectionReason: String {
+    case agentDisabled = "agent_disabled"
+    case sizeExceedsFile = "size_exceeds_file_limit"
+    case sizeExceedsSession = "size_exceeds_session_limit"
+    case sanitizeFailed = "sanitize_failed"
+    case pullFailed = "pull_failed"
+    case hashMismatch = "hash_mismatch"
+    case diskFull = "disk_full"
+    case writeFailed = "write_failed"
+}
+
+/// Per-session upload policy decided at share-sheet time. The user is
+/// remote when uploads happen, so we deliberately do *not* prompt on
+/// every transfer; the policy is the one and only authorisation gate.
+struct SessionSharingUploadPolicy: Equatable {
+    /// Master switch. `false` rejects every upload_ready immediately.
+    var enabled: Bool
+    /// Per-file cap. Files larger than this never get pulled.
+    var maxFileBytes: Int64
+    /// Cumulative cap across the session lifetime. The manager keeps a
+    /// running counter; once exceeded, further uploads are rejected even
+    /// if individually below maxFileBytes.
+    var maxSessionBytes: Int64
+
+    static let defaultEnabled = SessionSharingUploadPolicy(
+        enabled: true,
+        maxFileBytes: 100 * 1024 * 1024,
+        maxSessionBytes: 2 * 1024 * 1024 * 1024
+    )
+
+    static let disabled = SessionSharingUploadPolicy(
+        enabled: false,
+        maxFileBytes: 0,
+        maxSessionBytes: 0
+    )
+}
+
+/// Filename sanitization rules for the per-session upload directory.
+///
+/// The relay already does a light pass (rejects path-separators and the
+/// obvious bad characters) but we re-do it here. Defense in depth: a
+/// compromised relay should not be able to write outside the session's
+/// upload directory.
+enum SessionSharingUploadNameSanitizer {
+    static let maxLength = 200
+
+    static func sanitize(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        if trimmed == "." || trimmed == ".." { return nil }
+        if trimmed.hasPrefix(".") { return nil }
+        if trimmed.utf8.count > maxLength { return nil }
+        for scalar in trimmed.unicodeScalars {
+            // Reject path separators (POSIX `/` and Windows `\`), NUL,
+            // and any C0 control character. Spaces and CJK are fine.
+            if scalar.value < 0x20 { return nil }
+            if scalar == "/" || scalar == "\\" { return nil }
+            if scalar == "\u{7F}" { return nil }
+        }
+        return trimmed
+    }
+
+    /// Pick a non-colliding final name inside `directory`. On collision
+    /// we append `-1`, `-2`, ... before the extension, capping retries
+    /// so a pathological directory can't loop forever.
+    static func uniquePath(
+        for sanitizedName: String, in directory: URL, retries: Int = 1024
+    ) -> URL? {
+        let baseURL = directory.appendingPathComponent(sanitizedName)
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: baseURL.path) {
+            return baseURL
+        }
+        let ext = baseURL.pathExtension
+        let stem = baseURL.deletingPathExtension().lastPathComponent
+        for n in 1...retries {
+            let candidateName = ext.isEmpty
+                ? "\(stem)-\(n)"
+                : "\(stem)-\(n).\(ext)"
+            let candidate = directory.appendingPathComponent(candidateName)
+            if !fm.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+}
+
+/// Build a single POSIX-shell-safe token for an absolute path. Wraps in
+/// single quotes and escapes embedded single quotes the canonical way
+/// (`'` → `'\''`). A trailing space is intentional so the cursor lands
+/// past the path, mirroring `printf '%q '`.
+enum SessionSharingShellEscape {
+    static func quoteForPasteWithTrailingSpace(_ value: String) -> String {
+        let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
+        return "'\(escaped)' "
+    }
+}
+
+/// Network surface the upload manager talks to. Wraps the existing
+/// SessionSharingNetworkClient + adds raw byte download (URLSession's
+/// `data(for:)` returns Data which is what we want).
+protocol SessionSharingUploadTransport {
+    func download(from request: URLRequest) async throws -> (Data, URLResponse)
+}
+
+extension URLSession: SessionSharingUploadTransport {
+    func download(from request: URLRequest) async throws -> (Data, URLResponse) {
+        try await data(for: request)
+    }
+}
+
+/// Pulls files staged on the relay onto disk, then injects the resulting
+/// path into the PTY. One instance per SessionSharingController, lives
+/// for the duration of a single share session.
+///
+/// `@unchecked Sendable` is safe because every mutable field
+/// (`bytesAcceptedTotal`, `inflightUploadIDs`, `policy`) is only
+/// read/written from the private serial `queue`, and the immutable
+/// dependencies (transport / fileManager / closures) are Sendable by
+/// construction.
+final class SessionSharingUploadManager: @unchecked Sendable {
+    struct Dependencies {
+        let transport: SessionSharingUploadTransport
+        let fileManager: FileManager
+        let now: () -> Date
+
+        static func live() -> Dependencies {
+            Dependencies(
+                transport: URLSession.shared,
+                fileManager: .default,
+                now: { Date() }
+            )
+        }
+    }
+
+    private let sessionID: String
+    private let relayAddress: String
+    private let dependencies: Dependencies
+    private let uploadsRoot: URL
+    private let auditLogURL: URL?
+    private let injectPath: (String) -> Void
+    private let sendAck: (SessionSharingUploadAckEnvelope) -> Void
+
+    private let queue = DispatchQueue(label: "ghostty.session-sharing.upload", qos: .utility)
+    private var policy: SessionSharingUploadPolicy
+    private var bytesAcceptedTotal: Int64 = 0
+    private var inflightUploadIDs: Set<String> = []
+
+    init(
+        sessionID: String,
+        relayAddress: String,
+        uploadsRoot: URL,
+        auditLogURL: URL?,
+        policy: SessionSharingUploadPolicy,
+        dependencies: Dependencies = .live(),
+        injectPath: @escaping (String) -> Void,
+        sendAck: @escaping (SessionSharingUploadAckEnvelope) -> Void
+    ) {
+        self.sessionID = sessionID
+        self.relayAddress = relayAddress
+        self.uploadsRoot = uploadsRoot
+        self.auditLogURL = auditLogURL
+        self.policy = policy
+        self.dependencies = dependencies
+        self.injectPath = injectPath
+        self.sendAck = sendAck
+    }
+
+    /// Update the per-session policy in response to a UI toggle (e.g.
+    /// the user hit "stop accepting uploads" from the badge menu). New
+    /// uploads see the new policy immediately; in-flight pulls finish
+    /// under whatever policy they started with — they've already passed
+    /// the gate.
+    func updatePolicy(_ next: SessionSharingUploadPolicy) {
+        queue.async { [weak self] in self?.policy = next }
+    }
+
+    /// Entry point invoked by the controller for every `upload_ready`
+    /// frame received over /ws/agent.
+    func handle(_ envelope: SessionSharingUploadReadyEnvelope) {
+        queue.async { [weak self] in
+            self?.processOnQueue(envelope)
+        }
+    }
+
+    private func processOnQueue(_ envelope: SessionSharingUploadReadyEnvelope) {
+        if inflightUploadIDs.contains(envelope.uploadID) {
+            // Relay re-pushed the same upload_ready (e.g. after an agent
+            // reconnect drained the pending list). We already started
+            // pulling — drop the duplicate to avoid double-pulling.
+            return
+        }
+        if !policy.enabled {
+            reject(envelope, reason: .agentDisabled)
+            return
+        }
+        if envelope.size > policy.maxFileBytes {
+            reject(envelope, reason: .sizeExceedsFile)
+            return
+        }
+        let projected = bytesAcceptedTotal &+ envelope.size
+        if projected > policy.maxSessionBytes {
+            reject(envelope, reason: .sizeExceedsSession)
+            return
+        }
+        guard SessionSharingUploadNameSanitizer.sanitize(envelope.name) != nil else {
+            reject(envelope, reason: .sanitizeFailed)
+            return
+        }
+        inflightUploadIDs.insert(envelope.uploadID)
+        Task { [weak self] in
+            await self?.pullAndPersist(envelope)
+        }
+    }
+
+    private func pullAndPersist(_ envelope: SessionSharingUploadReadyEnvelope) async {
+        defer {
+            queue.async { [weak self] in
+                self?.inflightUploadIDs.remove(envelope.uploadID)
+            }
+        }
+
+        guard let sanitized = SessionSharingUploadNameSanitizer.sanitize(envelope.name) else {
+            reject(envelope, reason: .sanitizeFailed)
+            return
+        }
+
+        let request: URLRequest
+        do {
+            request = try SessionSharingUploadRequestBuilder.pullRequest(
+                relayAddress: relayAddress,
+                pullURL: envelope.pullURL,
+                pullToken: envelope.pullToken
+            )
+        } catch {
+            reject(envelope, reason: .pullFailed)
+            return
+        }
+
+        let data: Data
+        do {
+            let (received, response) = try await dependencies.transport.download(from: request)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                reject(envelope, reason: .pullFailed)
+                return
+            }
+            data = received
+        } catch {
+            reject(envelope, reason: .pullFailed)
+            return
+        }
+
+        if Int64(data.count) != envelope.size {
+            reject(envelope, reason: .pullFailed)
+            return
+        }
+        if let advertised = envelope.sha256 {
+            let observedHex = SHA256.hash(data: data)
+                .map { String(format: "%02x", $0) }.joined()
+            if observedHex != advertised.lowercased() {
+                reject(envelope, reason: .hashMismatch)
+                return
+            }
+        }
+
+        let sessionDir = uploadsRoot.appendingPathComponent(sessionID, isDirectory: true)
+        do {
+            try dependencies.fileManager.createDirectory(
+                at: sessionDir, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+        } catch {
+            reject(envelope, reason: .writeFailed)
+            return
+        }
+
+        guard let finalURL = SessionSharingUploadNameSanitizer.uniquePath(
+            for: sanitized, in: sessionDir
+        ) else {
+            reject(envelope, reason: .sanitizeFailed)
+            return
+        }
+
+        let partial = finalURL.appendingPathExtension("partial-\(envelope.uploadID)")
+        do {
+            try data.write(to: partial, options: [.atomic])
+            try dependencies.fileManager.moveItem(at: partial, to: finalURL)
+        } catch let error as NSError {
+            try? dependencies.fileManager.removeItem(at: partial)
+            let reason: SessionSharingUploadRejectionReason =
+                error.code == NSFileWriteOutOfSpaceError ? .diskFull : .writeFailed
+            reject(envelope, reason: reason)
+            return
+        }
+
+        queue.async { [weak self] in
+            self?.bytesAcceptedTotal &+= envelope.size
+        }
+
+        injectPath(
+            SessionSharingShellEscape.quoteForPasteWithTrailingSpace(finalURL.path)
+        )
+
+        let ack = SessionSharingUploadAckEnvelope.success(
+            uploadID: envelope.uploadID,
+            path: finalURL.path,
+            bytesWritten: envelope.size
+        )
+        sendAck(ack)
+        appendAudit(
+            uploadID: envelope.uploadID,
+            name: sanitized,
+            size: envelope.size,
+            path: finalURL.path,
+            ok: true,
+            reason: nil
+        )
+    }
+
+    private func reject(
+        _ envelope: SessionSharingUploadReadyEnvelope,
+        reason: SessionSharingUploadRejectionReason
+    ) {
+        sendAck(
+            .failure(uploadID: envelope.uploadID, reason: reason.rawValue)
+        )
+        appendAudit(
+            uploadID: envelope.uploadID,
+            name: envelope.name,
+            size: envelope.size,
+            path: nil,
+            ok: false,
+            reason: reason.rawValue
+        )
+    }
+
+    private func appendAudit(
+        uploadID: String,
+        name: String,
+        size: Int64,
+        path: String?,
+        ok: Bool,
+        reason: String?
+    ) {
+        guard let auditLogURL else { return }
+        var record: [String: Any] = [
+            "ts": ISO8601DateFormatter().string(from: dependencies.now()),
+            "session_id": sessionID,
+            "upload_id": uploadID,
+            "name": name,
+            "size": size,
+            "ok": ok,
+        ]
+        if let path { record["path"] = path }
+        if let reason { record["reason"] = reason }
+        guard let line = try? JSONSerialization.data(
+            withJSONObject: record, options: [.sortedKeys]
+        ) else { return }
+
+        let dir = auditLogURL.deletingLastPathComponent()
+        try? dependencies.fileManager.createDirectory(
+            at: dir, withIntermediateDirectories: true, attributes: nil
+        )
+        let payload = line + Data("\n".utf8)
+        if let handle = try? FileHandle(forWritingTo: auditLogURL) {
+            defer { try? handle.close() }
+            try? handle.seekToEnd()
+            try? handle.write(contentsOf: payload)
+        } else {
+            try? payload.write(to: auditLogURL, options: [.atomic])
+        }
+    }
+}
+
+enum SessionSharingUploadRequestBuilder {
+    static func pullRequest(
+        relayAddress: String,
+        pullURL: String,
+        pullToken: String
+    ) throws -> URLRequest {
+        guard pullURL.hasPrefix("/api/upload/"), pullURL.hasSuffix("/pull") else {
+            throw SessionSharingError.invalidResponse
+        }
+        let url = try SessionSharingRelayURLBuilder.url(
+            for: relayAddress,
+            scheme: "https",
+            path: pullURL,
+            queryItems: [URLQueryItem(name: "token", value: pullToken)]
+        )
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        return request
+    }
+}
+
+/// Resolves the on-disk locations used by the upload manager. Lives at
+/// module scope so SessionSharingTests can stub them with tmpdirs.
+enum SessionSharingUploadPaths {
+    static func defaultUploadsRoot(for fileManager: FileManager = .default) -> URL {
+        let appSupport = fileManager.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        ).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        return appSupport
+            .appendingPathComponent("com.mitchellh.ghostty", isDirectory: true)
+            .appendingPathComponent("uploads", isDirectory: true)
+    }
+
+    static func defaultAuditLogURL(for fileManager: FileManager = .default) -> URL {
+        let logs = fileManager.urls(for: .libraryDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library")
+        return logs
+            .appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("Ghostty", isDirectory: true)
+            .appendingPathComponent("uploads.log", isDirectory: false)
+    }
+}
+
+/// Installs/uninstalls the user-scoped LaunchAgent that prunes uploads
+/// older than N days. We use launchd rather than an in-app timer because
+/// (a) it runs even when ghostty is not running, (b) the cron-style
+/// schedule is the macOS-native way to express daily maintenance, and
+/// (c) it survives force-quits and crashes — neither of which would run
+/// an in-app `applicationWillTerminate` hook.
+///
+/// All operations are idempotent: calling `install` twice in a row is
+/// equivalent to calling it once. The implementation deliberately
+/// bootouts before bootstrapping so changing the retention period
+/// re-loads the agent with the new schedule.
+enum SessionSharingUploadAutoCleanInstaller {
+    static let label = "com.mitchellh.ghostty.uploads-prune"
+
+    /// Days values the share-sheet picker exposes. The installer
+    /// rejects anything outside this list so a corrupted persisted
+    /// config can never schedule a 0-day or 99999-day prune.
+    static let allowedDays: [Int] = [3, 7, 30]
+    static let defaultDays: Int = 7
+
+    static func plistURL(for fileManager: FileManager = .default) -> URL {
+        let home = URL(fileURLWithPath: NSHomeDirectory())
+        return home
+            .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+            .appendingPathComponent("\(label).plist")
+    }
+
+    /// Sync the on-disk LaunchAgent to match the requested policy.
+    /// Returns true on success. Failures are logged but not fatal — the
+    /// share sheet keeps the user's preference even if launchctl misfires
+    /// (e.g. on a sandboxed CI runner) so the next launch can retry.
+    @discardableResult
+    static func reconcile(enabled: Bool, days: Int) -> Bool {
+        if enabled {
+            let clamped = allowedDays.contains(days) ? days : defaultDays
+            return install(days: clamped)
+        } else {
+            return uninstall()
+        }
+    }
+
+    @discardableResult
+    static func install(days: Int) -> Bool {
+        let plistFile = plistURL()
+        do {
+            try FileManager.default.createDirectory(
+                at: plistFile.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try renderPlist(days: days).write(to: plistFile, atomically: true, encoding: .utf8)
+        } catch {
+            AppDelegate.logger.error(
+                "session-sharing: failed to write uploads-prune plist: \(error.localizedDescription)"
+            )
+            return false
+        }
+        // launchctl bootstrap errors out if the label is already loaded;
+        // bootout first so a days change re-loads with the new schedule.
+        _ = runLaunchctl(["bootout", "gui/\(getuid())/\(label)"], ignoreFailure: true)
+        let bootstrapStatus = runLaunchctl(
+            ["bootstrap", "gui/\(getuid())", plistFile.path])
+        return bootstrapStatus == 0
+    }
+
+    @discardableResult
+    static func uninstall() -> Bool {
+        _ = runLaunchctl(["bootout", "gui/\(getuid())/\(label)"], ignoreFailure: true)
+        let plistFile = plistURL()
+        try? FileManager.default.removeItem(at: plistFile)
+        return true
+    }
+
+    /// True if a plist with our label currently exists on disk. Note we
+    /// do *not* try to ask launchd whether it's loaded — `launchctl
+    /// print` would force the share sheet thread to fork and is fragile
+    /// across macOS versions. Disk presence is enough for the UI to
+    /// reconcile against persisted config.
+    static func isInstalled(_ fileManager: FileManager = .default) -> Bool {
+        fileManager.fileExists(atPath: plistURL().path)
+    }
+
+    /// Pure helper exposed for tests: build the plist text for a given
+    /// retention. The script body is intentionally a single one-liner so
+    /// nothing about it depends on which shell launchd ends up using.
+    static func renderPlist(days: Int) -> String {
+        // Both the uploads tree and the empty-dir cleanup run as the
+        // same one-line shell command. We use `find -mtime +Ndays -delete`
+        // for files first, then prune the now-empty per-session dirs.
+        let uploadsDir = SessionSharingUploadPaths.defaultUploadsRoot().path
+        // No user input flows into this script — `days` was already
+        // clamped to allowedDays — so there's nothing to escape that
+        // a normal POSIX path doesn't already cover.
+        let script = """
+            find \(quoteForShell(uploadsDir)) -type f -mtime +\(days) -delete; \
+            find \(quoteForShell(uploadsDir)) -mindepth 1 -type d -empty -delete
+            """
+        let logPath = "/tmp/ghostty-uploads-prune.log"
+        return """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>Label</key>
+                <string>\(label)</string>
+                <key>ProgramArguments</key>
+                <array>
+                    <string>/bin/sh</string>
+                    <string>-c</string>
+                    <string>\(escapeXML(script))</string>
+                </array>
+                <key>StartCalendarInterval</key>
+                <dict>
+                    <key>Hour</key><integer>3</integer>
+                    <key>Minute</key><integer>15</integer>
+                </dict>
+                <key>RunAtLoad</key>
+                <true/>
+                <key>StandardOutPath</key>
+                <string>\(escapeXML(logPath))</string>
+                <key>StandardErrorPath</key>
+                <string>\(escapeXML(logPath))</string>
+            </dict>
+            </plist>
+            """
+    }
+
+    private static func quoteForShell(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    private static func escapeXML(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    @discardableResult
+    private static func runLaunchctl(
+        _ args: [String], ignoreFailure: Bool = false
+    ) -> Int32 {
+        let proc = Process()
+        proc.launchPath = "/bin/launchctl"
+        proc.arguments = args
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = pipe
+        do {
+            try proc.run()
+        } catch {
+            if !ignoreFailure {
+                AppDelegate.logger.error(
+                    "session-sharing: launchctl \(args.joined(separator: " ")) failed to spawn: \(error.localizedDescription)"
+                )
+            }
+            return -1
+        }
+        proc.waitUntilExit()
+        let status = proc.terminationStatus
+        if status != 0 && !ignoreFailure {
+            // try? readToEnd() yields Data?? — outer nil = threw, inner
+            // nil = empty stream. Flatten then decode.
+            let raw: Data? = (try? pipe.fileHandleForReading.readToEnd()) ?? nil
+            let output = raw.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            AppDelegate.logger.warning(
+                "session-sharing: launchctl \(args.joined(separator: " ")) exit=\(status) output=\(output)"
+            )
+        }
+        return status
+    }
 }
 
 struct SessionSharingAppearancePayload: Codable, Equatable {

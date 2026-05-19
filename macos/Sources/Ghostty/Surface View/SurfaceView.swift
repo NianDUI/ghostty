@@ -128,6 +128,9 @@ extension Ghostty {
                                 state: surfaceView.sharingState,
                                 stopAction: {
                                     surfaceView.stopSessionSharing()
+                                },
+                                stopUploadsAction: {
+                                    surfaceView.stopAcceptingUploadsForSession()
                                 }
                             )
                         }
@@ -280,6 +283,7 @@ extension Ghostty {
         let statusText: String
         let state: Ghostty.OSSurfaceView.SharingState
         let stopAction: () -> Void
+        let stopUploadsAction: () -> Void
 
         private var tint: Color {
             switch state {
@@ -299,6 +303,7 @@ extension Ghostty {
         var body: some View {
             Menu {
                 if state.isActive {
+                    Button("停止接受上传", action: stopUploadsAction)
                     Button("停止共享", action: stopAction)
                 }
             } label: {

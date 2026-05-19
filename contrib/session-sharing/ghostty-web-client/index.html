@@ -245,8 +245,39 @@
         font-size: 13px;
       }
 
-      .meta .icon-button {
+      /* The meta row used to host a single trailing icon button (settings).
+         We now group buttons in a flex container so adding more (refresh,
+         …) keeps them tight against each other while still hugging the
+         right edge. */
+      .meta-actions {
         margin-left: auto;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      /* Spin animation while a manual refresh is in flight. We
+         deliberately rotate the glyph (an inline span around the
+         character) rather than the button itself — rotating a square
+         pill button looks jarring, whereas a circular ⟳ glyph spinning
+         in place reads cleanly. */
+      .icon-button-glyph {
+        display: inline-block;
+        line-height: 1;
+        transform-origin: 50% 50%;
+      }
+
+      .icon-button.is-spinning {
+        pointer-events: none;
+      }
+
+      .icon-button.is-spinning .icon-button-glyph {
+        animation: icon-spin 720ms linear infinite;
+      }
+
+      @keyframes icon-spin {
+        from { transform: rotate(0deg); }
+        to   { transform: rotate(360deg); }
       }
 
       .hidden {
@@ -315,6 +346,101 @@
         color: #ff9b8a;
       }
 
+      /* Upload UI. Desktop relies on drag+paste only — no on-screen
+         button at all. Mobile gets a dedicated pill button sitting on
+         the same row as #mobileToolbarToggle, pinned to the right edge.
+         The default rule below hides it everywhere; the mobile media
+         query later in this stylesheet flips it back on. */
+      .mobile-upload-launcher {
+        display: none;
+      }
+
+      .mobile-upload-launcher .upload-launcher-glyph {
+        font-size: 14px;
+        line-height: 1;
+      }
+
+      .upload-toast-stack {
+        position: absolute;
+        bottom: 16px;
+        left: 16px;
+        right: 16px;
+        z-index: 12;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        pointer-events: none;
+      }
+
+      .upload-toast {
+        align-self: flex-start;
+        max-width: min(90%, 520px);
+        padding: 8px 12px;
+        border-radius: 10px;
+        font-size: 12px;
+        line-height: 1.4;
+        color: #f5f0e8;
+        background: rgba(25, 21, 18, 0.9);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+        pointer-events: auto;
+        backdrop-filter: blur(12px);
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+
+      .upload-toast.success {
+        border-color: rgba(125, 227, 187, 0.5);
+        color: #d8f8e7;
+      }
+
+      .upload-toast.error {
+        border-color: rgba(255, 155, 138, 0.5);
+        color: #ffd1c8;
+      }
+
+      .upload-toast .upload-toast-progress {
+        display: block;
+        margin-top: 4px;
+        height: 3px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.16);
+        overflow: hidden;
+      }
+
+      .upload-toast .upload-toast-progress > span {
+        display: block;
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, #ffd37b, #7de3bb);
+        transition: width 120ms ease-out;
+      }
+
+      /* Drag-and-drop overlay. Layered above #terminal so it can show a
+         drop-target hint without interfering with normal terminal mouse
+         input — pointer-events flip on only while a drag is in flight. */
+      .terminal-host .upload-drop-overlay {
+        position: absolute;
+        inset: 0;
+        z-index: 9;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+        color: #f5f0e8;
+        background: rgba(20, 16, 14, 0.65);
+        border: 2px dashed rgba(255, 211, 123, 0.65);
+        border-radius: 14px;
+        backdrop-filter: blur(6px);
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 120ms ease-out;
+      }
+
+      .terminal-host.upload-dropping .upload-drop-overlay {
+        opacity: 1;
+      }
+
       .mobile-input {
         position: fixed;
         left: 0;
@@ -340,15 +466,20 @@
         .mobile-toolbar-toggle {
           position: fixed;
           left: 50%;
+          /* The pill sits straddling the toolbar's upper edge: -6px
+             lifts it so 6 px of pill height overlaps the toolbar
+             background. The matching top-padding on .mobile-toolbar
+             (10 px) keeps the ESC row clear of the embedded pill while
+             still leaving the pill visually "anchored" to the toolbar. */
           bottom: calc(
-            var(--mobile-toolbar-height) + var(--mobile-toolbar-offset) - 14px
+            var(--mobile-toolbar-height) + var(--mobile-toolbar-offset) - 12px
           );
           z-index: 30;
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          width: 52px;
-          height: 28px;
+          width: 44px;
+          height: 22px;
           margin: 0;
           transform: translateX(-50%);
           border-radius: 999px;
@@ -361,7 +492,7 @@
 
         .mobile-toolbar-toggle::before {
           content: "⌃";
-          font-size: 18px;
+          font-size: 15px;
           line-height: 1;
           transform: rotate(180deg);
           transition: transform 160ms ease;
@@ -369,6 +500,42 @@
 
         .mobile-toolbar-toggle.collapsed::before {
           transform: rotate(0deg);
+        }
+
+        /* Same exact dimensions as the toolbar toggle so the two read
+           as sibling pills — toggle pinned center, upload pinned right.
+           Icon-only (no text) so on a 360-pt phone the upload pill never
+           bleeds across center and clips the toggle. The accessible name
+           lives on aria-label / title. */
+        .mobile-upload-launcher {
+          position: fixed;
+          right: 14px;
+          /* Same vertical offset as .mobile-toolbar-toggle so the two
+             pills stay on the same baseline. */
+          bottom: calc(
+            var(--mobile-toolbar-height) + var(--mobile-toolbar-offset) - 12px
+          );
+          z-index: 30;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 44px;
+          height: 22px;
+          padding: 0;
+          margin: 0;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          background: rgba(36, 68, 76, 0.92);
+          color: #f5f0e8;
+          font-size: 14px;
+          line-height: 1;
+          box-shadow: 0 12px 28px rgba(0, 0, 0, 0.26);
+          backdrop-filter: blur(12px);
+        }
+
+        .mobile-upload-launcher[disabled] {
+          opacity: 0.45;
+          pointer-events: none;
         }
 
         .mobile-toolbar {
@@ -379,8 +546,20 @@
           z-index: 20;
           display: grid;
           grid-template-columns: repeat(8, minmax(0, 1fr));
-          gap: 8px;
-          padding: 12px;
+          /* Tight rows for a low overall toolbar. Column gap stays
+             tight because keys are short. Row gap is the smallest
+             value where ESC and CTRL still read as two distinct rows
+             rather than one wrapped line. */
+          row-gap: 4px;
+          column-gap: 4px;
+          /* Symmetric vertical padding: ESC sits 14 px below the top
+             edge, CTRL sits 14 px above the bottom edge. The pills
+             embed 12 px into that top padding (see -12 px in their
+             `bottom` calc), so the pill's centre line sits *inside*
+             the toolbar (1 px below the top edge) instead of floating
+             above it; the first row still keeps a 2 px clearance
+             below the pill. */
+          padding: 14px 10px;
           background: rgba(34, 77, 88, 0.96);
           border-top: 1px solid rgba(255, 255, 255, 0.08);
           box-shadow: 0 -14px 36px rgba(0, 0, 0, 0.28);
@@ -414,22 +593,35 @@
           );
         }
 
+        /* Borderless text-only keys (matches the iOS-keyboard-accessory
+           look in the reference screenshot). The toolbar background
+           provides all the surrounding chrome; each "button" is just a
+           tap target with text inside. */
         .mobile-tool {
           margin: 0;
-          min-height: 34px;
-          padding: 6px 4px;
-          border-radius: 10px;
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          background: rgba(255, 255, 255, 0.06);
+          min-height: 20px;
+          padding: 0;
+          border: 0;
+          border-radius: 6px;
+          background: transparent;
           color: #f5f0e8;
-          font-size: 11px;
-          letter-spacing: 0.03em;
+          font-size: 14px;
+          font-weight: 500;
+          letter-spacing: 0.02em;
+          line-height: 1;
+        }
+
+        .mobile-tool:active {
+          /* Touch feedback now lives entirely in :active (no resting
+             border/background) — a subtle highlight on press tells the
+             user the key registered, without competing visually with
+             the borderless idle state. */
+          background: rgba(255, 255, 255, 0.12);
         }
 
         .mobile-tool.mod-active {
-          background: rgba(125, 227, 187, 0.22);
-          border-color: rgba(125, 227, 187, 0.48);
           color: #baf5dd;
+          background: rgba(125, 227, 187, 0.18);
         }
 
         .terminal-page.desktop-width-mode .terminal-host {
@@ -465,15 +657,26 @@
             <div class="meta">
               <strong>会话列表</strong>
               <span id="sessionMeta">未加载</span>
-              <button
-                id="openSettings"
-                class="icon-button"
-                type="button"
-                aria-label="打开设置"
-                title="设置"
-              >
-                ⚙
-              </button>
+              <div class="meta-actions">
+                <button
+                  id="refreshSessions"
+                  class="icon-button"
+                  type="button"
+                  aria-label="刷新会话列表"
+                  title="刷新"
+                >
+                  <span class="icon-button-glyph" aria-hidden="true">⟳</span>
+                </button>
+                <button
+                  id="openSettings"
+                  class="icon-button"
+                  type="button"
+                  aria-label="打开设置"
+                  title="设置"
+                >
+                  ⚙
+                </button>
+              </div>
             </div>
             <div id="sessionList" class="session-list"></div>
           </div>
@@ -538,6 +741,17 @@
         <div class="panel terminal-wrap">
           <div class="terminal-host">
             <div id="terminalStatus" class="terminal-status hidden">连接中</div>
+            <input
+              id="uploadFileInput"
+              type="file"
+              multiple
+              hidden
+              aria-hidden="true"
+            />
+            <div id="uploadToastStack" class="upload-toast-stack"></div>
+            <div id="uploadDropOverlay" class="upload-drop-overlay">
+              松开以上传到 Mac 终端
+            </div>
             <div id="terminal" aria-label="Ghostty shared terminal"></div>
           </div>
         </div>
@@ -556,6 +770,15 @@
           type="button"
           aria-label="显示或隐藏快捷按钮"
         ></button>
+        <button
+          id="mobileUploadLauncher"
+          class="mobile-upload-launcher hidden"
+          type="button"
+          aria-label="上传文件到 Mac 终端"
+          title="上传文件到 Mac 终端"
+        >
+          <span class="upload-launcher-glyph" aria-hidden="true">⤴</span>
+        </button>
         <div
           id="mobileToolbar"
           class="mobile-toolbar hidden"

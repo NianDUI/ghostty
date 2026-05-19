@@ -26,6 +26,26 @@ DEFAULT_MAX_FRAME_BYTES = 256 * 1024
 DEFAULT_RATE_LIMIT_REQUESTS = 120
 DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60.0
 
+# File upload defaults (see docs/plan/web-upload.md).
+DEFAULT_UPLOAD_MAX_BYTES = 100 * 1024 * 1024  # 100 MiB per file
+DEFAULT_UPLOAD_SESSION_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB / session
+DEFAULT_UPLOAD_MAX_PENDING = 4  # concurrent in-flight uploads per session
+DEFAULT_UPLOAD_TTL = 600.0  # seconds an upload can wait for agent pull
+DEFAULT_UPLOAD_INIT_BODY_BYTES = 4096
+DEFAULT_UPLOAD_CHUNK_BYTES = 1 * 1024 * 1024  # streaming chunk size (PUT)
+DEFAULT_UPLOAD_PATCH_CHUNK_BYTES = 5 * 1024 * 1024  # recommended PATCH chunk
+# Hard cap on a single PATCH body. Large enough to let a sensible client
+# upload in big chunks (faster on high-RTT links) but bounded so a hostile
+# client can't pin the relay's memory with one massive PATCH. Keep in sync
+# with the web client's chunk picker in upload.js.
+DEFAULT_UPLOAD_PATCH_MAX_BYTES = 16 * 1024 * 1024
+
+# Sentinels rejected anywhere in user-supplied filenames. Anything else is
+# kept verbatim so non-ASCII (CJK / accents) filenames survive the round
+# trip; the macOS agent does its own sanitize pass before touching disk.
+_UPLOAD_FORBIDDEN_NAME_CHARS = frozenset({"/", "\\", "\x00", "\r", "\n"})
+_UPLOAD_NAME_MAX_LENGTH = 200
+
 
 @dataclasses.dataclass(frozen=True)
 class RelayConfig:
@@ -49,6 +69,11 @@ class RelayConfig:
     client_send_buffer_bytes: int = 1024 * 1024
     admin_host: str = "127.0.0.1"
     admin_port: int = 0
+    upload_max_bytes: int = DEFAULT_UPLOAD_MAX_BYTES
+    upload_session_max_bytes: int = DEFAULT_UPLOAD_SESSION_MAX_BYTES
+    upload_max_pending: int = DEFAULT_UPLOAD_MAX_PENDING
+    upload_ttl: float = DEFAULT_UPLOAD_TTL
+    upload_dir: pathlib.Path = pathlib.Path("/tmp/ghostty-uploads")
 
 
 @dataclasses.dataclass
@@ -241,6 +266,45 @@ class ClientChannel:
 
 
 @dataclasses.dataclass
+class PendingUpload:
+    """A file the browser has uploaded to the relay but the agent has not
+    yet pulled. Lives in memory + a single .partial / final file on disk.
+
+    The relay only ever holds one copy per upload_id. After a successful
+    pull the file and dict entry are removed; the cumulative
+    `session.uploaded_bytes_total` counter is *not* decremented — it
+    counts lifetime bytes for quota enforcement.
+    """
+    upload_id: str
+    session_id: str
+    name: str
+    size: int
+    sha256: Optional[str]
+    pull_token: str
+    path: pathlib.Path
+    created_at: float
+    expires_at: float
+    received: int = 0
+    sha256_observed: Optional[str] = None
+    delivered: bool = False  # True once agent has pulled, prior to cleanup
+    uploading: bool = False  # True between PUT/PATCH start and finish
+    # Rolling sha256 state. None until the first byte lands. PATCH-based
+    # uploads update this on every chunk so we don't have to re-read the
+    # final file from disk just to verify. PUT uploads still compute hash
+    # inline but write through the same field for parity.
+    _hasher: object = None  # hashlib._Hash; typed as object to keep
+    # dataclass auto-generated __eq__ from comparing hasher objects.
+
+    def hasher(self):
+        """Lazily create the rolling sha256 hasher. Idempotent — repeated
+        calls return the same instance so PATCH chunks keep accumulating
+        into a single digest across multiple requests."""
+        if self._hasher is None:
+            self._hasher = hashlib.sha256()
+        return self._hasher
+
+
+@dataclasses.dataclass
 class Session:
     session_id: str
     name: str
@@ -254,6 +318,12 @@ class Session:
     clients: dict[asyncio.StreamWriter, ClientChannel] = dataclasses.field(default_factory=dict)
     backlog: list[tuple[int, bytes]] = dataclasses.field(default_factory=list)
     backlog_size: int = 0
+    pending_uploads: dict[str, PendingUpload] = dataclasses.field(default_factory=dict)
+    uploaded_bytes_total: int = 0
+    # Uploads that completed PUT before the agent reconnected. We drain
+    # this list right after the agent's WS handshake so files don't get
+    # stuck if the agent flapped while a transfer was finishing.
+    pending_ready_notifications: list[str] = dataclasses.field(default_factory=list)
 
     def append_backlog(self, opcode: int, payload: bytes) -> None:
         if opcode not in (0x1, 0x2) or not payload:
@@ -385,6 +455,14 @@ class RelayState:
             "expired_session_rejected_total": 0,
             "rate_limited_total": 0,
             "slow_consumer_drop_total": 0,
+            "upload_init_total": 0,
+            "upload_init_rejected_total": 0,
+            "upload_put_total": 0,
+            "upload_put_rejected_total": 0,
+            "upload_pull_total": 0,
+            "upload_pull_rejected_total": 0,
+            "upload_expired_total": 0,
+            "upload_bytes_total": 0,
         }
 
     def is_valid_user_token(self, token: str) -> bool:
@@ -424,16 +502,37 @@ class RelayState:
     async def cleanup_loop(self) -> None:
         while True:
             await asyncio.sleep(5)
-            cutoff = time.time() - self.offline_ttl
-            rate_limit_cutoff = time.time() - self.config.rate_limit_window_seconds
+            now = time.time()
+            cutoff = now - self.offline_ttl
+            rate_limit_cutoff = now - self.config.rate_limit_window_seconds
             async with self.lock:
+                # Drop expired uploads before dropping their owning sessions
+                # so we always remove the temp file even if the session is
+                # also going away in the same tick.
+                for session in self.sessions.values():
+                    expired_uploads = [
+                        upload
+                        for upload in session.pending_uploads.values()
+                        if upload.expires_at < now
+                    ]
+                    for upload in expired_uploads:
+                        self.increment_metric("upload_expired_total")
+                        _remove_upload(session, upload, reason="ttl_expired")
+                        log_event(
+                            "upload_expired",
+                            session_id=session.session_id,
+                            upload_id=upload.upload_id,
+                        )
                 expired = [
                     session_id
                     for session_id, session in self.sessions.items()
                     if not session.online and session.last_seen_at < cutoff
                 ]
                 for session_id in expired:
-                    self.sessions.pop(session_id, None)
+                    session = self.sessions.pop(session_id, None)
+                    if session is not None:
+                        for upload in list(session.pending_uploads.values()):
+                            _remove_upload(session, upload, reason="session_expired")
                     log_event("session_expired", session_id=session_id)
                 stale_rate_keys = [
                     key
@@ -459,11 +558,15 @@ class RelayState:
         return False, 0
 
 
-async def read_http_request(
+async def read_http_head(
     reader: asyncio.StreamReader,
-    *,
-    max_body_bytes: int,
-) -> tuple[str, str, dict[str, str], bytes]:
+) -> tuple[str, str, dict[str, str]]:
+    """Read the request line and headers only.
+
+    Body bytes remain on the wire for the caller to consume. This split lets
+    routes that need streaming bodies (uploads) read incrementally instead of
+    inheriting the legacy `max_body_bytes` cap.
+    """
     header_blob = await reader.readuntil(b"\r\n\r\n")
     header_text = header_blob.decode("utf-8", "replace")
     lines = header_text.split("\r\n")
@@ -475,11 +578,30 @@ async def read_http_request(
             continue
         key, value = line.split(":", 1)
         headers[key.strip().lower()] = value.strip()
+    return method, target, headers
 
+
+async def read_http_body(
+    reader: asyncio.StreamReader,
+    headers: dict[str, str],
+    *,
+    max_body_bytes: int,
+) -> bytes:
     length = int(headers.get("content-length", "0"))
     if length > max_body_bytes:
         raise ValueError("request body too large")
-    body = await reader.readexactly(length) if length else b""
+    return await reader.readexactly(length) if length else b""
+
+
+async def read_http_request(
+    reader: asyncio.StreamReader,
+    *,
+    max_body_bytes: int,
+) -> tuple[str, str, dict[str, str], bytes]:
+    """Compatibility wrapper kept for callers that want both head and body
+    in a single shot. Upload routes deliberately use the split form."""
+    method, target, headers = await read_http_head(reader)
+    body = await read_http_body(reader, headers, max_body_bytes=max_body_bytes)
     return method, target, headers, body
 
 
@@ -495,9 +617,14 @@ async def send_response(
         201: "Created",
         400: "Bad Request",
         401: "Unauthorized",
-        429: "Too Many Requests",
+        403: "Forbidden",
         404: "Not Found",
         405: "Method Not Allowed",
+        409: "Conflict",
+        410: "Gone",
+        413: "Payload Too Large",
+        422: "Unprocessable Entity",
+        429: "Too Many Requests",
         500: "Internal Server Error",
         503: "Service Unavailable",
     }.get(status, "OK")
@@ -759,6 +886,702 @@ async def handle_sessions(
     await send_response(writer, 200, json_bytes(sessions))
 
 
+# ---------------------------------------------------------------------------
+# File upload (browser → relay → mac agent). See docs/plan/web-upload.md.
+# ---------------------------------------------------------------------------
+
+
+def _sanitize_upload_name(raw: object) -> Optional[str]:
+    """Light sanitize for filenames *as seen by the relay*. The agent does a
+    stricter pass before touching disk; this stage just rejects obvious junk
+    so we never write a path-separator-bearing filename into the relay's
+    own staging directory."""
+    if not isinstance(raw, str):
+        return None
+    trimmed = raw.strip()
+    if not trimmed or len(trimmed.encode("utf-8")) > _UPLOAD_NAME_MAX_LENGTH:
+        return None
+    if any(ch in _UPLOAD_FORBIDDEN_NAME_CHARS for ch in trimmed):
+        return None
+    if any(ord(ch) < 0x20 for ch in trimmed):
+        return None
+    if trimmed in {".", ".."}:
+        return None
+    return trimmed
+
+
+def _staging_path(state: RelayState, upload_id: str) -> pathlib.Path:
+    state.config.upload_dir.mkdir(parents=True, exist_ok=True)
+    return state.config.upload_dir / f"{upload_id}.bin"
+
+
+def _upload_ready_frame(upload: PendingUpload) -> bytes:
+    return json.dumps(
+        {
+            "type": "upload_ready",
+            "upload_id": upload.upload_id,
+            "name": upload.name,
+            "size": upload.size,
+            "sha256": upload.sha256,
+            "pull_token": upload.pull_token,
+            "pull_url": f"/api/upload/{upload.upload_id}/pull",
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def _queue_pending_notification(session: Session, upload_id: str) -> None:
+    if upload_id not in session.pending_ready_notifications:
+        session.pending_ready_notifications.append(upload_id)
+
+
+async def _push_upload_ready_unlocked(
+    session: Session, upload: PendingUpload
+) -> bool:
+    """Send `upload_ready` to the agent over /ws/agent.
+
+    Must be called *outside* `state.lock`: ws_send_frame awaits real IO
+    and we must not hold the global lock while doing that. The caller is
+    expected to do a lock-protected lookup of `(session, upload)` and
+    invoke this on the resolved objects.
+
+    On send failure the upload_id is queued for replay on next agent
+    connect.
+    """
+    writer = session.agent_writer
+    if writer is None:
+        _queue_pending_notification(session, upload.upload_id)
+        return False
+    try:
+        await ws_send_frame(writer, 0x1, _upload_ready_frame(upload))
+        return True
+    except Exception:
+        _queue_pending_notification(session, upload.upload_id)
+        return False
+
+
+async def _drain_pending_upload_ready(
+    state: RelayState, session: Session
+) -> None:
+    """Send every upload_ready that landed while the agent was offline.
+
+    The lock is taken twice: once to snapshot the pending list (under lock),
+    once per send (no lock held). New notifications that arrive between
+    snapshot and send are picked up by the next drain cycle.
+    """
+    async with state.lock:
+        pending_ids = list(session.pending_ready_notifications)
+        session.pending_ready_notifications.clear()
+        ready: list[PendingUpload] = []
+        for upload_id in pending_ids:
+            upload = session.pending_uploads.get(upload_id)
+            if not upload or upload.delivered or upload.received != upload.size:
+                continue
+            ready.append(upload)
+    for upload in ready:
+        await _push_upload_ready_unlocked(session, upload)
+
+
+def _remove_upload(session: Session, upload: PendingUpload, *, reason: str) -> None:
+    session.pending_uploads.pop(upload.upload_id, None)
+    try:
+        if upload.path.exists():
+            upload.path.unlink()
+    except OSError as exc:
+        log_event(
+            "upload_cleanup_failed",
+            session_id=session.session_id,
+            upload_id=upload.upload_id,
+            reason=reason,
+            error=str(exc),
+        )
+
+
+async def handle_upload_init(
+    state: RelayState,
+    writer: asyncio.StreamWriter,
+    method: str,
+    body: bytes,
+    headers: dict[str, str],
+) -> None:
+    if method != "POST":
+        await send_response(writer, 405, json_bytes({"error": "method not allowed"}))
+        return
+    state.increment_metric("upload_init_total")
+
+    token = bearer_token(headers)
+    if not token:
+        state.increment_metric("upload_init_rejected_total")
+        state.increment_metric("auth_rejected_total")
+        await send_response(writer, 401, json_bytes({"error": "missing bearer token"}))
+        return
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception:
+        state.increment_metric("upload_init_rejected_total")
+        await send_response(writer, 400, json_bytes({"error": "invalid json"}))
+        return
+
+    session_id = payload.get("session_id") if isinstance(payload, dict) else None
+    size = payload.get("size") if isinstance(payload, dict) else None
+    sha256_raw = payload.get("sha256") if isinstance(payload, dict) else None
+    name = _sanitize_upload_name(payload.get("name") if isinstance(payload, dict) else None)
+
+    if not isinstance(session_id, str) or not name:
+        state.increment_metric("upload_init_rejected_total")
+        await send_response(writer, 400, json_bytes({"error": "invalid payload"}))
+        return
+    if not isinstance(size, int) or size <= 0:
+        state.increment_metric("upload_init_rejected_total")
+        await send_response(writer, 400, json_bytes({"error": "invalid_size"}))
+        return
+    if size > state.config.upload_max_bytes:
+        state.increment_metric("upload_init_rejected_total")
+        await send_response(writer, 413, json_bytes({"error": "size_exceeds_limit"}))
+        return
+
+    sha256: Optional[str] = None
+    if sha256_raw is not None:
+        if not isinstance(sha256_raw, str) or len(sha256_raw) != 64 or any(
+            ch not in "0123456789abcdef" for ch in sha256_raw.lower()
+        ):
+            state.increment_metric("upload_init_rejected_total")
+            await send_response(writer, 400, json_bytes({"error": "invalid_sha256"}))
+            return
+        sha256 = sha256_raw.lower()
+
+    now = time.time()
+    async with state.lock:
+        session = state.sessions.get(session_id)
+        if not session or session.user_token != token:
+            state.increment_metric("upload_init_rejected_total")
+            await send_response(writer, 404, json_bytes({"error": "session_not_found"}))
+            return
+        if session.expires_at <= now:
+            state.increment_metric("upload_init_rejected_total")
+            state.increment_metric("expired_session_rejected_total")
+            await send_response(writer, 401, json_bytes({"error": "expired session"}))
+            return
+        active_pending = sum(
+            1 for u in session.pending_uploads.values() if not u.delivered
+        )
+        if active_pending >= state.config.upload_max_pending:
+            state.increment_metric("upload_init_rejected_total")
+            await send_response(
+                writer, 429, json_bytes({"error": "too_many_pending"})
+            )
+            return
+        projected = session.uploaded_bytes_total + size
+        if projected > state.config.upload_session_max_bytes:
+            state.increment_metric("upload_init_rejected_total")
+            await send_response(
+                writer, 413, json_bytes({"error": "size_exceeds_session_limit"})
+            )
+            return
+
+        upload_id = secrets.token_urlsafe(16)
+        pull_token = secrets.token_urlsafe(24)
+        upload = PendingUpload(
+            upload_id=upload_id,
+            session_id=session_id,
+            name=name,
+            size=size,
+            sha256=sha256,
+            pull_token=pull_token,
+            path=_staging_path(state, upload_id),
+            created_at=now,
+            expires_at=now + state.config.upload_ttl,
+        )
+        session.pending_uploads[upload_id] = upload
+
+    log_event(
+        "upload_init",
+        session_id=session_id,
+        upload_id=upload_id,
+        name=name,
+        size=size,
+        sha256=sha256 or "",
+    )
+    await send_response(
+        writer,
+        200,
+        json_bytes(
+            {
+                "upload_id": upload_id,
+                "upload_url": f"/api/upload/{upload_id}",
+                "expires_at": int(upload.expires_at),
+                # Recommended chunk size for PATCH-based resumable
+                # upload. The web client may use a smaller value (e.g.
+                # to keep per-chunk progress events frequent) but
+                # should not exceed `patch_max_bytes` per chunk.
+                "chunk_size": DEFAULT_UPLOAD_PATCH_CHUNK_BYTES,
+                "patch_max_bytes": DEFAULT_UPLOAD_PATCH_MAX_BYTES,
+            }
+        ),
+    )
+
+
+async def _finalize_completed_upload(
+    state: RelayState,
+    owning_session: Session,
+    upload: PendingUpload,
+) -> Optional[str]:
+    """Common tail for PUT (single-shot) and the *last* PATCH chunk: turn
+    the rolling sha256 into a digest, verify against the advertised one
+    (if any), bump session counters, clear the in-progress flag, and
+    notify the agent over /ws/agent.
+
+    Returns `None` on success or one of:
+      - "hash_mismatch": observed digest disagrees with init.sha256;
+        the upload entry has been removed and the temp file deleted.
+    """
+    digest = upload.hasher().hexdigest()
+    upload.sha256_observed = digest
+
+    if upload.sha256 is not None and digest != upload.sha256:
+        async with state.lock:
+            _remove_upload(owning_session, upload, reason="hash_mismatch")
+        return "hash_mismatch"
+
+    async with state.lock:
+        owning_session.uploaded_bytes_total += upload.size
+        state.increment_metric("upload_bytes_total", upload.size)
+        upload.uploading = False
+    # Push the upload_ready frame *outside* the lock so the WS write does
+    # not block other handlers. Failures requeue automatically.
+    await _push_upload_ready_unlocked(owning_session, upload)
+    return None
+
+
+async def handle_upload_put(
+    state: RelayState,
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    headers: dict[str, str],
+    upload_id: str,
+) -> None:
+    """Stream the request body to disk, verify, and notify the agent.
+
+    Body bytes are not pre-loaded by handle_connection — this function owns
+    the wire from after the header until the response is written."""
+    state.increment_metric("upload_put_total")
+
+    token = bearer_token(headers)
+    if not token:
+        state.increment_metric("upload_put_rejected_total")
+        state.increment_metric("auth_rejected_total")
+        await send_response(writer, 401, json_bytes({"error": "missing bearer token"}))
+        return
+
+    try:
+        declared = int(headers.get("content-length", "0"))
+    except ValueError:
+        state.increment_metric("upload_put_rejected_total")
+        await send_response(writer, 400, json_bytes({"error": "invalid_content_length"}))
+        return
+
+    async with state.lock:
+        upload: Optional[PendingUpload] = None
+        owning_session: Optional[Session] = None
+        for session in state.sessions.values():
+            candidate = session.pending_uploads.get(upload_id)
+            if candidate is not None:
+                upload = candidate
+                owning_session = session
+                break
+        if upload is None or owning_session is None:
+            state.increment_metric("upload_put_rejected_total")
+            await send_response(writer, 404, json_bytes({"error": "not_found"}))
+            return
+        if owning_session.user_token != token:
+            state.increment_metric("upload_put_rejected_total")
+            state.increment_metric("auth_rejected_total")
+            await send_response(writer, 401, json_bytes({"error": "invalid user token"}))
+            return
+        if upload.uploading or upload.received > 0 or upload.delivered:
+            state.increment_metric("upload_put_rejected_total")
+            await send_response(writer, 409, json_bytes({"error": "already_uploaded"}))
+            return
+        if declared != upload.size:
+            state.increment_metric("upload_put_rejected_total")
+            await send_response(writer, 409, json_bytes({"error": "size_mismatch"}))
+            return
+        if upload.size > state.config.upload_max_bytes:
+            state.increment_metric("upload_put_rejected_total")
+            await send_response(writer, 413, json_bytes({"error": "size_exceeds_limit"}))
+            return
+        # Mark as in-progress *inside* the lock so a racing second PUT for
+        # the same upload_id sees `uploading=True` and short-circuits.
+        upload.uploading = True
+
+    hasher = upload.hasher()
+    remaining = declared
+    chunk = DEFAULT_UPLOAD_CHUNK_BYTES
+    try:
+        upload.path.parent.mkdir(parents=True, exist_ok=True)
+        with open(upload.path, "wb") as fp:
+            while remaining > 0:
+                read_size = chunk if remaining > chunk else remaining
+                buf = await reader.readexactly(read_size)
+                fp.write(buf)
+                hasher.update(buf)
+                remaining -= read_size
+                upload.received += read_size
+    except (asyncio.IncompleteReadError, ConnectionResetError, OSError) as exc:
+        state.increment_metric("upload_put_rejected_total")
+        async with state.lock:
+            _remove_upload(owning_session, upload, reason="put_aborted")
+        log_event(
+            "upload_put_aborted",
+            session_id=owning_session.session_id,
+            upload_id=upload_id,
+            error=str(exc),
+        )
+        await send_response(writer, 400, json_bytes({"error": "incomplete_body"}))
+        return
+
+    failure = await _finalize_completed_upload(state, owning_session, upload)
+    if failure == "hash_mismatch":
+        state.increment_metric("upload_put_rejected_total")
+        await send_response(writer, 422, json_bytes({"error": "hash_mismatch"}))
+        return
+
+    log_event(
+        "upload_put",
+        session_id=owning_session.session_id,
+        upload_id=upload_id,
+        size=upload.size,
+        sha256=upload.sha256_observed or "",
+    )
+
+    await send_response(
+        writer,
+        200,
+        json_bytes(
+            {
+                "upload_id": upload_id,
+                "received": upload.received,
+                "sha256": upload.sha256_observed,
+            }
+        ),
+    )
+
+
+async def handle_upload_head(
+    state: RelayState,
+    writer: asyncio.StreamWriter,
+    headers: dict[str, str],
+    upload_id: str,
+) -> None:
+    """Tus-style HEAD: report the byte count the client should resume from.
+
+    Used by a chunked client that lost its connection mid-PATCH and wants
+    to confirm how much the relay actually persisted before sending the
+    next slice.
+    """
+    token = bearer_token(headers)
+    if not token:
+        state.increment_metric("auth_rejected_total")
+        await send_response(writer, 401, json_bytes({"error": "missing bearer token"}))
+        return
+    async with state.lock:
+        upload: Optional[PendingUpload] = None
+        owning_session: Optional[Session] = None
+        for session in state.sessions.values():
+            candidate = session.pending_uploads.get(upload_id)
+            if candidate is not None:
+                upload = candidate
+                owning_session = session
+                break
+        if upload is None or owning_session is None:
+            await send_response(writer, 404, json_bytes({"error": "not_found"}))
+            return
+        if owning_session.user_token != token:
+            state.increment_metric("auth_rejected_total")
+            await send_response(writer, 401, json_bytes({"error": "invalid user token"}))
+            return
+        offset = upload.received
+        total = upload.size
+    await send_response(
+        writer,
+        200,
+        b"",
+        content_type="application/octet-stream",
+        extra_headers={
+            "Upload-Offset": str(offset),
+            "Upload-Length": str(total),
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+async def handle_upload_patch(
+    state: RelayState,
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    headers: dict[str, str],
+    upload_id: str,
+) -> None:
+    """Append a single chunk to an in-flight upload.
+
+    Contract (a deliberately small subset of tus 1.0.0):
+      Required headers:
+        Authorization: Bearer <user_token>
+        Content-Type:  application/offset+octet-stream
+        Content-Length: <bytes-in-this-chunk>
+        Upload-Offset: <bytes-already-on-server>
+      Successful response:
+        204 No Content + Upload-Offset: <new offset>
+        If the offset now equals Upload-Length the relay also finalises
+        the upload (sha verification + upload_ready frame) and the
+        response body switches to the same JSON shape PUT returns so
+        callers don't have to special-case the last chunk.
+    """
+    state.increment_metric("upload_put_total")  # share PUT counter family
+
+    token = bearer_token(headers)
+    if not token:
+        state.increment_metric("upload_put_rejected_total")
+        state.increment_metric("auth_rejected_total")
+        await send_response(writer, 401, json_bytes({"error": "missing bearer token"}))
+        return
+
+    content_type = headers.get("content-type", "").lower().split(";", 1)[0].strip()
+    if content_type and content_type != "application/offset+octet-stream":
+        state.increment_metric("upload_put_rejected_total")
+        await send_response(
+            writer, 415, json_bytes({"error": "invalid_content_type"}))
+        return
+
+    try:
+        declared = int(headers.get("content-length", "0"))
+    except ValueError:
+        state.increment_metric("upload_put_rejected_total")
+        await send_response(writer, 400, json_bytes({"error": "invalid_content_length"}))
+        return
+    if declared <= 0:
+        state.increment_metric("upload_put_rejected_total")
+        await send_response(writer, 400, json_bytes({"error": "empty_chunk"}))
+        return
+    if declared > DEFAULT_UPLOAD_PATCH_MAX_BYTES:
+        state.increment_metric("upload_put_rejected_total")
+        await send_response(writer, 413, json_bytes({"error": "chunk_too_large"}))
+        return
+
+    try:
+        client_offset = int(headers.get("upload-offset", ""))
+    except ValueError:
+        state.increment_metric("upload_put_rejected_total")
+        await send_response(writer, 400, json_bytes({"error": "invalid_upload_offset"}))
+        return
+
+    async with state.lock:
+        upload: Optional[PendingUpload] = None
+        owning_session: Optional[Session] = None
+        for session in state.sessions.values():
+            candidate = session.pending_uploads.get(upload_id)
+            if candidate is not None:
+                upload = candidate
+                owning_session = session
+                break
+        if upload is None or owning_session is None:
+            state.increment_metric("upload_put_rejected_total")
+            await send_response(writer, 404, json_bytes({"error": "not_found"}))
+            return
+        if owning_session.user_token != token:
+            state.increment_metric("upload_put_rejected_total")
+            state.increment_metric("auth_rejected_total")
+            await send_response(writer, 401, json_bytes({"error": "invalid user token"}))
+            return
+        if upload.delivered:
+            state.increment_metric("upload_put_rejected_total")
+            await send_response(writer, 409, json_bytes({"error": "already_delivered"}))
+            return
+        if upload.uploading:
+            # Another PATCH for the same upload is in flight. Tus says
+            # this is undefined behaviour and a 409 is the cleanest
+            # signal — a real tus client serialises PATCHes per upload.
+            state.increment_metric("upload_put_rejected_total")
+            await send_response(writer, 409, json_bytes({"error": "concurrent_patch"}))
+            return
+        if client_offset != upload.received:
+            state.increment_metric("upload_put_rejected_total")
+            await send_response(
+                writer, 409, json_bytes({"error": "offset_mismatch"}),
+                extra_headers={"Upload-Offset": str(upload.received)},
+            )
+            return
+        if upload.received + declared > upload.size:
+            state.increment_metric("upload_put_rejected_total")
+            await send_response(
+                writer, 413, json_bytes({"error": "overshoot"}))
+            return
+        upload.uploading = True
+
+    hasher = upload.hasher()
+    remaining = declared
+    chunk = DEFAULT_UPLOAD_CHUNK_BYTES
+    try:
+        upload.path.parent.mkdir(parents=True, exist_ok=True)
+        # First chunk creates the file; subsequent chunks append.
+        mode = "wb" if upload.received == 0 else "ab"
+        with open(upload.path, mode) as fp:
+            while remaining > 0:
+                read_size = chunk if remaining > chunk else remaining
+                buf = await reader.readexactly(read_size)
+                fp.write(buf)
+                hasher.update(buf)
+                remaining -= read_size
+                upload.received += read_size
+    except (asyncio.IncompleteReadError, ConnectionResetError, OSError) as exc:
+        state.increment_metric("upload_put_rejected_total")
+        async with state.lock:
+            # On a partial chunk we keep the upload pending so the client
+            # can resume: don't remove the entry, just clear the inflight
+            # flag and trim the file back to the last known good offset.
+            upload.uploading = False
+        log_event(
+            "upload_patch_aborted",
+            session_id=owning_session.session_id,
+            upload_id=upload_id,
+            offset=upload.received,
+            error=str(exc),
+        )
+        await send_response(writer, 400, json_bytes({"error": "incomplete_chunk"}))
+        return
+
+    new_offset = upload.received
+
+    if new_offset < upload.size:
+        # Mid-upload chunk: keep the entry alive and report new offset.
+        async with state.lock:
+            upload.uploading = False
+        await send_response(
+            writer, 204, b"",
+            content_type="application/octet-stream",
+            extra_headers={
+                "Upload-Offset": str(new_offset),
+                "Cache-Control": "no-store",
+            },
+        )
+        return
+
+    failure = await _finalize_completed_upload(state, owning_session, upload)
+    if failure == "hash_mismatch":
+        state.increment_metric("upload_put_rejected_total")
+        await send_response(writer, 422, json_bytes({"error": "hash_mismatch"}))
+        return
+
+    log_event(
+        "upload_patch_complete",
+        session_id=owning_session.session_id,
+        upload_id=upload_id,
+        size=upload.size,
+        sha256=upload.sha256_observed or "",
+    )
+    await send_response(
+        writer, 200,
+        json_bytes(
+            {
+                "upload_id": upload_id,
+                "received": upload.received,
+                "sha256": upload.sha256_observed,
+            }
+        ),
+        extra_headers={
+            "Upload-Offset": str(new_offset),
+        },
+    )
+
+
+async def handle_upload_pull(
+    state: RelayState,
+    writer: asyncio.StreamWriter,
+    method: str,
+    headers: dict[str, str],
+    query: dict[str, list[str]],
+    upload_id: str,
+) -> None:
+    if method != "GET":
+        await send_response(writer, 405, json_bytes({"error": "method not allowed"}))
+        return
+    state.increment_metric("upload_pull_total")
+
+    token_header = bearer_token(headers)
+    token_query = (query.get("token") or [None])[0]
+    pull_token = token_query or token_header
+    if not pull_token:
+        state.increment_metric("upload_pull_rejected_total")
+        await send_response(writer, 403, json_bytes({"error": "invalid_token"}))
+        return
+
+    async with state.lock:
+        upload: Optional[PendingUpload] = None
+        owning_session: Optional[Session] = None
+        for session in state.sessions.values():
+            candidate = session.pending_uploads.get(upload_id)
+            if candidate is not None:
+                upload = candidate
+                owning_session = session
+                break
+        if upload is None or owning_session is None:
+            state.increment_metric("upload_pull_rejected_total")
+            await send_response(writer, 404, json_bytes({"error": "not_found"}))
+            return
+        if upload.delivered:
+            state.increment_metric("upload_pull_rejected_total")
+            await send_response(writer, 410, json_bytes({"error": "gone"}))
+            return
+        if not secrets.compare_digest(pull_token, upload.pull_token):
+            state.increment_metric("upload_pull_rejected_total")
+            await send_response(writer, 403, json_bytes({"error": "invalid_token"}))
+            return
+        if upload.received != upload.size:
+            state.increment_metric("upload_pull_rejected_total")
+            await send_response(writer, 409, json_bytes({"error": "not_complete"}))
+            return
+        # Mark delivered *before* streaming so a second concurrent pull
+        # cannot race us into a double-send.
+        upload.delivered = True
+
+    try:
+        data = upload.path.read_bytes()
+    except OSError as exc:
+        state.increment_metric("upload_pull_rejected_total")
+        log_event(
+            "upload_pull_failed",
+            session_id=owning_session.session_id,
+            upload_id=upload_id,
+            error=str(exc),
+        )
+        async with state.lock:
+            _remove_upload(owning_session, upload, reason="read_failed")
+        await send_response(writer, 500, json_bytes({"error": "read_failed"}))
+        return
+
+    extra: dict[str, str] = {
+        "X-Ghostty-Upload-Name": urllib.parse.quote(upload.name, safe=""),
+        "X-Ghostty-Upload-SHA256": upload.sha256_observed or "",
+    }
+    await send_response(
+        writer,
+        200,
+        data,
+        content_type="application/octet-stream",
+        extra_headers=extra,
+    )
+
+    async with state.lock:
+        _remove_upload(owning_session, upload, reason="pulled")
+    log_event(
+        "upload_pull",
+        session_id=owning_session.session_id,
+        upload_id=upload_id,
+        size=upload.size,
+    )
+
+
 async def forward_to_clients(session: Session, opcode: int, payload: bytes) -> None:
     session.append_backlog(opcode, payload)
     if opcode not in (0x1, 0x2):
@@ -954,6 +1777,11 @@ async def handle_ws_agent(
     await websocket_handshake(writer, headers)
     state.increment_metric("agent_connect_total")
     log_event("agent_connected", session_id=session.session_id)
+    # Any upload_ready frames that landed while the agent was offline are
+    # drained now, before the agent's normal read loop starts. This is
+    # what keeps an upload from getting stuck if the agent flapped during
+    # the PUT.
+    await _drain_pending_upload_ready(state, session)
     last_pong_at = {"value": time.time()}
     background_tasks = [
         asyncio.create_task(
@@ -1113,10 +1941,7 @@ async def handle_connection(
     peer = writer.get_extra_info("peername")
     peer_host = peer[0] if isinstance(peer, tuple) and peer else None
     try:
-        method, target, headers, body = await read_http_request(
-            reader,
-            max_body_bytes=state.config.max_body_bytes,
-        )
+        method, target, headers = await read_http_head(reader)
     except asyncio.IncompleteReadError:
         writer.close()
         await writer.wait_closed()
@@ -1132,6 +1957,25 @@ async def handle_connection(
     upgrade = headers.get("upgrade", "").lower()
     client_ip = resolve_client_ip(peer_host, headers, state.config.trusted_proxies)
     admin_listener_enabled = state.config.admin_port > 0
+
+    # Upload PUT and PATCH both stream their body so files larger than
+    # max_body_bytes are still allowed. Everything else reads the body
+    # up-front under the legacy cap. HEAD has no body so the cheap
+    # consume path is fine.
+    streaming_body = (
+        method in {"PUT", "PATCH"} and path.startswith("/api/upload/")
+    )
+    if streaming_body:
+        body = b""
+    else:
+        try:
+            body = await read_http_body(
+                reader, headers, max_body_bytes=state.config.max_body_bytes
+            )
+        except Exception:
+            log_event("bad_request", remote=peer_host, path=path)
+            await send_response(writer, 400, json_bytes({"error": "bad request"}))
+            return
 
     if admin:
         # Admin listener serves only health/readiness/metrics. Everything
@@ -1186,7 +2030,20 @@ async def handle_connection(
             )
         return
 
-    if path in {"/api/register", "/api/sessions", "/ws/agent", "/ws/client"}:
+    is_upload_init = path == "/api/upload/init"
+    is_upload_resource = (
+        path.startswith("/api/upload/")
+        and not is_upload_init
+        # /api/upload/<id> or /api/upload/<id>/pull
+    )
+    rate_limited_paths = {
+        "/api/register",
+        "/api/sessions",
+        "/ws/agent",
+        "/ws/client",
+        "/api/upload/init",
+    }
+    if path in rate_limited_paths or is_upload_resource:
         async with state.lock:
             limited, retry_after = state.should_rate_limit(client_ip)
             if limited:
@@ -1217,6 +2074,33 @@ async def handle_connection(
         return
     if path == "/api/sessions":
         await handle_sessions(state, writer, method, headers)
+        return
+    if is_upload_init:
+        await handle_upload_init(state, writer, method, body, headers)
+        return
+    if is_upload_resource:
+        rest = path[len("/api/upload/"):]
+        if rest.endswith("/pull"):
+            upload_id = rest[: -len("/pull")]
+            if not upload_id:
+                await send_response(writer, 404, json_bytes({"error": "not_found"}))
+                return
+            await handle_upload_pull(state, writer, method, headers, query, upload_id)
+            return
+        upload_id = rest
+        if "/" in upload_id or not upload_id:
+            await send_response(writer, 404, json_bytes({"error": "not_found"}))
+            return
+        if method == "PUT":
+            await handle_upload_put(state, reader, writer, headers, upload_id)
+            return
+        if method == "PATCH":
+            await handle_upload_patch(state, reader, writer, headers, upload_id)
+            return
+        if method == "HEAD":
+            await handle_upload_head(state, writer, headers, upload_id)
+            return
+        await send_response(writer, 405, json_bytes({"error": "method not allowed"}))
         return
 
     await serve_static(static_root, writer, path)
@@ -1287,6 +2171,36 @@ async def main() -> None:
             str(pathlib.Path(__file__).resolve().parent.parent / "web"),
         ),
     )
+    parser.add_argument(
+        "--upload-max-bytes",
+        type=int,
+        default=env_int("GHOSTTY_RELAY_UPLOAD_MAX_BYTES", DEFAULT_UPLOAD_MAX_BYTES),
+    )
+    parser.add_argument(
+        "--upload-session-max-bytes",
+        type=int,
+        default=env_int(
+            "GHOSTTY_RELAY_UPLOAD_SESSION_MAX_BYTES",
+            DEFAULT_UPLOAD_SESSION_MAX_BYTES,
+        ),
+    )
+    parser.add_argument(
+        "--upload-max-pending",
+        type=int,
+        default=env_int("GHOSTTY_RELAY_UPLOAD_MAX_PENDING", DEFAULT_UPLOAD_MAX_PENDING),
+    )
+    parser.add_argument(
+        "--upload-ttl",
+        type=float,
+        default=env_float("GHOSTTY_RELAY_UPLOAD_TTL", DEFAULT_UPLOAD_TTL),
+    )
+    parser.add_argument(
+        "--upload-dir",
+        default=env_str(
+            "GHOSTTY_RELAY_UPLOAD_DIR",
+            str(pathlib.Path("/tmp/ghostty-uploads")),
+        ),
+    )
     args = parser.parse_args()
 
     if host_requires_public_bind_ack(args.host) and not args.allow_public_bind:
@@ -1316,6 +2230,11 @@ async def main() -> None:
         client_send_buffer_bytes=args.client_send_buffer_bytes,
         admin_host=args.admin_host,
         admin_port=args.admin_port,
+        upload_max_bytes=args.upload_max_bytes,
+        upload_session_max_bytes=args.upload_session_max_bytes,
+        upload_max_pending=args.upload_max_pending,
+        upload_ttl=args.upload_ttl,
+        upload_dir=pathlib.Path(args.upload_dir).resolve(),
     )
     state = RelayState(config=config)
     static_root = config.static_root
@@ -1372,6 +2291,11 @@ async def main() -> None:
         client_send_buffer_bytes=config.client_send_buffer_bytes,
         admin_host=config.admin_host,
         admin_port=config.admin_port,
+        upload_max_bytes=config.upload_max_bytes,
+        upload_session_max_bytes=config.upload_session_max_bytes,
+        upload_max_pending=config.upload_max_pending,
+        upload_ttl=config.upload_ttl,
+        upload_dir=str(config.upload_dir),
     )
     asyncio.create_task(state.cleanup_loop())
     try:

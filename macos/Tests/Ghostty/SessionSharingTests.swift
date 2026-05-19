@@ -825,7 +825,7 @@ struct SessionSharingTests {
         let presentation = SessionSharingMenuPresentation(
             hasFocusedSurface: true,
             hasLiveSurface: false,
-            sharingState: .reconnecting
+            sharingState: .reconnecting(after: 1)
         )
 
         #expect(presentation.title == "停止共享")
@@ -1430,6 +1430,466 @@ struct SessionSharingTests {
             SessionSharingAppearancePayload.self, from: data
         )
         #expect(decoded == payload)
+    }
+
+    // MARK: Upload — frame parsing
+
+    @Test
+    func inboundFrameParseRecognizesUploadReady() {
+        let text = #"""
+        {"type":"upload_ready","upload_id":"u1","name":"a.txt","size":42,
+         "sha256":"deadbeef","pull_token":"tok",
+         "pull_url":"/api/upload/u1/pull"}
+        """#
+        let action = SessionSharingInboundFrameAction.parse(
+            text: text, sessionID: "s1")
+        guard case let .handleUploadReady(envelope) = action else {
+            Issue.record("expected handleUploadReady, got \(action)")
+            return
+        }
+        #expect(envelope.uploadID == "u1")
+        #expect(envelope.name == "a.txt")
+        #expect(envelope.size == 42)
+        #expect(envelope.sha256 == "deadbeef")
+        #expect(envelope.pullToken == "tok")
+        #expect(envelope.pullURL == "/api/upload/u1/pull")
+    }
+
+    @Test
+    func inboundFrameParseIgnoresMalformedUploadReady() {
+        // Missing pull_url → envelope.isValid is false → .ignore.
+        // Critically *not* .forwardToTerminal: we don't want a malformed
+        // upload_ready leaking into the PTY as visible bytes.
+        let text = #"""
+        {"type":"upload_ready","upload_id":"u1","name":"a.txt","size":1,
+         "pull_token":"tok"}
+        """#
+        let action = SessionSharingInboundFrameAction.parse(
+            text: text, sessionID: "s1")
+        #expect(action == .ignore)
+    }
+
+    // MARK: Upload — name sanitizer
+
+    @Test
+    func uploadNameSanitizerAcceptsRegularNames() {
+        #expect(SessionSharingUploadNameSanitizer.sanitize("a.txt") == "a.txt")
+        #expect(
+            SessionSharingUploadNameSanitizer.sanitize("文档.png") == "文档.png"
+        )
+        #expect(
+            SessionSharingUploadNameSanitizer.sanitize(" leading-space ")
+                == "leading-space"
+        )
+    }
+
+    @Test
+    func uploadNameSanitizerRejectsBadNames() {
+        let cases: [String] = [
+            "",                         // empty
+            "   ",                      // whitespace-only
+            ".",                        // dot only
+            "..",                       // parent
+            ".hidden",                  // leading dot
+            "a/b",                      // forward slash
+            "a\\b",                     // backslash
+            "with\u{0000}nul",          // NUL
+            "with\u{0001}ctl",          // C0 control
+            "with\u{007F}del",          // DEL
+            String(repeating: "x", count: 300),  // >200 bytes
+        ]
+        for c in cases {
+            #expect(
+                SessionSharingUploadNameSanitizer.sanitize(c) == nil,
+                "\(c) should be rejected"
+            )
+        }
+    }
+
+    @Test
+    func uploadNameSanitizerUniquePathAddsSuffixOnCollision() throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.remove() }
+        let dir = sandbox.root
+        try FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true)
+
+        // No collision → use the canonical filename.
+        let first = SessionSharingUploadNameSanitizer.uniquePath(
+            for: "a.txt", in: dir)
+        #expect(first?.lastPathComponent == "a.txt")
+
+        // After we create the canonical file, a second resolve should
+        // pick a -1 suffixed name. The suffix is appended *before* the
+        // extension so the resulting file has the same Quick Look type.
+        try Data("x".utf8).write(to: dir.appendingPathComponent("a.txt"))
+        let second = SessionSharingUploadNameSanitizer.uniquePath(
+            for: "a.txt", in: dir)
+        #expect(second?.lastPathComponent == "a-1.txt")
+
+        // Extension-less names get suffixed at the end.
+        let third = SessionSharingUploadNameSanitizer.uniquePath(
+            for: "README", in: dir)
+        #expect(third?.lastPathComponent == "README")
+        try Data("x".utf8).write(to: dir.appendingPathComponent("README"))
+        let fourth = SessionSharingUploadNameSanitizer.uniquePath(
+            for: "README", in: dir)
+        #expect(fourth?.lastPathComponent == "README-1")
+    }
+
+    // MARK: Upload — shell escape
+
+    @Test
+    func shellEscapeWrapsSimplePath() {
+        let quoted = SessionSharingShellEscape
+            .quoteForPasteWithTrailingSpace("/Users/me/file.txt")
+        #expect(quoted == "'/Users/me/file.txt' ")
+    }
+
+    @Test
+    func shellEscapeEscapesEmbeddedSingleQuote() {
+        // The standard POSIX trick: close the quote, escape the literal
+        // ', reopen. Anything pasted into a /bin/sh-compatible shell
+        // round-trips unchanged.
+        let quoted = SessionSharingShellEscape
+            .quoteForPasteWithTrailingSpace("/tmp/it's a file.txt")
+        #expect(quoted == "'/tmp/it'\\''s a file.txt' ")
+    }
+
+    @Test
+    func shellEscapePreservesUnicode() {
+        let quoted = SessionSharingShellEscape
+            .quoteForPasteWithTrailingSpace("/tmp/文档.txt")
+        #expect(quoted == "'/tmp/文档.txt' ")
+    }
+
+    // MARK: Upload — request builder
+
+    @Test
+    func uploadRequestBuilderProducesPullURL() throws {
+        let req = try SessionSharingUploadRequestBuilder.pullRequest(
+            relayAddress: "relay.example.com",
+            pullURL: "/api/upload/abc123/pull",
+            pullToken: "tok-xyz"
+        )
+        #expect(req.httpMethod == "GET")
+        let url = try #require(req.url)
+        #expect(url.scheme == "https")
+        #expect(url.host == "relay.example.com")
+        #expect(url.path == "/api/upload/abc123/pull")
+        #expect(url.query?.contains("token=tok-xyz") == true)
+    }
+
+    @Test
+    func uploadRequestBuilderRejectsNonPullPath() {
+        let req = try? SessionSharingUploadRequestBuilder.pullRequest(
+            relayAddress: "relay.example.com",
+            pullURL: "/api/register",
+            pullToken: "tok"
+        )
+        #expect(req == nil)
+    }
+
+    // MARK: Upload — ack envelope encoding
+
+    @Test
+    func uploadAckSuccessSerializesSnakeCase() throws {
+        let ack = SessionSharingUploadAckEnvelope.success(
+            uploadID: "u1", path: "/tmp/x", bytesWritten: 99)
+        let data = try JSONEncoder().encode(ack)
+        let json = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["type"] as? String == "upload_ack")
+        #expect(json["upload_id"] as? String == "u1")
+        #expect(json["ok"] as? Bool == true)
+        #expect(json["path"] as? String == "/tmp/x")
+        #expect(json["bytes_written"] as? Int == 99)
+        // failure-only fields must be absent on success
+        #expect(json["reason"] == nil)
+    }
+
+    @Test
+    func uploadAckFailureOmitsSuccessFields() throws {
+        let ack = SessionSharingUploadAckEnvelope.failure(
+            uploadID: "u1", reason: "agent_disabled")
+        let data = try JSONEncoder().encode(ack)
+        let json = try #require(
+            JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(json["ok"] as? Bool == false)
+        #expect(json["reason"] as? String == "agent_disabled")
+        // path / bytes_written may be present as JSON null or omitted;
+        // either way they must not be set to a meaningful value.
+        #expect(json["path"] as? String == nil)
+        #expect(json["bytes_written"] as? Int == nil)
+    }
+
+    // MARK: Upload — manager end-to-end (stubbed transport)
+
+    @Test
+    func uploadManagerRejectsWhenPolicyDisabled() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.remove() }
+        let observer = UploadObserver()
+        let manager = SessionSharingUploadManager(
+            sessionID: "s1",
+            relayAddress: "relay.local",
+            uploadsRoot: sandbox.root,
+            auditLogURL: nil,
+            policy: .disabled,
+            dependencies: SessionSharingUploadManager.Dependencies(
+                transport: FailingUploadTransport(),
+                fileManager: .default,
+                now: { Date() }
+            ),
+            injectPath: { observer.recordInject($0) },
+            sendAck: { observer.recordAck($0) }
+        )
+        manager.handle(makeUploadEnvelope())
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let acks = await observer.acks
+        #expect(acks.count == 1)
+        #expect(acks.first?.ok == false)
+        #expect(acks.first?.reason == "agent_disabled")
+        let injects = await observer.injections
+        #expect(injects.isEmpty)
+    }
+
+    @Test
+    func uploadManagerRejectsOversizedFile() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.remove() }
+        let observer = UploadObserver()
+        let manager = SessionSharingUploadManager(
+            sessionID: "s1",
+            relayAddress: "relay.local",
+            uploadsRoot: sandbox.root,
+            auditLogURL: nil,
+            policy: SessionSharingUploadPolicy(
+                enabled: true, maxFileBytes: 16, maxSessionBytes: 1024),
+            dependencies: SessionSharingUploadManager.Dependencies(
+                transport: FailingUploadTransport(),
+                fileManager: .default,
+                now: { Date() }
+            ),
+            injectPath: { observer.recordInject($0) },
+            sendAck: { observer.recordAck($0) }
+        )
+        manager.handle(makeUploadEnvelope(size: 99))
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let acks = await observer.acks
+        #expect(acks.first?.ok == false)
+        #expect(acks.first?.reason == "size_exceeds_file_limit")
+    }
+
+    @Test
+    func uploadManagerInjectsPathOnHappyPath() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.remove() }
+        let payload = Data("hello upload world\n".utf8)
+        let observer = UploadObserver()
+        let manager = SessionSharingUploadManager(
+            sessionID: "s1",
+            relayAddress: "relay.local",
+            uploadsRoot: sandbox.root,
+            auditLogURL: sandbox.root.appendingPathComponent("uploads.log"),
+            policy: .defaultEnabled,
+            dependencies: SessionSharingUploadManager.Dependencies(
+                transport: FixedResponseUploadTransport(data: payload),
+                fileManager: .default,
+                now: { Date() }
+            ),
+            injectPath: { observer.recordInject($0) },
+            sendAck: { observer.recordAck($0) }
+        )
+        manager.handle(makeUploadEnvelope(size: Int64(payload.count)))
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        let acks = await observer.acks
+        #expect(acks.count == 1)
+        let ack = try #require(acks.first)
+        #expect(ack.ok == true)
+        #expect(ack.bytesWritten == Int64(payload.count))
+        let expectedFile = sandbox.root
+            .appendingPathComponent("s1", isDirectory: true)
+            .appendingPathComponent("a.txt")
+        #expect(ack.path == expectedFile.path)
+        #expect(FileManager.default.fileExists(atPath: expectedFile.path))
+
+        // Path injection always carries a trailing space so the next
+        // keystroke lands after the path; the manager wraps the path in
+        // shell-safe quotes too.
+        let injects = await observer.injections
+        #expect(injects.count == 1)
+        let injected = try #require(injects.first)
+        #expect(injected.hasSuffix(" "))
+        #expect(injected.contains(expectedFile.path))
+        #expect(injected.hasPrefix("'"))
+    }
+
+    // MARK: Upload — auto-clean LaunchAgent
+
+    @Test
+    func uploadAutoCleanPlistContainsExpectedRetentionAndLabel() {
+        let plist = SessionSharingUploadAutoCleanInstaller.renderPlist(days: 7)
+        // Label identifies the LaunchAgent for bootstrap/bootout. If
+        // someone renames it the installer must be updated in lockstep
+        // — that's what this assert catches.
+        #expect(plist.contains("<string>com.mitchellh.ghostty.uploads-prune</string>"))
+        // Days threshold appears verbatim in the find command.
+        #expect(plist.contains("-mtime +7"))
+        // Single-shot script via /bin/sh -c.
+        #expect(plist.contains("<string>/bin/sh</string>"))
+        #expect(plist.contains("<string>-c</string>"))
+        // RunAtLoad ensures the first prune fires the moment we install,
+        // not next 03:15.
+        #expect(plist.contains("<key>RunAtLoad</key>"))
+        // 03:15 daily.
+        #expect(plist.contains("<key>Hour</key><integer>3</integer>"))
+        #expect(plist.contains("<key>Minute</key><integer>15</integer>"))
+    }
+
+    @Test
+    func uploadAutoCleanRenderEscapesDirectoryPathSafely() {
+        // The uploads dir comes from FileManager and contains spaces
+        // ("Application Support"), so the script must single-quote it.
+        let plist = SessionSharingUploadAutoCleanInstaller.renderPlist(days: 3)
+        // Single-quoted absolute path in the find command — that's how
+        // we know spaces survive the round-trip into launchd's shell.
+        #expect(plist.contains("'/"))
+        #expect(plist.contains("Application Support"))
+    }
+
+    @Test
+    func persistedConfigDefaultsAreAutoCleanOnSeven() throws {
+        // A bare {} config (older versions) should decode to auto-clean
+        // enabled with the installer's default retention — that's the
+        // "default on" guarantee the share sheet relies on.
+        let json = Data("{}".utf8)
+        let decoded = try JSONDecoder().decode(
+            SessionSharingPersistedConfig.self, from: json)
+        #expect(decoded.uploadsAutoCleanEnabled == true)
+        #expect(decoded.uploadsAutoCleanDays
+                == SessionSharingUploadAutoCleanInstaller.defaultDays)
+    }
+
+    @Test
+    func persistedConfigClampsBogusDaysToDefault() throws {
+        // A manually-edited config with a junk day count must snap to
+        // the installer default, never schedule a 0-day prune.
+        let json = Data("{\"uploadsAutoCleanDays\": 9999}".utf8)
+        let decoded = try JSONDecoder().decode(
+            SessionSharingPersistedConfig.self, from: json)
+        #expect(decoded.uploadsAutoCleanDays
+                == SessionSharingUploadAutoCleanInstaller.defaultDays)
+    }
+
+    @Test
+    func persistedConfigRoundTripsValidAllowedDays() throws {
+        for days in SessionSharingUploadAutoCleanInstaller.allowedDays {
+            let original = SessionSharingPersistedConfig(
+                uploadsAutoCleanEnabled: false,
+                uploadsAutoCleanDays: days)
+            let data = try JSONEncoder().encode(original)
+            let decoded = try JSONDecoder().decode(
+                SessionSharingPersistedConfig.self, from: data)
+            #expect(decoded.uploadsAutoCleanEnabled == false)
+            #expect(decoded.uploadsAutoCleanDays == days)
+        }
+    }
+
+    @Test
+    func uploadManagerRejectsHashMismatch() async throws {
+        let sandbox = try TestSandbox()
+        defer { sandbox.remove() }
+        let payload = Data("hello".utf8)
+        let observer = UploadObserver()
+        let manager = SessionSharingUploadManager(
+            sessionID: "s1",
+            relayAddress: "relay.local",
+            uploadsRoot: sandbox.root,
+            auditLogURL: nil,
+            policy: .defaultEnabled,
+            dependencies: SessionSharingUploadManager.Dependencies(
+                transport: FixedResponseUploadTransport(data: payload),
+                fileManager: .default,
+                now: { Date() }
+            ),
+            injectPath: { observer.recordInject($0) },
+            sendAck: { observer.recordAck($0) }
+        )
+        // Advertise a sha256 that doesn't match the payload.
+        var env = makeUploadEnvelope(size: Int64(payload.count))
+        env = SessionSharingUploadReadyEnvelope(
+            type: env.type,
+            uploadID: env.uploadID,
+            name: env.name,
+            size: env.size,
+            sha256: String(repeating: "0", count: 64),
+            pullToken: env.pullToken,
+            pullURL: env.pullURL
+        )
+        manager.handle(env)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        let acks = await observer.acks
+        #expect(acks.first?.ok == false)
+        #expect(acks.first?.reason == "hash_mismatch")
+    }
+}
+
+// Test helpers used only by the upload tests above. Kept fileprivate so
+// they cannot accidentally leak into other test files.
+
+fileprivate func makeUploadEnvelope(
+    name: String = "a.txt",
+    size: Int64 = 19
+) -> SessionSharingUploadReadyEnvelope {
+    SessionSharingUploadReadyEnvelope(
+        type: "upload_ready",
+        uploadID: "u-\(UUID().uuidString)",
+        name: name,
+        size: size,
+        sha256: nil,
+        pullToken: "tok",
+        pullURL: "/api/upload/u/pull"
+    )
+}
+
+fileprivate actor UploadObserver {
+    private(set) var injections: [String] = []
+    private(set) var acks: [SessionSharingUploadAckEnvelope] = []
+
+    nonisolated func recordInject(_ payload: String) {
+        Task { await self._recordInject(payload) }
+    }
+
+    nonisolated func recordAck(_ ack: SessionSharingUploadAckEnvelope) {
+        Task { await self._recordAck(ack) }
+    }
+
+    private func _recordInject(_ payload: String) {
+        injections.append(payload)
+    }
+
+    private func _recordAck(_ ack: SessionSharingUploadAckEnvelope) {
+        acks.append(ack)
+    }
+}
+
+fileprivate struct FailingUploadTransport: SessionSharingUploadTransport {
+    func download(from request: URLRequest) async throws -> (Data, URLResponse) {
+        throw URLError(.cannotConnectToHost)
+    }
+}
+
+fileprivate struct FixedResponseUploadTransport: SessionSharingUploadTransport {
+    let data: Data
+    func download(from request: URLRequest) async throws -> (Data, URLResponse) {
+        let response = HTTPURLResponse(
+            url: request.url ?? URL(string: "https://example.invalid/")!,
+            statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: nil
+        )!
+        return (data, response)
     }
 }
 

@@ -27,6 +27,25 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # File upload endpoints. The default Nginx client_max_body_size of 1 MiB
+    # would cap PUT (single-shot) and PATCH (per-chunk) bodies, so override
+    # it to fit GHOSTTY_RELAY_UPLOAD_MAX_BYTES (PUT) and
+    # DEFAULT_UPLOAD_PATCH_MAX_BYTES (PATCH, 16 MiB). The longer
+    # read/send timeouts give large chunks time to traverse the wire on
+    # high-latency links without Nginx terminating an otherwise-healthy
+    # upload mid-stream.
+    location ~ ^/api/upload/ {
+        proxy_pass http://127.0.0.1:18080;
+        proxy_http_version 1.1;
+        proxy_request_buffering off;
+        client_max_body_size 128m;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     location /ws/agent {
         proxy_pass http://127.0.0.1:18080;
         proxy_http_version 1.1;

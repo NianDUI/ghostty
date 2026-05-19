@@ -3,6 +3,7 @@ import { buildAppearanceTheme } from "./appearance.js";
 import { redactErrorMessage } from "./redaction.js";
 import { createCoalescedScroll } from "./scroll.js";
 import { createReplayBuffer } from "./scrollback.js";
+import { createUploadManager } from "./upload.js";
 
 const DEFAULT_TITLE = "Ghostty Session Sharing";
 const SESSION_QUERY_KEY = "session";
@@ -14,6 +15,7 @@ const launcherHomeView = document.querySelector("#launcherHomeView");
 const launcherSettingsView = document.querySelector("#launcherSettingsView");
 const openSettingsButton = document.querySelector("#openSettings");
 const closeSettingsButton = document.querySelector("#closeSettings");
+const refreshSessionsButton = document.querySelector("#refreshSessions");
 const terminalView = document.querySelector("#terminalView");
 const terminalStatus = document.querySelector("#terminalStatus");
 const backendBaseInput = document.querySelector("#backendBase");
@@ -29,6 +31,9 @@ const lockHostSizeInput = document.querySelector("#lockHostSize");
 const desktopWidthInput = document.querySelector("#desktopWidth");
 const liveMirrorModeInput = document.querySelector("#liveMirrorMode");
 const debugModeInput = document.querySelector("#debugMode");
+const mobileUploadLauncher = document.querySelector("#mobileUploadLauncher");
+const uploadFileInput = document.querySelector("#uploadFileInput");
+const uploadToastStack = document.querySelector("#uploadToastStack");
 
 let terminal = null;
 let fitAddon = null;
@@ -144,6 +149,26 @@ function showLauncherHome() {
 openSettingsButton.addEventListener("click", showLauncherSettings);
 closeSettingsButton.addEventListener("click", () => {
   if (hasUserToken()) showLauncherHome();
+});
+
+refreshSessionsButton.addEventListener("click", async () => {
+  // Disable + spin while the request is in flight so a rapid second
+  // click can't queue two overlapping fetches that race each other to
+  // mutate sessionList. The minimum-spin floor (~360ms) keeps the
+  // animation perceptible even on a fast network — without it, the
+  // class flickers on/off and the user can't tell the click registered.
+  if (refreshSessionsButton.classList.contains("is-spinning")) return;
+  refreshSessionsButton.classList.add("is-spinning");
+  const spinStartedAt = performance.now();
+  try {
+    await refreshSessions();
+  } finally {
+    const elapsed = performance.now() - spinStartedAt;
+    const remainder = Math.max(0, 360 - elapsed);
+    setTimeout(() => {
+      refreshSessionsButton.classList.remove("is-spinning");
+    }, remainder);
+  }
 });
 // Keep the back button's enabled state in sync as the user types or
 // clears the token — without this, clearing the field mid-edit leaves
@@ -822,6 +847,7 @@ async function connectToSession(session, { updateHistory = true } = {}) {
       focusTerminal();
       updateDocumentTitle();
       setTerminalStatus("已连接", "connected");
+      refreshUploadLauncherVisibility();
       if (!isHostSizeLocked()) {
         sendControlFrame({
           type: "resize",
@@ -834,6 +860,7 @@ async function connectToSession(session, { updateHistory = true } = {}) {
 
     socket.addEventListener("close", (event) => {
       socket = null;
+      refreshUploadLauncherVisibility();
       scheduleReconnect(classifyCloseEvent(event));
     });
 
@@ -929,10 +956,216 @@ function handleControlFrame(data) {
     case "scrollback":
       applyScrollbackResponse(frame);
       return;
+    case "upload_ack":
+      uploadManager.handleAckFrame(frame);
+      return;
     default:
       if (terminal) terminal.write(data);
   }
 }
+
+// ---- Upload UI ---------------------------------------------------------
+// Per-upload toast handles, keyed by the toastId picked by the manager so
+// successive updates (progress → done) replace the same DOM node instead
+// of stacking.
+const uploadToastNodes = new Map();
+
+function renderUploadToast(payload) {
+  const id = payload.id;
+  if (!id) return;
+  let node = uploadToastNodes.get(id);
+  if (!node) {
+    node = document.createElement("div");
+    node.className = "upload-toast";
+    node.dataset.id = id;
+    const title = document.createElement("div");
+    title.className = "upload-toast-title";
+    const body = document.createElement("div");
+    body.className = "upload-toast-body";
+    const progress = document.createElement("span");
+    progress.className = "upload-toast-progress";
+    const bar = document.createElement("span");
+    progress.appendChild(bar);
+    node.append(title, body, progress);
+    uploadToastStack.appendChild(node);
+    uploadToastNodes.set(id, node);
+  }
+  node.classList.remove("pending", "success", "error");
+  node.classList.add(payload.kind ?? "pending");
+  node.querySelector(".upload-toast-title").textContent = payload.title ?? "";
+  node.querySelector(".upload-toast-body").textContent = payload.message ?? "";
+  const progressBar = node
+    .querySelector(".upload-toast-progress > span");
+  if (typeof payload.progress === "number") {
+    const pct = Math.min(100, Math.max(0, Math.round(payload.progress * 100)));
+    progressBar.style.width = `${pct}%`;
+    node.querySelector(".upload-toast-progress").style.display = "block";
+  } else {
+    node.querySelector(".upload-toast-progress").style.display = "none";
+  }
+  // Auto-dismiss terminal states after a few seconds so the stack stays
+  // tidy. Pending toasts persist indefinitely — they will be replaced
+  // by a terminal-state toast under the same id.
+  if (payload.kind === "success" || payload.kind === "error") {
+    setTimeout(() => {
+      if (uploadToastNodes.get(id) === node) {
+        node.remove();
+        uploadToastNodes.delete(id);
+      }
+    }, payload.kind === "success" ? 6000 : 9000);
+  }
+}
+
+const uploadManager = createUploadManager({
+  // Capture the *current* values at call time, not at module init —
+  // the user can change either from the settings sheet before
+  // starting an upload.
+  get backendBase() {
+    return backendBaseInput.value.trim() || location.origin;
+  },
+  get userToken() {
+    return tokenInput.value.trim();
+  },
+  getActiveSessionId: () => activeSession?.id ?? null,
+  onToast: renderUploadToast,
+  logEvt: (line) => logEvt(line),
+});
+
+function refreshUploadLauncherVisibility() {
+  const connected =
+    activeSession != null && socket && socket.readyState === WebSocket.OPEN;
+  // The upload pill rides the same row as the toolbar toggle, so when
+  // the user collapses the toolbar we hide the pill too — otherwise it
+  // floats orphaned over the terminal area. Connection state is the
+  // hard gate (no relay → nothing to upload to); collapsed state is the
+  // courtesy gate.
+  const visible = connected && !mobileToolbarCollapsed;
+  mobileUploadLauncher.classList.toggle("hidden", !visible);
+  mobileUploadLauncher.disabled = !visible;
+}
+
+mobileUploadLauncher.addEventListener("click", () => {
+  uploadFileInput.value = "";
+  uploadFileInput.click();
+});
+
+uploadFileInput.addEventListener("change", () => {
+  const files = Array.from(uploadFileInput.files ?? []);
+  uploadFileInput.value = "";
+  enqueueUploads(files);
+});
+
+function enqueueUploads(files) {
+  if (!files || files.length === 0) return;
+  if (!activeSession || !socket || socket.readyState !== WebSocket.OPEN) {
+    // The relay won't accept an init without an online session, so don't
+    // even start the request: surface a toast so the user knows why their
+    // drop / paste seemed to vanish.
+    renderUploadToast({
+      id: `noop-${Date.now()}`,
+      kind: "error",
+      title: "未连接",
+      message: "请先连接到会话再上传",
+    });
+    return;
+  }
+  for (const file of files) {
+    uploadManager.start(file).catch((err) => {
+      logEvt(`upload start failed: ${err}`);
+    });
+  }
+}
+
+// Drag-and-drop. We attach to #terminal's parent so the overlay can pick
+// up the events; events that bubble up from the canvas still hit us.
+// dragenter/dragleave fire repeatedly as the mouse moves over child
+// elements, so we use a counter to know when we've actually left.
+const terminalHostElement = terminalMount.parentElement;
+let dragDepth = 0;
+
+function setDragVisual(active) {
+  if (!terminalHostElement) return;
+  terminalHostElement.classList.toggle("upload-dropping", active);
+}
+
+function dragHasFiles(event) {
+  // Some browsers populate `dataTransfer.types` as a DOMStringList that
+  // doesn't implement `includes`, so we iterate. "Files" is the standard
+  // payload type for dragged OS files (vs. text from the terminal etc).
+  const types = event.dataTransfer?.types;
+  if (!types) return false;
+  for (const t of types) {
+    if (t === "Files") return true;
+  }
+  return false;
+}
+
+window.addEventListener("dragenter", (event) => {
+  if (!dragHasFiles(event)) return;
+  // Only react while the terminal view is the active page; we don't
+  // want a drop on the launcher to feel like it'll upload.
+  if (terminalView.classList.contains("hidden")) return;
+  event.preventDefault();
+  dragDepth++;
+  setDragVisual(true);
+});
+
+window.addEventListener("dragover", (event) => {
+  if (!dragHasFiles(event)) return;
+  if (terminalView.classList.contains("hidden")) return;
+  // preventDefault is required to allow "drop" to fire.
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "copy";
+});
+
+window.addEventListener("dragleave", (event) => {
+  if (!dragHasFiles(event)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) setDragVisual(false);
+});
+
+window.addEventListener("drop", (event) => {
+  if (!dragHasFiles(event)) return;
+  if (terminalView.classList.contains("hidden")) return;
+  event.preventDefault();
+  dragDepth = 0;
+  setDragVisual(false);
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  enqueueUploads(files);
+});
+
+// Paste. Modern browsers expose dropped/pasted files via DataTransfer's
+// `files` and `items`. Inline pasted images (e.g. from a screenshot tool)
+// arrive as `items` of kind "file" whose getAsFile() returns a File with
+// `name === "image.png"` or similar — perfectly suitable to upload.
+window.addEventListener("paste", (event) => {
+  if (terminalView.classList.contains("hidden")) return;
+  // Don't hijack pastes that target an input field — the launcher
+  // settings page uses real <input>s and the user expects normal paste.
+  const target = event.target;
+  if (
+    target instanceof HTMLElement
+    && (target.tagName === "INPUT"
+        || target.tagName === "TEXTAREA"
+        || target.isContentEditable)
+  ) {
+    return;
+  }
+  const dt = event.clipboardData;
+  if (!dt) return;
+  let files = Array.from(dt.files ?? []);
+  if (files.length === 0 && dt.items) {
+    for (const item of dt.items) {
+      if (item.kind === "file") {
+        const f = item.getAsFile();
+        if (f) files.push(f);
+      }
+    }
+  }
+  if (files.length === 0) return;
+  event.preventDefault();
+  enqueueUploads(files);
+});
 
 function applyScreenSnapshot(frame) {
   if (!terminal || typeof frame?.content !== "string") return;
@@ -1377,6 +1610,8 @@ function setMobileToolbarCollapsed(collapsed) {
   mobileToolbar.classList.toggle("hidden", collapsed);
   mobileToolbarToggle.classList.toggle("collapsed", collapsed);
   mobileToolbarToggle.classList.toggle("hidden", !shouldUseMobileInput());
+  // Upload pill is bound to the same row → keep them in sync.
+  refreshUploadLauncherVisibility();
   syncMobileViewportInsets();
 }
 
