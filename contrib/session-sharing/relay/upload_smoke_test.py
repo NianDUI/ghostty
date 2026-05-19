@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import hashlib
 import json
 import pathlib
@@ -497,6 +498,50 @@ async def case_patch_resume_after_disconnect() -> None:
         agent.close()
 
 
+async def case_patch_rejects_missing_content_type() -> None:
+    """PATCH without Content-Type: application/offset+octet-stream is
+    rejected as 415, per tus 1.0. The relay used to be lenient here."""
+    async with _RelayHarness(_make_config()) as harness:
+        await _register(harness.port)
+        status, init = await _init_upload(
+            harness.port, name="bad-ct.txt", payload=SMALL_PAYLOAD)
+        assert status == 200
+        status, _, _ = await asyncio.to_thread(
+            _http_with_response_headers,
+            "127.0.0.1", harness.port, "PATCH", init["upload_url"],
+            SMALL_PAYLOAD,
+            {"Authorization": f"Bearer {USER_TOKEN}",
+             "Upload-Offset": "0"},
+            # ^ deliberately no Content-Type
+        )
+        assert status == 415, status
+
+
+async def case_global_pending_cap_rejected() -> None:
+    """Once the global pending pool is full, further init attempts fail
+    with 429 / global_pending_full, even on a brand-new session."""
+    # Tight per-session and global caps so the test runs fast.
+    async with _RelayHarness(_make_config()) as harness:
+        # Override the cap on the live state so we don't have to plumb
+        # a separate make_config kwarg.
+        harness.state.config = dataclasses.replace(
+            harness.state.config,
+            upload_max_pending=4,
+            upload_global_max_pending=2,
+        )
+        await _register(harness.port)
+        # First two inits succeed.
+        for i in range(2):
+            status, init = await _init_upload(
+                harness.port, name=f"f{i}.bin", payload=SMALL_PAYLOAD)
+            assert status == 200, (i, status, init)
+        # Third one must be rejected — global pool is full.
+        status, body = await _init_upload(
+            harness.port, name="overflow.bin", payload=SMALL_PAYLOAD)
+        assert status == 429, (status, body)
+        assert body.get("error") == "global_pending_full"
+
+
 async def case_patch_rejects_overshoot() -> None:
     """A chunk that would push us past Upload-Length is rejected."""
     payload = b"x" * 100
@@ -555,7 +600,9 @@ CASES = [
     ("invalid_name_rejected", case_invalid_name_rejected),
     ("patch_chunked_happy_path", case_patch_chunked_happy_path),
     ("patch_resume_after_disconnect", case_patch_resume_after_disconnect),
+    ("patch_rejects_missing_content_type", case_patch_rejects_missing_content_type),
     ("patch_rejects_overshoot", case_patch_rejects_overshoot),
+    ("global_pending_cap_rejected", case_global_pending_cap_rejected),
     ("ttl_expiry_cleans_files", case_ttl_expiry_cleans_files),
 ]
 

@@ -3505,11 +3505,33 @@ struct SessionSharingUploadReadyEnvelope: Codable, Equatable {
     /// on these so we don't ack on a frame that's literally unusable.
     var isValid: Bool {
         type == "upload_ready"
-            && !uploadID.isEmpty
+            && Self.isWellFormedUploadID(uploadID)
             && !name.isEmpty
             && size > 0
             && !pullToken.isEmpty
             && pullURL.hasPrefix("/api/upload/")
+    }
+
+    /// Defense-in-depth: the relay is supposed to generate uploadID via
+    /// `secrets.token_urlsafe(16)`, but the agent must not trust that.
+    /// A compromised / spoofed relay could send anything here, and we
+    /// later splice the value into a file path
+    /// (`finalURL.appendingPathExtension("partial-<uploadID>")`). If the
+    /// uploadID contained `/`, `..`, NUL, or other path metacharacters
+    /// the partial file could land outside the per-session uploads
+    /// directory. We whitelist the base64url charset that
+    /// `token_urlsafe` actually emits.
+    static func isWellFormedUploadID(_ value: String) -> Bool {
+        guard !value.isEmpty, value.count <= 64 else { return false }
+        for scalar in value.unicodeScalars {
+            switch scalar {
+            case "A"..."Z", "a"..."z", "0"..."9", "-", "_":
+                continue
+            default:
+                return false
+            }
+        }
+        return true
     }
 }
 

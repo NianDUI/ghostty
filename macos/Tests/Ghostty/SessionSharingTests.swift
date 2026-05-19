@@ -1456,6 +1456,65 @@ struct SessionSharingTests {
     }
 
     @Test
+    func inboundFrameRejectsUploadReadyWithBogusUploadID() {
+        // Defense-in-depth: the upload manager later splices the
+        // upload_id into a file path. A compromised relay that put
+        // `../` / NUL / spaces in upload_id must be caught here, not
+        // in the file write. The envelope.isValid contract enforces
+        // the base64url charset that secrets.token_urlsafe actually
+        // emits.
+        let bogusIDs = [
+            "../escape",
+            "with/slash",
+            "with\\backslash",
+            "with space",
+            "with\u{0000}nul",
+            "with\u{007F}del",
+            "héllo",                                       // non-ASCII
+            String(repeating: "a", count: 65),             // too long
+            "",                                            // empty
+        ]
+        for id in bogusIDs {
+            // Build the JSON via JSONSerialization so the bogus id
+            // (which may contain raw NUL / control bytes) is escaped
+            // correctly instead of breaking the literal at compile time.
+            let payload: [String: Any] = [
+                "type": "upload_ready",
+                "upload_id": id,
+                "name": "a.txt",
+                "size": 1,
+                "pull_token": "tok",
+                "pull_url": "/api/upload/x/pull",
+            ]
+            guard
+                let data = try? JSONSerialization.data(withJSONObject: payload),
+                let json = String(data: data, encoding: .utf8)
+            else {
+                Issue.record("failed to serialize bogus id payload for \(id)")
+                continue
+            }
+            let action = SessionSharingInboundFrameAction.parse(
+                text: json, sessionID: "s1")
+            #expect(action == .ignore, "expected .ignore for id=\(id)")
+        }
+        // And a well-formed token_urlsafe-shaped id passes.
+        let good = SessionSharingInboundFrameAction.parse(
+            text: #"""
+            {"type":"upload_ready","upload_id":"NxEFbJgUuf1n9E-HokKAmg",
+             "name":"a.txt","size":1,
+             "sha256":null,"pull_token":"tok",
+             "pull_url":"/api/upload/NxEFbJgUuf1n9E-HokKAmg/pull"}
+            """#,
+            sessionID: "s1"
+        )
+        if case .handleUploadReady = good {
+            // pass
+        } else {
+            Issue.record("well-formed upload_id should have parsed")
+        }
+    }
+
+    @Test
     func inboundFrameParseIgnoresMalformedUploadReady() {
         // Missing pull_url → envelope.isValid is false → .ignore.
         // Critically *not* .forwardToTerminal: we don't want a malformed

@@ -30,6 +30,10 @@ DEFAULT_RATE_LIMIT_WINDOW_SECONDS = 60.0
 DEFAULT_UPLOAD_MAX_BYTES = 100 * 1024 * 1024  # 100 MiB per file
 DEFAULT_UPLOAD_SESSION_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB / session
 DEFAULT_UPLOAD_MAX_PENDING = 4  # concurrent in-flight uploads per session
+# Global cap on in-flight (not-yet-pulled) uploads across all sessions.
+# Defaults high enough not to bother a single-user deployment but caps
+# the disk footprint when the relay is shared / multi-tenant.
+DEFAULT_UPLOAD_GLOBAL_MAX_PENDING = 128
 DEFAULT_UPLOAD_TTL = 600.0  # seconds an upload can wait for agent pull
 DEFAULT_UPLOAD_INIT_BODY_BYTES = 4096
 DEFAULT_UPLOAD_CHUNK_BYTES = 1 * 1024 * 1024  # streaming chunk size (PUT)
@@ -72,6 +76,7 @@ class RelayConfig:
     upload_max_bytes: int = DEFAULT_UPLOAD_MAX_BYTES
     upload_session_max_bytes: int = DEFAULT_UPLOAD_SESSION_MAX_BYTES
     upload_max_pending: int = DEFAULT_UPLOAD_MAX_PENDING
+    upload_global_max_pending: int = DEFAULT_UPLOAD_GLOBAL_MAX_PENDING
     upload_ttl: float = DEFAULT_UPLOAD_TTL
     upload_dir: pathlib.Path = pathlib.Path("/tmp/ghostty-uploads")
 
@@ -1072,6 +1077,24 @@ async def handle_upload_init(
                 writer, 429, json_bytes({"error": "too_many_pending"})
             )
             return
+        # Belt-and-braces global cap: per-session max_pending stops a
+        # single bad actor from filling their own slots, but with many
+        # sessions the relay-wide footprint scales linearly. The global
+        # cap puts an upper bound on the entire staging tree so a
+        # multi-tenant deployment can't accumulate more than N pending
+        # files at once across the whole process.
+        global_pending = sum(
+            1
+            for sess in state.sessions.values()
+            for u in sess.pending_uploads.values()
+            if not u.delivered
+        )
+        if global_pending >= state.config.upload_global_max_pending:
+            state.increment_metric("upload_init_rejected_total")
+            await send_response(
+                writer, 429, json_bytes({"error": "global_pending_full"})
+            )
+            return
         projected = session.uploaded_bytes_total + size
         if projected > state.config.upload_session_max_bytes:
             state.increment_metric("upload_init_rejected_total")
@@ -1228,6 +1251,9 @@ async def handle_upload_put(
                 hasher.update(buf)
                 remaining -= read_size
                 upload.received += read_size
+                # Yield to the loop between chunks so a 100 MiB PUT
+                # doesn't lock other sessions out of ping handling.
+                await asyncio.sleep(0)
     except (asyncio.IncompleteReadError, ConnectionResetError, OSError) as exc:
         state.increment_metric("upload_put_rejected_total")
         async with state.lock:
@@ -1347,8 +1373,12 @@ async def handle_upload_patch(
         await send_response(writer, 401, json_bytes({"error": "missing bearer token"}))
         return
 
+    # tus 1.0 requires Content-Type: application/offset+octet-stream on
+    # every PATCH. We enforce it strictly (the old "missing header is OK"
+    # behaviour widened the surface to any caller that could supply
+    # Authorization without a preflight-trigger header).
     content_type = headers.get("content-type", "").lower().split(";", 1)[0].strip()
-    if content_type and content_type != "application/offset+octet-stream":
+    if content_type != "application/offset+octet-stream":
         state.increment_metric("upload_put_rejected_total")
         await send_response(
             writer, 415, json_bytes({"error": "invalid_content_type"}))
@@ -1434,6 +1464,13 @@ async def handle_upload_patch(
                 hasher.update(buf)
                 remaining -= read_size
                 upload.received += read_size
+                # Yield to the event loop after every chunk write so a
+                # large PATCH (worst case 16 MiB across many 1 MiB
+                # iterations) doesn't starve other sessions' WS ping /
+                # heartbeat handlers. The hash itself is C-implemented
+                # so a single chunk is only a few ms, but stacking many
+                # chunks in one PATCH adds up.
+                await asyncio.sleep(0)
     except (asyncio.IncompleteReadError, ConnectionResetError, OSError) as exc:
         state.increment_metric("upload_put_rejected_total")
         async with state.lock:
@@ -1564,16 +1601,23 @@ async def handle_upload_pull(
         "X-Ghostty-Upload-Name": urllib.parse.quote(upload.name, safe=""),
         "X-Ghostty-Upload-SHA256": upload.sha256_observed or "",
     }
-    await send_response(
-        writer,
-        200,
-        data,
-        content_type="application/octet-stream",
-        extra_headers=extra,
-    )
-
-    async with state.lock:
-        _remove_upload(owning_session, upload, reason="pulled")
+    try:
+        await send_response(
+            writer,
+            200,
+            data,
+            content_type="application/octet-stream",
+            extra_headers=extra,
+        )
+    finally:
+        # The entry is already flagged delivered=True (set earlier under
+        # the lock to defeat double-pull). If send_response raised mid-
+        # write (client hung up, broken pipe) we still must remove the
+        # staging file — otherwise the consumed pull token would leave
+        # an orphan file on disk that cleanup_loop wouldn't touch until
+        # TTL, even though the upload is no longer reachable.
+        async with state.lock:
+            _remove_upload(owning_session, upload, reason="pulled")
     log_event(
         "upload_pull",
         session_id=owning_session.session_id,
@@ -2190,6 +2234,14 @@ async def main() -> None:
         default=env_int("GHOSTTY_RELAY_UPLOAD_MAX_PENDING", DEFAULT_UPLOAD_MAX_PENDING),
     )
     parser.add_argument(
+        "--upload-global-max-pending",
+        type=int,
+        default=env_int(
+            "GHOSTTY_RELAY_UPLOAD_GLOBAL_MAX_PENDING",
+            DEFAULT_UPLOAD_GLOBAL_MAX_PENDING,
+        ),
+    )
+    parser.add_argument(
         "--upload-ttl",
         type=float,
         default=env_float("GHOSTTY_RELAY_UPLOAD_TTL", DEFAULT_UPLOAD_TTL),
@@ -2233,6 +2285,7 @@ async def main() -> None:
         upload_max_bytes=args.upload_max_bytes,
         upload_session_max_bytes=args.upload_session_max_bytes,
         upload_max_pending=args.upload_max_pending,
+        upload_global_max_pending=args.upload_global_max_pending,
         upload_ttl=args.upload_ttl,
         upload_dir=pathlib.Path(args.upload_dir).resolve(),
     )
@@ -2294,6 +2347,7 @@ async def main() -> None:
         upload_max_bytes=config.upload_max_bytes,
         upload_session_max_bytes=config.upload_session_max_bytes,
         upload_max_pending=config.upload_max_pending,
+        upload_global_max_pending=config.upload_global_max_pending,
         upload_ttl=config.upload_ttl,
         upload_dir=str(config.upload_dir),
     )
