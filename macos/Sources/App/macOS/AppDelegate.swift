@@ -335,6 +335,43 @@ class AppDelegate: NSObject,
                 NSApp.arrangeInFront(nil)
             }
         }
+
+        // Auto-resume session sharing for any surface that was sharing
+        // at last quit. Dispatched async so AppKit's window restoration
+        // has finished wiring `TerminalController.all`.
+        DispatchQueue.main.async { [weak self] in
+            self?.resumeSessionSharingForRestoredSurfaces()
+        }
+    }
+
+    /// Reconcile the persisted "was sharing" breadcrumb against the
+    /// surfaces that AppKit just restored. Each matching surface kicks
+    /// off a fresh `startSharing` using its persisted relay/token (a
+    /// new relay session token/URL — the user explicitly opted out of
+    /// reusing the old one). UUIDs that don't map to a live surface
+    /// (closed tabs) or that lack a persisted relay/token get dropped
+    /// from the breadcrumb so we don't keep retrying forever.
+    private func resumeSessionSharingForRestoredSurfaces() {
+        let store = SessionSharingResumeStore.shared
+        let pending = store.load()
+        guard !pending.isEmpty else { return }
+
+        var resumed: Set<UUID> = []
+        for controller in TerminalController.all {
+            for view in controller.surfaceTree where pending.contains(view.id) {
+                if view.resumeSessionSharingIfPossible() {
+                    resumed.insert(view.id)
+                }
+            }
+        }
+
+        // `setState(.sharing)` will re-add the UUIDs on success; the
+        // replace here removes ones with no live surface or no usable
+        // persisted config, and is harmless for the in-flight resumes
+        // (their setState callbacks haven't fired yet).
+        if resumed != pending {
+            store.replace(resumed)
+        }
     }
 
     func applicationDidHide(_ notification: Notification) {

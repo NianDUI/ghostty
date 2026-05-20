@@ -404,6 +404,14 @@ extension Ghostty {
             sessionSharing.stopSharing(userInitiated: true)
         }
 
+        /// Try to auto-restart sharing using the last persisted relay
+        /// + token. Returns false when there's nothing to resume with
+        /// (caller drops the breadcrumb entry).
+        @discardableResult
+        func resumeSessionSharingIfPossible() -> Bool {
+            return sessionSharing.resumeFromPersistedConfig()
+        }
+
         /// Disable upload acceptance for the current share session.
         /// Idempotent. The user has no opt-back-in path inside the same
         /// share session — they have to stop & restart sharing to flip
@@ -2000,6 +2008,42 @@ private final class SessionSharingController {
         presentSettingsSheet(on: parentWindow)
     }
 
+    /// Restart sharing using the last persisted relay/token without
+    /// showing the settings sheet. Used by the launch-time resume flow
+    /// after `TerminalWindowRestoration` brought back the surface.
+    /// Returns false when no usable config is on disk (caller should
+    /// drop the resume entry for this surface).
+    @discardableResult
+    func resumeFromPersistedConfig() -> Bool {
+        guard let surfaceView else { return false }
+        if surfaceView.sharingState.isActive { return true }
+
+        let persisted = store.load()
+        guard let relay = persisted.relay, !relay.isEmpty else { return false }
+        let token: String = {
+            if let t = persisted.token, !t.isEmpty { return t }
+            return store.readKeychainToken(forRelay: relay)
+        }()
+        guard !token.isEmpty else { return false }
+
+        // Reuse the auto-clean install on resume too — keep the
+        // background prune job in sync with what the user last opted
+        // into, in case it got removed since last quit.
+        SessionSharingUploadAutoCleanInstaller.reconcile(
+            enabled: persisted.uploadsAutoCleanEnabled,
+            days: persisted.uploadsAutoCleanDays
+        )
+
+        startSharing(
+            relay: relay,
+            userToken: token,
+            sessionName: "",
+            persistConfig: true,
+            uploadEnabled: persisted.webUploadEnabled
+        )
+        return true
+    }
+
     func stopSharing(userInitiated: Bool) {
         shouldReconnect = false
         isStopping = true
@@ -2535,6 +2579,20 @@ private final class SessionSharingController {
             guard let self, let surfaceView = self.surfaceView else { return }
             surfaceView.sharingState = state
             surfaceView.sharingWindowTitleSuffix = state.titleSuffix
+            // Breadcrumb for auto-resume on next launch. `.sharing` is
+            // the only point we know the relay actually accepted us;
+            // `.idle`/`.error` are the only terminal states. Transient
+            // states (.connecting/.reconnecting/.stopping) intentionally
+            // leave the breadcrumb untouched so a mid-reconnect quit
+            // still gets resumed.
+            switch state {
+            case .sharing:
+                SessionSharingResumeStore.shared.add(surfaceView.id)
+            case .idle, .error:
+                SessionSharingResumeStore.shared.remove(surfaceView.id)
+            case .connecting, .reconnecting, .stopping:
+                break
+            }
         }
     }
 

@@ -51,3 +51,25 @@ codesign -dv /Applications/Ghostty.app   # universal + adhoc
 ## Sanity 标尺
 
 ReleaseFast 二进制 ~50 MiB；> 100 MiB 说明 zig 用了 Debug 没 Release。
+
+## 从 Claude Code 内 kill 并自动重启 Ghostty
+
+Claude Code 跑在 Ghostty 子 shell 里，直接 `kill` ghostty 会顺带杀掉
+自己；**reopen 必须先调度好再 kill**，否则没人替你拉回来。
+
+```bash
+PID=$(ps -A -o pid,comm | awk '/Ghostty.app\/Contents\/MacOS\/ghostty/ {print $1}' | head -1)
+nohup bash -c 'sleep 2 && open /Applications/Ghostty.app' >/dev/null 2>&1 &
+disown
+kill -9 "$PID"
+```
+
+- `nohup` 让子 shell 忽略 SIGHUP；`disown` 解绑当前 shell。父 shell
+  随 ghostty 一起死后，sleep 子进程被 launchd 收养，2 秒后调 `open`。
+- `pgrep -x ghostty` 不 work —— 主进程的 comm 是绝对路径
+  `/Applications/Ghostty.app/Contents/MacOS/ghostty`。用 `ps + awk`
+  或 `pgrep -lf "Ghostty.app"` 再过滤。
+- 用 `kill -9` 而不是 `osascript … quit`：quit 会触发"是否真的退出？"
+  的窗口列表确认弹窗（如果开了多个 tab），自动化场景下挂死。
+- ❌ 不要省掉 `nohup`/`disown`：父 shell 收到 SIGHUP 会把 sleep 一起
+  带走，`open` 永远不跑。

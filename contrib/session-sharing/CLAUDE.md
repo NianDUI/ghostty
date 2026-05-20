@@ -59,3 +59,26 @@
   `forwardToTerminal`（裸 JSON 漏进 PTY，难看）。**先升级 agent**。
 - 老 relay 收新 PATCH → 405，web client fall back 到 PUT 单 shot。
 - 老 web client 不知道 `/api/upload/*` → 终端流照常工作，没上传按钮即可。
+
+## macOS auto-resume
+
+强退 / 重新构建替换后，上次处于 `.sharing` 的 surface 启动后自动重开
+共享（**新** session token / 新 URL，不复用旧的）。
+
+- 持久化：`~/Library/Application Support/com.mitchellh.ghostty/sharing-resume.json`
+  存 `Set<UUID>`（surface id）。`SessionSharingController.setState` 单
+  钩点：`.sharing` 时 add，`.idle / .error` 时 remove；过渡态
+  （connecting / reconnecting / stopping）**不动** breadcrumb，所以
+  reconnecting 中崩溃也能恢复。
+- 恢复入口：`AppDelegate.applicationDidFinishLaunching` 末尾 dispatch
+  async 扫描 → 命中 UUID 调 `surfaceView.resumeSessionSharingIfPossible()`
+  → 内部读 `sharing.conf` + Keychain 拿 relay/token → 直接
+  `startSharing`，**不弹** sheet。失败 / surface 不在的 UUID 通过
+  `store.replace(resumed)` 清掉，下次启动不再尝试。
+- 注意：`sharing-resume.json`（surface 维度）和 `sharing.conf`
+  （relay/token/upload 偏好）是两份独立文件，**不要**混在一起改。
+  resume 依赖 `sharing.conf` 有 token —— Keychain miss + 文件 token
+  也空 → resume 返回 false，UUID 被清。
+- ❌ 不要把"旧 session_id / agent_token"塞进 breadcrumb 来复用。
+  relay 侧 TTL 一过 4408 / 4401，再 fallback 反而比直接新开复杂；
+  当前 fork 已确认接受"重启即换 URL"语义。
