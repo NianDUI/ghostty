@@ -21,6 +21,8 @@ const terminalStatus = document.querySelector("#terminalStatus");
 const backendBaseInput = document.querySelector("#backendBase");
 const tokenInput = document.querySelector("#token");
 const saveTokenButton = document.querySelector("#saveToken");
+const downloadApkButton = document.querySelector("#downloadApk");
+const downloadApkHint = document.querySelector("#downloadApkHint");
 const sessionList = document.querySelector("#sessionList");
 const sessionMeta = document.querySelector("#sessionMeta");
 const terminalMount = document.querySelector("#terminal");
@@ -131,10 +133,17 @@ function hasUserToken() {
 // the user is in the launcher. We disable the "返回" button when no
 // token is configured so the user can't escape the settings page into
 // an empty session list.
-function showLauncherSettings() {
+function showLauncherSettings({ recordHistory = true } = {}) {
   launcherHomeView.classList.add("hidden");
   launcherSettingsView.classList.remove("hidden");
   closeSettingsButton.disabled = !hasUserToken();
+  // Push a `view: 'settings'` entry so the system back gesture / hardware
+  // back button (and browser ←) can pop us back to the home view instead
+  // of exiting the APP / navigating away. Skip if we're already at this
+  // state to avoid duplicate entries on repeated openSettings clicks.
+  if (recordHistory && window.history.state?.view !== "settings") {
+    window.history.pushState({ view: "settings" }, "");
+  }
 }
 
 function showLauncherHome() {
@@ -146,9 +155,18 @@ function showLauncherHome() {
   launcherHomeView.classList.remove("hidden");
 }
 
-openSettingsButton.addEventListener("click", showLauncherSettings);
+openSettingsButton.addEventListener("click", () => showLauncherSettings());
 closeSettingsButton.addEventListener("click", () => {
-  if (hasUserToken()) showLauncherHome();
+  if (!hasUserToken()) return;
+  // If we entered settings via pushState, route the close through
+  // history.back() so the back-button event chain is consistent. The
+  // popstate handler will hide the view. Falls back to a direct hide
+  // when we somehow got here without the pushState entry.
+  if (window.history.state?.view === "settings") {
+    window.history.back();
+  } else {
+    showLauncherHome();
+  }
 });
 
 refreshSessionsButton.addEventListener("click", async () => {
@@ -177,7 +195,70 @@ tokenInput.addEventListener("input", () => {
   if (!launcherSettingsView.classList.contains("hidden")) {
     closeSettingsButton.disabled = !hasUserToken();
   }
+  syncDownloadApkButton();
 });
+
+function syncDownloadApkButton() {
+  downloadApkButton.disabled = !hasUserToken();
+}
+
+function resetDownloadApkUI(message) {
+  downloadApkButton.disabled = !hasUserToken();
+  downloadApkButton.textContent = "下载 Android 安装包";
+  if (message) downloadApkHint.textContent = message;
+}
+
+async function downloadApk() {
+  // Two-step flow: trade the Bearer user token for a short-lived URL
+  // grant, then navigate the window at /api/app/android?dl=<grant>. The
+  // blob + <a download> approach fails on Huawei/UC/in-app webviews
+  // because they refuse to trigger downloads off object URLs; a direct
+  // navigation lets the browser honour Content-Disposition natively.
+  const token = tokenInput.value.trim();
+  if (!token) {
+    resetDownloadApkUI("请先填写 User Token。");
+    return;
+  }
+  downloadApkButton.disabled = true;
+  downloadApkButton.textContent = "准备中…";
+  downloadApkHint.textContent = "正在请求下载授权。";
+  try {
+    const grantResp = await fetch(apiURL("/api/app/android/grant"), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (grantResp.status === 401) {
+      resetDownloadApkUI("Token 无效或已失效，请重新输入。");
+      return;
+    }
+    if (!grantResp.ok) {
+      resetDownloadApkUI(`授权失败（HTTP ${grantResp.status}）。`);
+      return;
+    }
+    const { token: grant } = await grantResp.json();
+    if (!grant) {
+      resetDownloadApkUI("授权响应缺少 token，请联系管理员。");
+      return;
+    }
+    const downloadURL = apiURL("/api/app/android");
+    downloadURL.searchParams.set("dl", grant);
+    // Cosmetic only — the actual navigation below is what triggers the
+    // browser's download. Reset shortly after so the button isn't stuck
+    // in case the browser stays on the page (Content-Disposition typically
+    // keeps the current page alive).
+    downloadApkHint.textContent = "已请求下载，浏览器应该开始保存文件。";
+    setTimeout(() => resetDownloadApkUI("如果未弹出下载，请检查浏览器下载管理。"), 3000);
+    window.location.href = downloadURL.toString();
+  } catch (err) {
+    resetDownloadApkUI(`下载失败：${err?.message ?? err}`);
+  }
+}
+
+downloadApkButton.addEventListener("click", () => {
+  downloadApk();
+});
+
+syncDownloadApkButton();
 
 // Persist the lock-host-size preference and re-apply on the active
 // session so the user sees the change immediately without needing
@@ -2346,7 +2427,19 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener("scroll", syncMobileViewportInsets);
 }
 
-window.addEventListener("popstate", async () => {
+window.addEventListener("popstate", async (event) => {
+  // Settings view exit: if we're on the settings page and we just
+  // popped past its `view: 'settings'` history entry, hide it back to
+  // the home view. This handles both the in-app close button (via
+  // history.back) and the Android system back gesture.
+  const inSettings = !launcherSettingsView.classList.contains("hidden");
+  const targetIsSettings = event.state?.view === "settings";
+  if (inSettings && !targetIsSettings) {
+    launcherSettingsView.classList.add("hidden");
+    if (hasUserToken()) launcherHomeView.classList.remove("hidden");
+    return;
+  }
+
   const requestedSessionID = currentRequestedSessionID();
   if (!requestedSessionID) {
     leaveTerminalView({ updateHistory: false });
@@ -2360,6 +2453,60 @@ window.addEventListener("popstate", async () => {
     await connectToSession(session, { updateHistory: false });
   }
 });
+
+// Capacitor 8 doesn't auto-route the Android back gesture / hardware
+// back button into WebView history — it emits a `backButton` event
+// with `canGoBack` and expects JS to act. Without this, the default
+// is App.finish() on every back press regardless of history depth.
+// Browser builds skip this (window.Capacitor is undefined).
+//
+// At the root view we use the Android "press back again to exit"
+// convention so an accidental swipe doesn't kill the APP.
+const EXIT_CONFIRM_WINDOW_MS = 2000;
+let lastBackPressAt = 0;
+
+function showExitConfirmToast() {
+  const existing = document.querySelector("#exit-confirm-toast");
+  if (existing) existing.remove();
+  const toast = document.createElement("div");
+  toast.id = "exit-confirm-toast";
+  toast.textContent = "再按一次返回退出";
+  Object.assign(toast.style, {
+    position: "fixed",
+    bottom: "calc(env(safe-area-inset-bottom, 0px) + 24px)",
+    left: "50%",
+    transform: "translateX(-50%)",
+    background: "rgba(0, 0, 0, 0.78)",
+    color: "#fff",
+    padding: "10px 18px",
+    borderRadius: "20px",
+    fontSize: "14px",
+    lineHeight: "1",
+    zIndex: "9999",
+    pointerEvents: "none",
+    boxShadow: "0 2px 10px rgba(0,0,0,0.3)",
+  });
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), EXIT_CONFIRM_WINDOW_MS);
+}
+
+if (window.Capacitor?.isNativePlatform?.()) {
+  import("@capacitor/app").then(({ App }) => {
+    App.addListener("backButton", ({ canGoBack }) => {
+      if (canGoBack) {
+        window.history.back();
+        return;
+      }
+      const now = Date.now();
+      if (now - lastBackPressAt < EXIT_CONFIRM_WINDOW_MS) {
+        App.exitApp();
+        return;
+      }
+      lastBackPressAt = now;
+      showExitConfirmToast();
+    });
+  });
+}
 
 setMobileToolbarCollapsed(false);
 syncMobileViewportInsets();

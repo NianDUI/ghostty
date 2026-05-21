@@ -12,11 +12,13 @@
     "test:e2e:ui": "playwright test --ui",
     "cap:sync": "npx cap sync android",
     "cap:open": "npx cap open android",
-    "android:dev": "npm run build && npx cap sync android",
-    "android:build": "npm run build && npx cap sync android"
+    "android:copy-wasm": "cp node_modules/ghostty-web/dist/ghostty-vt.wasm android/app/src/main/assets/public/",
+    "android:dev": "npm run build && npx cap sync android && npm run android:copy-wasm",
+    "android:build": "npm run build && npx cap sync android && npm run android:copy-wasm"
   },
   "dependencies": {
     "@capacitor/android": "^8.3.1",
+    "@capacitor/app": "^8.1.0",
     "@capacitor/cli": "^8.3.1",
     "@capacitor/core": "^8.3.1",
     "ghostty-web": "^0.4.0"

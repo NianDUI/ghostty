@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pins the relay's self-signed certificate so the Capacitor APP can reach
+  https://47.94.215.160:28443 (IP-only access, used when the user's DNS
+  refuses to resolve al.niandui.top). The same cert also carries the
+  domain SAN, so domain access keeps working through this trust anchor.
+  System CAs stay enabled so any other endpoint behaves normally.
+-->
+<network-security-config>
+    <domain-config>
+        <domain includeSubdomains="false">al.niandui.top</domain>
+        <domain includeSubdomains="false">47.94.215.160</domain>
+        <trust-anchors>
+            <certificates src="system"/>
+            <certificates src="@raw/ghostty_ca"/>
+        </trust-anchors>
+    </domain-config>
+</network-security-config>

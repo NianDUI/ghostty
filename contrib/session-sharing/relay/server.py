@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import contextvars
 import dataclasses
 import hashlib
 import ipaddress
@@ -468,7 +469,18 @@ class RelayState:
             "upload_pull_rejected_total": 0,
             "upload_expired_total": 0,
             "upload_bytes_total": 0,
+            "apk_download_total": 0,
+            "apk_download_rejected_total": 0,
+            "apk_download_grant_total": 0,
+            "apk_download_grant_rejected_total": 0,
         }
+        # short-lived single-use download tokens, granted by /api/app/android/grant.
+        # Maps grant_token -> expires_at (epoch seconds). Some mobile browsers
+        # (Huawei, UC, in-app webviews) refuse blob URL + <a download>, so the
+        # web client trades its Bearer token for one of these and navigates the
+        # window straight at /api/app/android?dl=<grant>. 60 s TTL keeps the
+        # leak window small if a URL ends up in a proxy log.
+        self.apk_download_grants: dict[str, float] = {}
 
     def is_valid_user_token(self, token: str) -> bool:
         allowed = self.config.allowed_user_tokens
@@ -539,6 +551,12 @@ class RelayState:
                         for upload in list(session.pending_uploads.values()):
                             _remove_upload(session, upload, reason="session_expired")
                     log_event("session_expired", session_id=session_id)
+                expired_grants = [
+                    grant for grant, deadline in self.apk_download_grants.items()
+                    if deadline < now
+                ]
+                for grant in expired_grants:
+                    self.apk_download_grants.pop(grant, None)
                 stale_rate_keys = [
                     key
                     for key, bucket in self.rate_limits.items()
@@ -610,6 +628,33 @@ async def read_http_request(
     return method, target, headers, body
 
 
+# CORS support for Capacitor Android/iOS clients. Browsers hitting the
+# same origin (where the web dist is served) don't need this; only the
+# native APP's WebView, which loads HTML from `https://localhost`, is
+# cross-origin. Authorization-bearing fetches trigger a preflight, and
+# without these headers the browser drops the response before JS sees it.
+CAPACITOR_CORS_ORIGINS = frozenset({
+    "https://localhost",   # Capacitor 5+ default (androidScheme: "https")
+    "http://localhost",    # Capacitor 4 / older Android default
+    "capacitor://localhost",  # iOS default scheme
+    "ionic://localhost",   # legacy Ionic scheme, harmless to allow
+})
+
+_cors_headers_ctx: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar(
+    "cors_headers_ctx", default={}
+)
+
+
+def build_cors_headers(request_origin: str) -> dict[str, str]:
+    if not request_origin or request_origin not in CAPACITOR_CORS_ORIGINS:
+        return {}
+    return {
+        "Access-Control-Allow-Origin": request_origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Vary": "Origin",
+    }
+
+
 async def send_response(
     writer: asyncio.StreamWriter,
     status: int,
@@ -640,6 +685,11 @@ async def send_response(
     }
     if extra_headers:
         headers.update(extra_headers)
+    # Inject CORS for Capacitor APP cross-origin fetches. The ctx is set
+    # by handle_connection at request entry. setdefault avoids clobbering
+    # any CORS values a handler explicitly chose to set.
+    for cors_key, cors_value in _cors_headers_ctx.get().items():
+        headers.setdefault(cors_key, cors_value)
 
     try:
         writer.write(f"HTTP/1.1 {status} {reason}\r\n".encode("utf-8"))
@@ -889,6 +939,128 @@ async def handle_sessions(
         ]
 
     await send_response(writer, 200, json_bytes(sessions))
+
+
+# ---------------------------------------------------------------------------
+# Android APK download. Lives next to the web dist root:
+#   <static_root>.parent / "apk" / "app-release.apk"
+# The browser fetches with a Bearer token; behaves like /api/sessions.
+# ---------------------------------------------------------------------------
+
+
+APK_DOWNLOAD_FILENAME = "ghostty-sharing.apk"
+APK_GRANT_TTL_SECONDS = 60.0
+
+
+def resolve_apk_path(static_root: pathlib.Path) -> pathlib.Path:
+    override = os.environ.get("GHOSTTY_RELAY_APK_PATH", "").strip()
+    if override:
+        return pathlib.Path(override)
+    return static_root.parent / "apk" / "app-release.apk"
+
+
+async def handle_apk_grant(
+    state: RelayState,
+    writer: asyncio.StreamWriter,
+    method: str,
+    headers: dict[str, str],
+) -> None:
+    """Trade a Bearer user token for a short-lived URL-friendly grant
+    that the web client can append to a navigation URL. Some mobile
+    browsers won't trigger downloads off blob URLs."""
+    if method != "POST":
+        await send_response(writer, 405, json_bytes({"error": "method not allowed"}))
+        return
+
+    token = bearer_token(headers)
+    if not token:
+        state.increment_metric("auth_rejected_total")
+        state.increment_metric("apk_download_grant_rejected_total")
+        await send_response(writer, 401, json_bytes({"error": "missing bearer token"}))
+        return
+    if not state.is_valid_user_token(token):
+        state.increment_metric("auth_rejected_total")
+        state.increment_metric("apk_download_grant_rejected_total")
+        await send_response(writer, 401, json_bytes({"error": "invalid user token"}))
+        return
+
+    grant = secrets.token_urlsafe(16)
+    async with state.lock:
+        state.apk_download_grants[grant] = time.time() + APK_GRANT_TTL_SECONDS
+    state.increment_metric("apk_download_grant_total")
+    await send_response(
+        writer,
+        200,
+        json_bytes({"token": grant, "expires_in": int(APK_GRANT_TTL_SECONDS)}),
+    )
+
+
+async def handle_apk_download(
+    state: RelayState,
+    writer: asyncio.StreamWriter,
+    method: str,
+    headers: dict[str, str],
+    query: dict[str, list[str]],
+) -> None:
+    if method != "GET":
+        await send_response(writer, 405, json_bytes({"error": "method not allowed"}))
+        return
+
+    # Auth: either ?dl=<grant> (mobile-friendly URL nav) or Authorization: Bearer
+    # (desktop / curl). Grants are not consumed on use — the 60 s TTL is the
+    # only gate, so a browser retry of the same navigation still works.
+    grant_values = query.get("dl") or query.get("grant") or []
+    grant = grant_values[0] if grant_values else ""
+    authorized = False
+    if grant:
+        async with state.lock:
+            deadline = state.apk_download_grants.get(grant)
+            if deadline is not None and deadline >= time.time():
+                authorized = True
+            elif deadline is not None:
+                state.apk_download_grants.pop(grant, None)
+        if not authorized:
+            state.increment_metric("apk_download_rejected_total")
+            await send_response(
+                writer, 401, json_bytes({"error": "invalid or expired grant"})
+            )
+            return
+    else:
+        token = bearer_token(headers)
+        if not token:
+            state.increment_metric("auth_rejected_total")
+            state.increment_metric("apk_download_rejected_total")
+            await send_response(
+                writer, 401, json_bytes({"error": "missing bearer token"})
+            )
+            return
+        if not state.is_valid_user_token(token):
+            state.increment_metric("auth_rejected_total")
+            state.increment_metric("apk_download_rejected_total")
+            await send_response(
+                writer, 401, json_bytes({"error": "invalid user token"})
+            )
+            return
+
+    apk_path = resolve_apk_path(state.config.static_root)
+    if not apk_path.exists() or not apk_path.is_file():
+        state.increment_metric("apk_download_rejected_total")
+        log_event("apk_download_missing", path=str(apk_path))
+        await send_response(writer, 503, json_bytes({"error": "apk_not_available"}))
+        return
+
+    body = apk_path.read_bytes()
+    state.increment_metric("apk_download_total")
+    await send_response(
+        writer,
+        200,
+        body,
+        "application/vnd.android.package-archive",
+        extra_headers={
+            "Content-Disposition": f'attachment; filename="{APK_DOWNLOAD_FILENAME}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2002,6 +2174,31 @@ async def handle_connection(
     client_ip = resolve_client_ip(peer_host, headers, state.config.trusted_proxies)
     admin_listener_enabled = state.config.admin_port > 0
 
+    # Establish CORS for the rest of this request. send_response reads
+    # the ContextVar and merges these into the response headers; the
+    # OPTIONS preflight is short-circuited here so handlers don't need
+    # to know about it.
+    cors_headers = build_cors_headers(headers.get("origin", "").strip())
+    if cors_headers:
+        _cors_headers_ctx.set(cors_headers)
+    if method == "OPTIONS":
+        if not cors_headers:
+            await send_response(writer, 403, b"", "text/plain")
+            return
+        requested = headers.get("access-control-request-headers", "")
+        await send_response(
+            writer,
+            204,
+            b"",
+            "text/plain",
+            extra_headers={
+                "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": requested or "Authorization, Content-Type",
+                "Access-Control-Max-Age": "86400",
+            },
+        )
+        return
+
     # Upload PUT and PATCH both stream their body so files larger than
     # max_body_bytes are still allowed. Everything else reads the body
     # up-front under the legacy cap. HEAD has no body so the cheap
@@ -2086,6 +2283,8 @@ async def handle_connection(
         "/ws/agent",
         "/ws/client",
         "/api/upload/init",
+        "/api/app/android",
+        "/api/app/android/grant",
     }
     if path in rate_limited_paths or is_upload_resource:
         async with state.lock:
@@ -2118,6 +2317,12 @@ async def handle_connection(
         return
     if path == "/api/sessions":
         await handle_sessions(state, writer, method, headers)
+        return
+    if path == "/api/app/android":
+        await handle_apk_download(state, writer, method, headers, query)
+        return
+    if path == "/api/app/android/grant":
+        await handle_apk_grant(state, writer, method, headers)
         return
     if is_upload_init:
         await handle_upload_init(state, writer, method, body, headers)
