@@ -433,10 +433,13 @@ def _handle_name_update(state: "RelayState", session: "Session", payload: bytes)
     if session.name != new_name:
         session.name = new_name
         state.increment_metric("name_update_total")
+        # Don't log the name itself — terminal titles often carry the
+        # active task/project subject, and journal access is shared with
+        # ops. Length lets us still spot abuse (zero-length / huge names).
         log_event(
             "name_update",
             session_id=session.session_id,
-            session_name=new_name,
+            name_length=len(new_name),
         )
     return True
 
@@ -888,7 +891,7 @@ async def handle_register(
             await send_response(writer, 503, json_bytes({"error": "session capacity reached"}))
             return
         state.sessions[session_id] = session
-    log_event("register", session_id=session_id, session_name=name, online=False)
+    log_event("register", session_id=session_id, name_length=len(name), online=False)
 
     await send_response(
         writer,
