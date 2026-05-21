@@ -39,7 +39,7 @@
    - 不污染系统 Python 3.6
 5. **跑一个新建系统用户 `ghostty-relay`**，无 shell、无 home、systemd 启停。
 6. **新增 `/etc/nginx/conf.d/ghostty-relay.conf`**，绝不动现有任何 conf 文件。
-7. 阿里云安全组开放 `<RELAY_PORT>/tcp` 入方向（控制台手动改，部署脚本无权限）。
+7. 云厂商安全组 / VPS 防火墙开放 `<RELAY_PORT>/tcp` 入方向（控制台手动改，部署脚本无权限）。
 
 ## 3. 部署流程
 
@@ -325,8 +325,8 @@ curl -sS -i -X POST https://<RELAY_DOMAIN>:<RELAY_PORT>/api/register \
 
 ### 3.11 安全组
 
-阿里云控制台 → 安全组 → 入方向 → 新增 `TCP <RELAY_PORT>` → 来源
-`0.0.0.0/0`（如有内网限制按需收紧）。
+云厂商控制台 → 安全组（或 VPS 防火墙 / iptables）→ 入方向 → 新增
+`TCP <RELAY_PORT>` → 来源 `0.0.0.0/0`（如有内网限制按需收紧）。
 
 ### 3.12 烟测
 

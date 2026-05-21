@@ -93,41 +93,63 @@ HTTP 下载呈现的文件名是 `ghostty-sharing.apk`(Content-Disposition 决�
    header 时**(非 `Authorization`/`Content-Type`),必须确认 preflight
    echo `Access-Control-Request-Headers` 已覆盖,或显式扩 Allow-Headers。
 
-## TLS:IP 直连用自签证书 + NSC pin
-
-部分 ISP / 路由器屏蔽小众 TLD(`.top` 等)→ 用户手机解析不到主域名 →
-APP fetch `https://<domain>` 直接 "Failed to fetch"。用 IP 访问的话
-letsencrypt 证书没有 IP SAN → TLS hostname mismatch → 同样失败,Android
-WebView 不允许跳过(`onReceivedSslError` 会被 Play 拒)。
-
-解法是**自签证书 + NSC 信任**:
-
-- 服务器 `/etc/nginx/ghostty-selfsigned.{crt,key}` 包含 SAN
-  `DNS:<domain>, IP:<ip>`(用 openssl config 文件方式生成,旧版 openssl
-  不支持 `-addext`)。
-- `ghostty-relay.conf` **双 server 块,同端口** `28443`:
-  - `server_name <domain>`:letsencrypt(浏览器走这条,SNI 路由命中)
-  - `listen ... default_server`:自签(SNI miss / IP 访问命中)
-  浏览器版体验不降级,APP IP 直连也通。
-- APP 端 `res/raw/ghostty_ca.pem` 内置该证书,`res/xml/network_security_config.xml`
-  对 `<domain>` 和 `<ip>` 两个 host 同时声明 trust anchor(`system` +
-  `@raw/ghostty_ca`),AndroidManifest 引用。
-- 续期:letsencrypt 自动续(certbot 默认),自签证书 3650 天(10 年)
-  不需要管。如果 IP 变了,要重新生成自签 + 重打 APK。
-
-**反模式**:写自定义 `WebViewClient.onReceivedSslError()` 来"忽略证书"
-。Google Play 会拒,任何 WiFi 上的 MITM 都能伪装服务器,**远比当前方案不安全**。
-trust anchor pin 比 letsencrypt 公共 CA 更安全(锁了 issuer)。
-2. **APP 内"下载 Android 安装包"按钮目前未真机验证**:Android WebView
-   默认无 `DownloadListener`,`<a download>` + blob URL 在 Capacitor 内
-   可能无反应。浏览器版工作正常。若 APP 内不工作,在 MainActivity 注册
-   `setDownloadListener` 拦截。
-3. 混合内容:APP 是 https,relay 必须有效 TLS。自签证书 / 明文 http
-   会被 WebView 拒,wss 也连不上。
+2. **APK 内"下载安装包"按钮**:走 grant 流程(`POST /api/app/android/grant`
+   → `?dl=<short>` navigate),已真机验证。曾考虑直接用 blob URL +
+   `<a download>`,但华为 / UC / in-app webview 拒绝触发下载,所以
+   改成让浏览器原生跟随 `Content-Disposition`。短 token 60s TTL,可
+   重复使用(浏览器 retry 友好),`cleanup_loop` 每 5 秒清过期。
+3. 混合内容:APP 是 https,relay 必须 https。明文 http / 没被 NSC
+   trust 的自签证书都会被 WebView 拒,wss 同样连不上。**当前**用自签
+   证书 + NSC pin 解决,见下面 TLS 段。
 4. 移动端 IME 路径(`src/main.js` 接近 2240 行的 `mobileInput` 段:
    `compositionstart/end` + Enter/Tab/Backspace 单独 handler + sticky
    Ctrl/Alt modifier)已完整,Capacitor WebView 复用浏览器移动端代码,
    **除非真机测出问题,别动这段**。
+
+## TLS:全自签证书 + NSC pin(主方案,letsencrypt 已弃)
+
+历史:首版双证书方案 — letsencrypt 给域名 + 自签给 IP 直连。后切**全
+自签**,letsencrypt 弃用。理由:
+
+- 部署所在的网络环境未做 ICP 备案,80 端口对外的 HTTP 访问被云接入层
+  前置拦截(连接成功但 server 不回响应 / 直接返回 403),certbot
+  HTTP-01 challenge 拿不到 200。
+- HTTP-01 / TLS-ALPN-01 都依赖 80 / 443 端口对外可达,无解。
+- DNS-01 是唯一可走路径,但需要 DNS provider API token + 长期维护,
+  对一个内部 / 小团队工具不值得。
+- 经验证:实际部署的中间层在非标 HTTPS 端口上**不做 SNI inspect**,
+  自签证书域名访问正常工作(浏览器装 trust anchor 后无警告)。
+
+当前架构:
+
+- 服务器自签证书(nginx 配置里 `ssl_certificate` 指向那对 `.crt/.key`,
+  路径写在 ops 记录里,**不在 git**),SAN 同时含 `DNS:<域名>` 和
+  `IP:<服务器 IP>`,10 年有效期。用 openssl config 文件方式生成
+  (老版 openssl 不支持 `-addext`)。
+- nginx **单 server 块**(`server_name _; ... default_server`),
+  域名 + IP 都命中同一份自签证书。letsencrypt 文件保留 + certbot cron
+  注释(以后想切回备案路线随时可恢复),但 nginx 不再引用。
+- APP 端:`res/raw/ghostty_ca.pem` 内置自签证书,
+  `res/xml/network_security_config.xml` 对域名 + IP 两个 host 声明
+  trust anchor。APP 域名访问 + IP 访问都通过 NSC pin 验证。
+- 桌面浏览器:首访"未知颁发者"警告,点继续浏览器记住例外。开发者机器
+  可装 trust anchor 跳过警告:
+  - macOS:`sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain <path-to-ghostty_ca.pem>`
+  - Linux:`cp ghostty_ca.pem /usr/local/share/ca-certificates/ && update-ca-certificates`(Debian/Ubuntu);RHEL 系用 `update-ca-trust`
+- 续期:**10 年**到期前重生成 cert + 重打 APK + 推 nginx + 用户重装。
+  日历记到期前几个月提醒即可。
+- IP 变更:必须重生成证书(SAN 含 IP),否则 NSC pin 失效。**没有自动**
+  兜底机制,服务器迁移要走完整流程。
+
+**反模式 / 失效推论**:
+
+- 写 `WebViewClient.onReceivedSslError()` 来"忽略证书":Google Play 拒,
+  WiFi MITM 风险,**远比 trust anchor pin 不安全**。
+- 重新启用 letsencrypt 又不做 ICP 备案:续期早晚再坏,等于把今天踩
+  的坑重新踩一遍。要么走 DNS-01 持续维护 API token,要么留自签。
+- 之前推测"中间层在非标 HTTPS 端口做 SNI inspect" — **错的**,经验证
+  浏览器域名访问完全 OK。`curl LibreSSL` 偶发 SSL_ERROR_SYSCALL 是
+  macOS 系统 curl 跟某层 TLS 实现的 niche 兼容性问题,不影响生产。
 
 ## 远端是 Linux 的小坑
 
