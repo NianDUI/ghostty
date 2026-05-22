@@ -79,3 +79,4 @@ Each terminal surface runs three dedicated threads:
 - Do not run multiple Git write operations in parallel in this repository.
 - Parallel `git add` / `git commit` / `git push` attempts can leave or contend on `.git/index.lock`.
 - If an `index.lock` error appears, first confirm there is no active Git process, then retry the Git operation serially.
+- 合并 fork 上游主分支（upstream `main`）时，如果 diff 涉及国际化展示文本（`po/*.po`、`po/*.pot`、`macos/**/Localizable.strings`、blueprint UI 字符串、Swift/Zig 中用于显示的字面量等），不要只看本地译文的 merge 冲突——必须先 diff 上游对**原始源文本**（msgid / 英文原文 / Base.lproj / 占位符如 `%s` → `%1$s`）的修改，再判断本地中文等译文是否需要同步改写或标 `fuzzy`。否则容易出现"译文 merge 干净但与新原文语义不符"，甚至占位符不匹配导致运行时崩溃。涉及 macOS 端时跑一遍 `zig build update-translations` 复核同步状态。
