@@ -619,19 +619,42 @@ function wsBaseURL(pathname) {
 // Live-frame coalescing + visibility throttle.
 //
 // Hot path is socket onmessage → scheduleTermWrite. Multiple writes
-// inside one ~50 ms window merge into a single `terminal.write`,
-// pinning effective render rate at ~20 FPS regardless of how fast
-// the host emits. Spinner TUIs at 60+ Hz were making the phone hot
-// because xterm's canvas renderer repaints on every write; 20 FPS
-// is well below the perceptual threshold for a text-mode spinner
-// but cuts the repaint count by 3×. When the page is hidden we
-// keep accumulating bytes but skip the flush entirely — a
-// backgrounded WebView shouldn't be burning CPU/GPU on invisible
-// repaints. A 1 MB cap bounds the buffer so a long background
-// stretch can't OOM the WebView; the snapshot frame re-anchors
-// anyway, so dropping the oldest queued bytes is safe.
+// inside one window merge into a single `terminal.write`, pinning
+// the effective render rate regardless of how fast the host emits.
+// Spinner TUIs at 60+ Hz were making the phone hot because the
+// canvas renderer repaints on every write; coalescing cuts repaint
+// count by an order of magnitude. We pick the window per platform:
+//
+//   - Touch-input devices (APK + phones / tablets, gated purely by
+//     `pointer: coarse` so a narrow desktop window does NOT trip into
+//     this branch): 80 ms ≈ 12 FPS. Still above the perceptual floor
+//     (~10 FPS) so text-mode spinners read as continuous motion, but
+//     ~40% fewer paints than the desktop setting, which directly
+//     trims canvas fillRect / GPU composite work + battery on phones.
+//   - Mouse/keyboard browsers: 50 ms = 20 FPS. PCs aren't thermally
+//     constrained and users expect snappier feedback for spinners /
+//     typing echo even when the window is narrow.
+//
+// When the page is hidden we keep accumulating bytes but skip the
+// flush entirely — a backgrounded WebView shouldn't be burning
+// CPU/GPU on invisible repaints. A 1 MB cap bounds the buffer so a
+// long background stretch can't OOM the WebView; the snapshot frame
+// re-anchors anyway, so dropping the oldest queued bytes is safe.
 const PENDING_WRITE_CAP_BYTES = 1024 * 1024;
-const PENDING_WRITE_THROTTLE_MS = 50;
+const PENDING_WRITE_THROTTLE_MS_MOBILE = 80;
+const PENDING_WRITE_THROTTLE_MS_DESKTOP = 50;
+
+function pendingWriteThrottleMs() {
+  // Use pointer:coarse (the actual "touch input device" signal)
+  // rather than shouldUseMobileInput() — the latter also flips true
+  // on narrow PC viewports (max-width: 860px) for UI layout reasons,
+  // but a narrow PC window is still a PC: not thermally constrained,
+  // and the user expects snappy spinner / echo response. Only slow
+  // down the throttle when the input device itself is touch-only.
+  return window.matchMedia("(pointer: coarse)").matches
+    ? PENDING_WRITE_THROTTLE_MS_MOBILE
+    : PENDING_WRITE_THROTTLE_MS_DESKTOP;
+}
 let pendingWriteChunks = [];
 let pendingWriteSize = 0;
 let pendingWriteTimer = null;
@@ -652,7 +675,7 @@ function scheduleTermWrite(bytes) {
   pendingWriteTimer = window.setTimeout(() => {
     pendingWriteTimer = null;
     flushPendingWrites();
-  }, PENDING_WRITE_THROTTLE_MS);
+  }, pendingWriteThrottleMs());
 }
 
 function flushPendingWrites() {
