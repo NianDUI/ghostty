@@ -939,12 +939,39 @@ function dropPendingWrites() {
 // the existing pendingWrite throttle (50 ms desktop / 80 ms mobile)
 // caps rAF frequency to ≤20 Hz.
 let scheduledPaintFrame = null;
+// Upgradeable force flag: any schedulePaint(true) before the frame
+// fires pulls it up to forceAll, even if a previous schedulePaint(false)
+// already booked the rAF. Cleared on cancel and at the start of the
+// rAF callback so the next schedule starts at default.
+let scheduledPaintForce = false;
 
-function schedulePaint() {
+// force=false: dist's dirty-row optimisation — only repaint rows that
+// changed in wasmTerm since last render. The default for normal writes.
+//
+// force=true: pass forceAll through to renderer.render so every visible
+// row is redrawn regardless of dist's dirty tracking. Use whenever the
+// canvas backing might be stale relative to wasmTerm — these are the
+// paths where dirty-only is wrong:
+//   - first paint after `terminal.open()` / dispose+recreate: dist's
+//     open() does paint with forceAll=true, but applyRendererDpr's
+//     renderer.resize then resets ctx + fillRect background and wipes
+//     it. The first schedulePaint AFTER install must redo forceAll.
+//   - visibility resumed: Android WebView may have lost GPU texture
+//     while backgrounded (OS evicts on memory pressure). dimensions
+//     match so dist's self-heal doesn't trigger; only forceAll can
+//     overwrite the garbage page contents.
+//   - applyScreenSnapshot: the snapshot is a re-anchor checkpoint;
+//     even if part of the new content equals wasmTerm's pre-snapshot
+//     state (snapshot includes static frame chrome), we want every
+//     visible row redrawn so we don't leave stale GPU pages visible.
+function schedulePaint(force = false) {
   if (!terminal || terminal.isDisposed || !terminal.isOpen) return;
+  if (force) scheduledPaintForce = true;
   if (scheduledPaintFrame != null) return;
   scheduledPaintFrame = window.requestAnimationFrame(() => {
     scheduledPaintFrame = null;
+    const forceAll = scheduledPaintForce;
+    scheduledPaintForce = false;
     if (!terminal || terminal.isDisposed || !terminal.isOpen) return;
     const renderer = terminal.renderer;
     const wasm = terminal.wasmTerm;
@@ -952,7 +979,7 @@ function schedulePaint() {
     try {
       renderer.render(
         wasm,
-        false,
+        forceAll,
         terminal.viewportY,
         terminal,
         terminal.scrollbarOpacity,
@@ -961,11 +988,16 @@ function schedulePaint() {
   });
 }
 
+function scheduleFullPaint() {
+  schedulePaint(true);
+}
+
 function cancelScheduledPaint() {
   if (scheduledPaintFrame != null) {
     window.cancelAnimationFrame(scheduledPaintFrame);
     scheduledPaintFrame = null;
   }
+  scheduledPaintForce = false;
 }
 
 // Install the on-demand patch on a fresh Terminal instance. Must run
@@ -1032,14 +1064,15 @@ function installOnDemandRender(t) {
   // re-resize).
   applyRendererDpr(true);
 
-  // (6) dist's open() already painted once before startRenderLoop.
-  // We just cancelled that loop; schedule one explicit paint so any
-  // post-open state mutation that landed before installOnDemandRender
-  // ran is reflected. applyRendererDpr already calls schedulePaint
-  // when it actually changes DPR, but it's a no-op when the requested
-  // DPR equals what dist initialised — explicit schedule here covers
-  // that branch.
-  schedulePaint();
+  // (6) dist's open() already painted once before startRenderLoop with
+  // forceAll=true, but applyRendererDpr's renderer.resize then wiped
+  // the canvas (canvas.width assignment resets ctx + fillRect background).
+  // Schedule a full paint so the first visible frame is a complete
+  // render, not a forceAll-only-then-overwritten-by-dirty-only frame.
+  // This also recovers from the Android driver "new canvas reuses a GPU
+  // page that wasn't zeroed" case — on a clean canvas the forceAll
+  // overhead is negligible.
+  scheduleFullPaint();
 }
 
 // Low-res rendering preset. Cap the renderer's effective DPR so the
@@ -1080,7 +1113,11 @@ function applyRendererDpr(force = false) {
   try {
     renderer.resize(terminal.cols, terminal.rows);
   } catch (_) {}
-  schedulePaint();
+  // renderer.resize internally fills the canvas with theme.background.
+  // A dirty-only schedulePaint here would leave most of the visible
+  // area as bare background until the next mutation. Force full paint
+  // so the existing wasmTerm content is restored immediately.
+  scheduleFullPaint();
 }
 
 // Tear down the xterm instance + DOM nodes it created, so the next
@@ -1235,7 +1272,11 @@ async function ensureTerminal() {
       });
     }
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) schedulePaint();
+      // Force-all so that an Android WebView whose GPU texture was
+      // evicted while backgrounded gets a clean repaint of the entire
+      // visible area, not just dist's dirty rows. Without force the
+      // non-dirty rows show GPU garbage from the evicted page.
+      if (!document.hidden) scheduleFullPaint();
     });
     globalTerminalListenersInstalled = true;
   }
@@ -1820,6 +1861,14 @@ function applyScreenSnapshot(frame) {
   // the clearing makes the redraw seamless (no flash, scrollback
   // preserved across reconnects).
   terminal.write(bytes);
+  // terminal.write's wrap already booked a forceAll=false schedulePaint;
+  // upgrade it to forceAll so every visible row is redrawn. The snapshot
+  // is a complete re-anchor — even when part of its content equals
+  // wasmTerm's pre-snapshot state (static frame chrome, status bar),
+  // we must overwrite the GPU page anyway because the canvas backing
+  // could be stale (Android backgrounded WebView, driver page reuse,
+  // ctx state from a recent renderer.resize).
+  scheduleFullPaint();
   // When the locked host grid is taller than the mobile viewport
   // (e.g. host 46 rows in a 33-row visible window), the snapshot
   // lands but xterm's viewport stays at the top → the user sees the
@@ -2866,6 +2915,17 @@ terminalView.addEventListener("pointerdown", (event) => {
 window.addEventListener("focus", focusTerminal);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
+    // First: force a full repaint immediately. Between background and
+    // foreground the Android WebView may have lost the canvas's GPU
+    // texture (OS evicts under memory pressure for backgrounded apps).
+    // canvas.width/height are unchanged so dist's self-heal in render()
+    // won't trigger; only an explicit forceAll overwrites the garbage
+    // page contents. We paint the CURRENT wasmTerm state — it's the
+    // pre-suspend snapshot, possibly stale relative to the host, but
+    // it's at least a complete coherent frame instead of half-garbage.
+    // The fresh snapshot from the reconnect below overwrites it once
+    // it lands.
+    scheduleFullPaint();
     // While the tab was hidden scheduleTermWrite kept appending to
     // pendingWriteChunks but skipped the flush (see the
     // `if (document.hidden) return;` guard there). The ring buffer

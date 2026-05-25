@@ -220,6 +220,52 @@ desktop-width 容器被严重低估 → 右侧列被裁), 同 commit 已修成�
 对 cap DPR 无影响(self-heal 用的也是实例 `devicePixelRatio` 字段)。
 升包时注意确认这个自愈逻辑还在。
 
+## Stale canvas backing: forceAll 路径
+
+`schedulePaint(force=true)` / `scheduleFullPaint()` 在三个特殊点使用,
+对抗 "canvas DOM 完好但 GPU texture 内容是 stale/garbage" 这条
+dist 自愈不覆盖的盲区。
+
+dist 内部 dirty-row 优化默认只画 `wasmTerm.isRowDirty(y)` 返回 true
+的行,其他行保留 canvas 上现有像素。这在「上一帧画的内容 = 当前 GPU
+backing 内容」时正确, 但在以下场景**不正确**:
+
+1. **Android WebView 后台被回收**: APP 切到其他应用 + 待一会, OS 主动
+   evict GPU texture (canvas DOM / 维度都完好, dist self-heal 不触发,
+   因为它只 check canvas.{width,height} 是否 = cols × metric × DPR)。
+   切回来时 visibility handler 必须 `scheduleFullPaint()` 强制把当前
+   wasmTerm 全画一遍, 否则非 dirty rows 显示 GPU 上的随机像素 → 用户
+   看到 "文字重叠"。
+2. **Snapshot 重锚**: agent push 的 snapshot 是完整的可视区域内容,
+   即使其中部分 row 跟 wasmTerm 当前状态相同 (静态边框 / 状态栏),
+   也必须全画 — 因为 GPU backing 可能 stale。
+3. **install / DPR 切换**: `renderer.resize` 调用 `canvas.width = X`
+   会 reset ctx state + fillRect 背景, 把之前 forceAll=true 的 render
+   输出抹掉; 后续 schedulePaint(force=false) 看到 wasmTerm 几乎都
+   non-dirty (snapshot 还没来), 不画 → 用户看到纯背景色。 install
+   末尾 + applyRendererDpr 末尾必须 `scheduleFullPaint()`。
+
+**调用约定**:
+
+- `schedulePaint()` (force=false 默认): 日常 write / scroll / hover
+  事件用, dirty-only 优化, 廉价
+- `scheduleFullPaint()` (force=true): 上述三个特殊点。开销 = 整屏
+  fillRect + 全部 row 重画, cap DPR 1.5 时整屏成本可接受
+
+**dedupe 行为**: `schedulePaint(true)` 跟 `(false)` 共享同一个
+`scheduledPaintFrame` rAF; force flag 是 upgradeable - true 永远覆盖
+false。同一帧多次混合调用最终走 force=true 路径。`cancelScheduledPaint`
+同时清 flag。
+
+**反模式**:
+
+- ❌ 把所有 `schedulePaint()` 改成 `scheduleFullPaint()`。日常 write
+  路径每帧 forceAll 会让 cap DPR 的功耗优势打折; 只在上述三个点
+  force 即可
+- ❌ 在 `terminal.write` wrap 内 force。dist's dirty tracking 在
+  write 路径下是准确的 (wasmTerm dirty 标记跟 write 的内容一致),
+  GPU backing 也是 fresh (上一帧的 render 输出), 强 force 是浪费
+
 ## Desktop-width pan momentum
 
 src/main.js 在 touchend 后启动短期 rAF 链 (`panMomentumStep`),按
