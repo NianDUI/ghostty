@@ -14,8 +14,6 @@
         --accent: #0c7a5a;
         --accent-soft: #d7efe4;
         --warn: #b36a00;
-        --mobile-toolbar-height: 0px;
-        --mobile-toolbar-offset: 0px;
         --mobile-viewport-height: 100vh;
       }
 
@@ -464,16 +462,16 @@
 
       @media (pointer: coarse), (max-width: 860px) {
         .mobile-toolbar-toggle {
-          position: fixed;
+          position: absolute;
           left: 50%;
-          /* The pill sits straddling the toolbar's upper edge: -6px
-             lifts it so 6 px of pill height overlaps the toolbar
-             background. The matching top-padding on .mobile-toolbar
-             (10 px) keeps the ESC row clear of the embedded pill while
-             still leaving the pill visually "anchored" to the toolbar. */
-          bottom: calc(
-            var(--mobile-toolbar-height) + var(--mobile-toolbar-offset) - 12px
-          );
+          /* Pill straddles the .terminal-wrap's bottom edge. When the
+             toolbar is expanded it sits flush against the wrap
+             underneath, so -12 px lands the pill half on the wrap and
+             half on the toolbar's top edge. Collapsed (toolbar
+             display:none), the wrap takes the full terminal-page
+             height and the pill ends up just above the viewport bottom
+             — exactly where the user expects an "expand" affordance. */
+          bottom: -12px;
           z-index: 30;
           display: inline-flex;
           align-items: center;
@@ -508,13 +506,11 @@
            bleeds across center and clips the toggle. The accessible name
            lives on aria-label / title. */
         .mobile-upload-launcher {
-          position: fixed;
+          position: absolute;
           right: 14px;
           /* Same vertical offset as .mobile-toolbar-toggle so the two
              pills stay on the same baseline. */
-          bottom: calc(
-            var(--mobile-toolbar-height) + var(--mobile-toolbar-offset) - 12px
-          );
+          bottom: -12px;
           z-index: 30;
           display: inline-flex;
           align-items: center;
@@ -539,10 +535,15 @@
         }
 
         .mobile-toolbar {
-          position: fixed;
-          left: 0;
-          right: 0;
-          bottom: var(--mobile-toolbar-offset);
+          /* Flow item inside .terminal-page (flex column). When visible
+             it takes its natural height at the bottom; the sibling
+             .terminal-wrap (flex:1) shrinks to fit, so the canvas
+             height accounts for the toolbar automatically — no JS
+             measurement of offsetHeight, no race during display:none
+             → visible transitions. Collapsing the toolbar
+             (display:none) lets the wrap reclaim that space and the
+             terminal grid regrows. */
+          flex: 0 0 auto;
           z-index: 20;
           display: grid;
           grid-template-columns: repeat(8, minmax(0, 1fr));
@@ -570,27 +571,38 @@
         }
 
         .mobile-toolbar.hidden {
-          display: grid !important;
-          transform: translateY(calc(100% + 14px));
-          opacity: 0;
-          pointer-events: none;
+          /* Pull the toolbar out of the flow entirely so the
+             .terminal-wrap (flex:1) reclaims its space and the
+             terminal grid resizes to fill the viewport. */
+          display: none !important;
         }
 
-        .terminal-page .terminal-host {
-          padding-bottom: calc(
-            var(--mobile-toolbar-height) + var(--mobile-toolbar-offset)
-          );
+        .terminal-page {
+          /* Flex column lets .terminal-wrap (flex:1) automatically
+             absorb whatever vertical space the toolbar leaves. height
+             tracks visualViewport so iOS / Android soft keyboard
+             pushes the toolbar up against the keyboard's top edge
+             without any fixed-position juggling. */
+          display: flex;
+          flex-direction: column;
+          height: var(--mobile-viewport-height);
+        }
+
+        .terminal-page .terminal-wrap {
+          flex: 1 1 auto;
+          min-height: 0;
+          height: auto;
+          /* Containing block for the absolute-positioned toggle and
+             upload-launcher pills that straddle the wrap's bottom
+             edge. */
+          position: relative;
         }
 
         .terminal-page .terminal-host > #terminal {
-          min-height: calc(
-            var(--mobile-viewport-height) - var(--mobile-toolbar-height) -
-              var(--mobile-toolbar-offset)
-          );
-          height: calc(
-            var(--mobile-viewport-height) - var(--mobile-toolbar-height) -
-              var(--mobile-toolbar-offset)
-          );
+          /* Override the desktop min-height so the canvas can shrink
+             below the full viewport when the toolbar occupies the
+             bottom row. */
+          min-height: 0;
         }
 
         /* Borderless text-only keys (matches the iOS-keyboard-accessory
@@ -762,6 +774,21 @@
             </div>
             <div id="terminal" aria-label="Ghostty shared terminal"></div>
           </div>
+          <button
+            id="mobileToolbarToggle"
+            class="mobile-toolbar-toggle hidden"
+            type="button"
+            aria-label="显示或隐藏快捷按钮"
+          ></button>
+          <button
+            id="mobileUploadLauncher"
+            class="mobile-upload-launcher hidden"
+            type="button"
+            aria-label="上传文件到 Mac 终端"
+            title="上传文件到 Mac 终端"
+          >
+            <span class="upload-launcher-glyph" aria-hidden="true">⤴</span>
+          </button>
         </div>
         <textarea
           id="mobileInput"
@@ -772,21 +799,6 @@
           spellcheck="false"
           aria-hidden="true"
         ></textarea>
-        <button
-          id="mobileToolbarToggle"
-          class="mobile-toolbar-toggle hidden"
-          type="button"
-          aria-label="显示或隐藏快捷按钮"
-        ></button>
-        <button
-          id="mobileUploadLauncher"
-          class="mobile-upload-launcher hidden"
-          type="button"
-          aria-label="上传文件到 Mac 终端"
-          title="上传文件到 Mac 终端"
-        >
-          <span class="upload-launcher-glyph" aria-hidden="true">⤴</span>
-        </button>
         <div
           id="mobileToolbar"
           class="mobile-toolbar hidden"

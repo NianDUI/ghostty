@@ -1875,38 +1875,22 @@ function syncMobileViewportInsets() {
     viewportHeight,
   );
 
-  const toolbarHeight =
-    mobile && !mobileToolbarCollapsed
-      ? `${mobileToolbar.offsetHeight || 112}px`
-      : "0px";
-  document.documentElement.style.setProperty(
-    "--mobile-toolbar-height",
-    toolbarHeight,
-  );
+  // .terminal-page is a flex column now (see index.html mobile media
+  // query), so the toolbar's natural height is absorbed by the flex
+  // layout — no JS measurement of offsetHeight, no CSS variable
+  // feedback, no race during display:none → visible transitions.
+  // visualViewport-driven --mobile-viewport-height above is the only
+  // remaining handle the JS still needs for keyboard pop / URL-bar
+  // changes; the toolbar position rides the flex container down with
+  // it automatically.
 
-  let keyboardOffset = 0;
-  if (mobile && window.visualViewport) {
-    keyboardOffset = Math.max(
-      0,
-      window.innerHeight -
-        window.visualViewport.height -
-        window.visualViewport.offsetTop,
-    );
-  }
-  document.documentElement.style.setProperty(
-    "--mobile-toolbar-offset",
-    `${keyboardOffset}px`,
-  );
-
-  // Snapshot the relevant numbers so we can correlate key viewport
-  // changes against terminal-host / #terminal layout in the log file.
   if (typeof logEvt === "function") {
     const vv = window.visualViewport;
     const termRect = terminalMount?.getBoundingClientRect();
     const hostRect = terminalMount?.parentElement?.getBoundingClientRect();
     const toolbarRect = mobileToolbar?.getBoundingClientRect();
     logEvt(
-      `VV mobile=${mobile ? 1 : 0} ih=${window.innerHeight} vvh=${vv ? Math.round(vv.height) : "-"} vvtop=${vv ? Math.round(vv.offsetTop) : "-"} kbd=${keyboardOffset | 0} tbh=${toolbarHeight} tbcollapsed=${mobileToolbarCollapsed ? 1 : 0} tb.oh=${mobileToolbar?.offsetHeight ?? "-"} tb.rect.bot=${toolbarRect ? Math.round(toolbarRect.bottom) : "-"} host.rect.bot=${hostRect ? Math.round(hostRect.bottom) : "-"} term.rect.bot=${termRect ? Math.round(termRect.bottom) : "-"} term.h=${termRect ? Math.round(termRect.height) : "-"}`,
+      `VV mobile=${mobile ? 1 : 0} ih=${window.innerHeight} vvh=${vv ? Math.round(vv.height) : "-"} vvtop=${vv ? Math.round(vv.offsetTop) : "-"} tbcollapsed=${mobileToolbarCollapsed ? 1 : 0} tb.oh=${mobileToolbar?.offsetHeight ?? "-"} tb.rect.bot=${toolbarRect ? Math.round(toolbarRect.bottom) : "-"} host.rect.bot=${hostRect ? Math.round(hostRect.bottom) : "-"} term.rect.bot=${termRect ? Math.round(termRect.bottom) : "-"} term.h=${termRect ? Math.round(termRect.height) : "-"}`,
     );
   }
 
