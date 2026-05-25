@@ -71,6 +71,15 @@ class RelayConfig:
     token_expiry_check_seconds: float = 30.0
     ping_interval_seconds: float = 30.0
     ping_timeout_seconds: float = 60.0
+    # Seconds to keep client connections alive after the agent's
+    # WebSocket drops, so a transient agent reconnect (nginx upstream
+    # idle, NAT eviction, macOS WiFi handoff — typical reconnect
+    # takes 2-3 s) doesn't propagate as a full client teardown +
+    # backlog replay + snapshot redraw. 0 disables the grace and
+    # restores the pre-fix "close clients immediately on agent drop"
+    # behaviour. Bound the value so a misconfigured huge grace can't
+    # keep half-dead clients pinned forever.
+    agent_disconnect_grace_seconds: float = 8.0
     client_send_buffer_bytes: int = 1024 * 1024
     admin_host: str = "127.0.0.1"
     admin_port: int = 0
@@ -330,6 +339,11 @@ class Session:
     # this list right after the agent's WS handshake so files don't get
     # stuck if the agent flapped while a transfer was finishing.
     pending_ready_notifications: list[str] = dataclasses.field(default_factory=list)
+    # When the agent's WebSocket drops we keep its clients connected
+    # for `agent_disconnect_grace_seconds` to ride out transient
+    # reconnects. This holds the asyncio.Task running that timer; a
+    # subsequent agent reconnect cancels it so clients stay attached.
+    disconnect_grace_task: Optional[asyncio.Task] = None
 
     def append_backlog(self, opcode: int, payload: bytes) -> None:
         if opcode not in (0x1, 0x2) or not payload:
@@ -457,6 +471,9 @@ class RelayState:
             "register_requests_total": 0,
             "register_rejected_total": 0,
             "register_reused_total": 0,
+            "agent_grace_started_total": 0,
+            "agent_grace_canceled_total": 0,
+            "agent_grace_expired_total": 0,
             "agent_connect_total": 0,
             "agent_disconnect_total": 0,
             "client_connect_total": 0,
@@ -1924,17 +1941,90 @@ async def ws_agent_loop(
                     continue
                 await forward_to_clients(session, opcode, payload)
     finally:
+        # Mark the agent half offline but DO NOT immediately drop the
+        # clients. Agents bounce frequently (nginx upstream idle, NAT
+        # timeout, macOS network handoff) and reconnect within
+        # 2-3 seconds. Tearing client connections down every time
+        # would cascade into a full backlog replay + screen snapshot
+        # repaint on every viewer — the user-visible "blank then
+        # redraw every 5 minutes" flicker. Schedule a grace task
+        # instead; if the agent reconnects within the grace window
+        # the task is canceled and clients continue uninterrupted.
         async with state.lock:
             session.online = False
             session.agent_writer = None
             session.last_seen_at = time.time()
-            clients = list(session.clients.keys())
-            session.clients.clear()
+            client_count = len(session.clients)
         state.increment_metric("agent_disconnect_total")
-        log_event("agent_disconnected", session_id=session.session_id, client_count=len(clients))
-        for client in clients:
-            await ws_close(client)
+        log_event(
+            "agent_disconnected",
+            session_id=session.session_id,
+            client_count=client_count,
+        )
+
+        grace_seconds = state.config.agent_disconnect_grace_seconds
+        if client_count > 0 and grace_seconds > 0:
+            async with state.lock:
+                previous = session.disconnect_grace_task
+                session.disconnect_grace_task = asyncio.create_task(
+                    _expire_agent_grace(state, session)
+                )
+            # Cancel any prior in-flight grace task (defensive — the
+            # agent reconnect path should have done this, but better
+            # to be idempotent than leak a coroutine).
+            if previous is not None and not previous.done():
+                previous.cancel()
+            state.increment_metric("agent_grace_started_total")
+            log_event(
+                "agent_grace_started",
+                session_id=session.session_id,
+                client_count=client_count,
+                seconds=grace_seconds,
+            )
+        else:
+            # No clients to keep alive, or grace disabled — drop
+            # whatever client refs remain (defensive cleanup; the
+            # client loop would do it too on its own exit).
+            async with state.lock:
+                stale_clients = list(session.clients.keys())
+                session.clients.clear()
+            for client in stale_clients:
+                await ws_close(client)
+
         await ws_close(writer)
+
+
+async def _expire_agent_grace(state: "RelayState", session: "Session") -> None:
+    """Fired N seconds after the agent disconnected.
+
+    If the agent reconnected in the meantime (handle_ws_agent already
+    set session.agent_writer and canceled this task) the body never
+    runs. Otherwise: close every client connection that's still
+    attached so the client side starts its normal reconnect /
+    re-list flow, exactly like the pre-grace behaviour.
+    """
+    try:
+        await asyncio.sleep(state.config.agent_disconnect_grace_seconds)
+    except asyncio.CancelledError:
+        return
+    async with state.lock:
+        # Race guard: even if cancel() lost the race with sleep
+        # completing, an active agent_writer means a reconnect
+        # already landed and we should leave the clients alone.
+        if session.agent_writer is not None:
+            session.disconnect_grace_task = None
+            return
+        clients = list(session.clients.keys())
+        session.clients.clear()
+        session.disconnect_grace_task = None
+    state.increment_metric("agent_grace_expired_total")
+    log_event(
+        "agent_grace_expired",
+        session_id=session.session_id,
+        dropped_clients=len(clients),
+    )
+    for client in clients:
+        await ws_close(client)
 
 
 async def ws_client_loop(
@@ -2038,6 +2128,24 @@ async def handle_ws_agent(
         session.online = True
         session.last_seen_at = time.time()
         session.agent_writer = writer
+        # The agent is back — if a grace task is in flight from the
+        # previous disconnect, signal it to bail before it tears the
+        # clients down. cancel() is synchronous; awaiting the task
+        # happens outside the lock so we don't block other coroutines.
+        grace_to_cancel = session.disconnect_grace_task
+        session.disconnect_grace_task = None
+
+    if grace_to_cancel is not None and not grace_to_cancel.done():
+        grace_to_cancel.cancel()
+        try:
+            await grace_to_cancel
+        except (asyncio.CancelledError, Exception):
+            pass
+        state.increment_metric("agent_grace_canceled_total")
+        log_event(
+            "agent_grace_canceled",
+            session_id=session.session_id,
+        )
 
     await websocket_handshake(writer, headers)
     state.increment_metric("agent_connect_total")
