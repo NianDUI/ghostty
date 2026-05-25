@@ -945,6 +945,23 @@ let scheduledPaintFrame = null;
 // rAF callback so the next schedule starts at default.
 let scheduledPaintForce = false;
 
+// Sliding window: while Date.now() < forcePaintUntil every schedulePaint
+// is treated as forceAll, even ones called with the default `false`.
+// Used to blanket-cover the brief window after socket reconnect /
+// foreground-resume, where dist's dirty-row tracking may underflag
+// rows that the new byte stream affects — leaving GPU pixels from the
+// pre-suspend frame visible underneath the new content (user-reported
+// "文字重叠"). 2.5 s comfortably covers a hello → backlog (~256 frames)
+// → snapshot sequence on a typical phone link without spending CPU on
+// forced paints during steady-state usage.
+let forcePaintUntil = 0;
+const FORCE_PAINT_WINDOW_MS = 2500;
+
+function startForcePaintWindow(reason) {
+  forcePaintUntil = Date.now() + FORCE_PAINT_WINDOW_MS;
+  logEvt(`force-paint window ${reason} ${FORCE_PAINT_WINDOW_MS}ms`);
+}
+
 // force=false: dist's dirty-row optimisation — only repaint rows that
 // changed in wasmTerm since last render. The default for normal writes.
 //
@@ -966,7 +983,7 @@ let scheduledPaintForce = false;
 //     visible row redrawn so we don't leave stale GPU pages visible.
 function schedulePaint(force = false) {
   if (!terminal || terminal.isDisposed || !terminal.isOpen) return;
-  if (force) scheduledPaintForce = true;
+  if (force || Date.now() < forcePaintUntil) scheduledPaintForce = true;
   if (scheduledPaintFrame != null) return;
   scheduledPaintFrame = window.requestAnimationFrame(() => {
     scheduledPaintFrame = null;
@@ -1501,6 +1518,13 @@ async function connectToSession(session, { updateHistory = true } = {}) {
 
     socket.addEventListener("open", () => {
       reconnectAttempt = 0;
+      // Open the force-paint window before any frames land. hello →
+      // backlog (~256 binary frames) → screen snapshot land in rapid
+      // sequence and each terminal.write through our wrap schedules a
+      // dirty-only paint; without the window the dirty-row optimisation
+      // leaves rows from the pre-suspend frame visible underneath the
+      // new content. See FORCE_PAINT_WINDOW_MS for the rationale.
+      startForcePaintWindow("socket_open");
       // Only fit-to-viewport when we're allowed to push the host
       // around. With the lock engaged we wait for the agent's hello
       // / screen frame to tell us what dimensions to render at.
@@ -1593,6 +1617,10 @@ function handleControlFrame(data) {
         // vertical transform pan.
         terminal.resize(frame.cols, frame.rows);
         applyDesktopWidthSize();
+        // hello often lands just before the backlog/snapshot pair on
+        // reconnect. Force the next paint so the resize-triggered
+        // self-heal doesn't leave us with a half-rendered viewport.
+        scheduleFullPaint();
       }
       return;
     case "resize":
@@ -1602,6 +1630,7 @@ function handleControlFrame(data) {
         terminal
       ) {
         terminal.resize(frame.cols, frame.rows);
+        scheduleFullPaint();
       }
       return;
     case "ping":
@@ -2118,6 +2147,11 @@ function applyAppearance(frame) {
   // Font size affects cell width, which feeds the desktop-width
   // calculation. Recompute so a smaller font frees up pan range.
   applyDesktopWidthSize();
+  // Theme change rewrites every glyph's colour; renderer.setTheme alone
+  // doesn't invalidate dist's per-row dirty tracking, so without a
+  // forced full paint the next dirty-only render leaves rows that
+  // happened to be clean drawn in the *previous* theme's colours.
+  scheduleFullPaint();
 }
 
 function sendControlFrame(frame) {
@@ -3086,6 +3120,11 @@ document.addEventListener("visibilitychange", () => {
     // The fresh snapshot from the reconnect below overwrites it once
     // it lands.
     scheduleFullPaint();
+    // Belt-and-braces: socket onopen also opens this window, but the
+    // reconnect path can take a beat to fire and we want every write
+    // in between (including any stragglers from before we close the
+    // socket) to go through forceAll too.
+    startForcePaintWindow("visibility_visible");
     // While the tab was hidden scheduleTermWrite kept appending to
     // pendingWriteChunks but skipped the flush (see the
     // `if (document.hidden) return;` guard there). The ring buffer

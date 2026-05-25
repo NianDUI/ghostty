@@ -257,14 +257,58 @@ backing 内容」时正确, 但在以下场景**不正确**:
 false。同一帧多次混合调用最终走 force=true 路径。`cancelScheduledPaint`
 同时清 flag。
 
+### `forcePaintUntil` 滑动窗口(reconnect/resume 防文字重叠)
+
+只在三个点 force 不够。**实测**:APP 切到其他应用待 1-5 分钟回前台后,
+visibility resync 把 socket close(4000) → reconnect → server 重新发
+`hello → replay_backlog (~256 frames) → screen snapshot` 序列;snapshot
+末尾 `scheduleFullPaint` 抹一次 GPU,但**之间**的 backlog binary frame
+每条都走 `terminal.write` wrap → `schedulePaint(false)` 只画 dirty row,
+dist v0.4.0 内部 dirty tracking 在快速 burst write 下偶尔会漏标已被新
+内容覆盖的 row → canvas 上残留前一帧像素 → 用户看到"文字重叠"
+(spinner 跟旧 buffer 的字符叠在同一行)。
+
+**修复**: module-level `forcePaintUntil` 时间戳,`startForcePaintWindow(reason)`
+设 `Date.now() + FORCE_PAINT_WINDOW_MS` (默认 **2500 ms**)。`schedulePaint`
+顶部 `if (force || Date.now() < forcePaintUntil) scheduledPaintForce = true`,
+所以窗口内任意 `schedulePaint()` 都自动升级成 forceAll。窗口启动点:
+
+- `socket.addEventListener("open", ...)` —— 覆盖 reconnect 后 backlog 序列
+- `document.addEventListener("visibilitychange", ...)` 的 `visible` 入口 ——
+  belt-and-braces:reconnect 路径有 100-200 ms 延迟,这之间的写仍走
+  forceAll
+
+**为什么 2500 ms**:实测一次 hello → 256 frame backlog → snapshot 在
+3G/4G/弱 WiFi 下大概 800-1800 ms 完成,2500 ms 留 700-1700 ms 头部裕量。
+再长就开始把日常使用拖进 forceAll,DPR cap 的省电收益打折。
+
+**为什么不每帧都 force**:`renderer.render(wasm, true, ...)` 整屏 fillRect
++ 全 row 重画,DPR=1.5 时一帧 ~3 ms,DPR=2.0+ 起步 6-8 ms。日常
+write throttle 50/80 ms 时还能压在 20 Hz,但若密集 burst (`ls /usr` 这种
+快速吐字符) 每帧都 forceAll 就把电省回去了。
+
+### hello / appearance / resize / screen 控制帧路径都加 scheduleFullPaint
+
+belt-and-braces,即使 force window 没启动也兜得住:
+
+- `case "hello"` 末尾 —— resize → self-heal 之间一帧的 half-render
+- `case "resize"` 末尾
+- `case "appearance"` 即 `applyAppearance` 末尾 —— `renderer.setTheme` 不
+  invalidate dist dirty tracking,不 force 的话 clean row 仍用旧主题色
+- `case "screen"` 即 `applyScreenSnapshot` 末尾(原本就有)
+
 **反模式**:
 
 - ❌ 把所有 `schedulePaint()` 改成 `scheduleFullPaint()`。日常 write
   路径每帧 forceAll 会让 cap DPR 的功耗优势打折; 只在上述三个点
   force 即可
 - ❌ 在 `terminal.write` wrap 内 force。dist's dirty tracking 在
-  write 路径下是准确的 (wasmTerm dirty 标记跟 write 的内容一致),
-  GPU backing 也是 fresh (上一帧的 render 输出), 强 force 是浪费
+  write 路径下**通常**是准确的 (wasmTerm dirty 标记跟 write 的内容
+  一致),GPU backing 是 fresh (上一帧的 render 输出),强 force 是浪费。
+  reconnect/resume race 用 `forcePaintUntil` 窗口处理,不要污染 write
+  wrap 本身
+- ❌ 把 `FORCE_PAINT_WINDOW_MS` 拉到 5s+ "保险一些"。窗口期内 cap DPR
+  失效,长 burst 用户会感到一阵子轻微发热
 
 ## Desktop-width pan momentum
 
