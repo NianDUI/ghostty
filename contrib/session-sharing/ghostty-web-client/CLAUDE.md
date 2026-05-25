@@ -179,13 +179,18 @@ grep -E "^    (write|clear|reset|paste)\(" node_modules/ghostty-web/dist/index.d
 改 hover 状态无公开 emitter,terminalMount 上的 capture-phase mouse/touch
 listener 作为唯一兜底,**不要**为了 "lint clean" 把它们也删了。
 
-## 低分辨率渲染设置(`#lowResRender`)
+## 低分辨率渲染设置(`#lowResRender` 3 档下拉)
 
-settings 页 checkbox,关联 `LOW_RES_RENDER_KEY`,开启时把
-`terminal.renderer.devicePixelRatio` cap 到 `LOW_RES_DPR_CAP = 1.5`
-(在 DPR=3 手机上 backing 像素降到 25%,4× GPU 填充节省;字体边缘略糊
-但仍可读,box-drawing 字符是受影响最明显的)。默认 off 保持原生 DPR
+settings 页 `<select>`,关联 `LOW_RES_RENDER_KEY`,4 档:`off` / `light`
+(cap=2.0) / `balanced` (cap=1.5) / `strong` (cap=1.0)。选中非 `off`
+时把 `terminal.renderer.devicePixelRatio` cap 到对应值(min(native,cap)),
+canvas backing 像素总量随 cap²/native² 线性降。默认 `off` 保持原生 DPR
 不影响桌面用户感知。
+
+**localStorage legacy 迁移**: 这个 setting 早期是 checkbox, 存的是
+"0"/"1"。新版仍用同一 key,`getInitialLowResLevel()` 把 "1" 映射成
+"balanced",空/"0"/未知值 → `off`,保证升级用户的"开启"状态不被默认
+吞掉。
 
 **实现要点**:
 

@@ -31,7 +31,7 @@ const mobileToolbar = document.querySelector("#mobileToolbar");
 const mobileToolbarToggle = document.querySelector("#mobileToolbarToggle");
 const lockHostSizeInput = document.querySelector("#lockHostSize");
 const desktopWidthInput = document.querySelector("#desktopWidth");
-const lowResRenderInput = document.querySelector("#lowResRender");
+const lowResRenderSelect = document.querySelector("#lowResRender");
 const liveMirrorModeInput = document.querySelector("#liveMirrorMode");
 const debugModeInput = document.querySelector("#debugMode");
 const mobileUploadLauncher = document.querySelector("#mobileUploadLauncher");
@@ -74,14 +74,25 @@ const SCROLLBACK_FETCH_BATCH = 200;
 const SCROLLBACK_TOP_TRIGGER_LINES = 50;
 const LOCK_HOST_SIZE_KEY = "ghostty-sharing-lock-host-size";
 const DESKTOP_WIDTH_KEY = "ghostty-sharing-desktop-width";
-// Cap `terminal.renderer.devicePixelRatio` to this when the user enables
-// low-res rendering. 1.5 is the sweet spot: on DPR=3 phones the backing
-// pixel count drops to 25% of native (4× GPU fill / texture-upload
-// savings), while text remains legible — going to 1.0 makes box-drawing
-// chars and small fonts visibly mushy. Off (= no cap) preserves the
-// upstream default of `window.devicePixelRatio`.
+// Low-resolution rendering level. Cap `terminal.renderer.devicePixelRatio`
+// to LOW_RES_LEVELS[level] when the user picks a non-"off" preset. The
+// cap-vs-quality picks: 2.0 keeps text edges crisp on DPR=3 phones with
+// modest backing savings; 1.5 is the sweet spot (4× backing savings, text
+// still legible); 1.0 is aggressive and noticeably blurs small fonts /
+// box-drawing chars. "off" disables the cap entirely so the renderer
+// uses native `window.devicePixelRatio`.
+//
+// The localStorage value was originally "0"/"1" when this was a single
+// checkbox; getLowResLevel() handles the legacy migration so users who
+// had the checkbox on don't get silently downgraded to "off".
 const LOW_RES_RENDER_KEY = "ghostty-sharing-low-res-render";
-const LOW_RES_DPR_CAP = 1.5;
+const LOW_RES_LEVELS = {
+  off: Number.POSITIVE_INFINITY, // no cap → renderer keeps native DPR
+  light: 2.0,
+  balanced: 1.5,
+  strong: 1.0,
+};
+const LOW_RES_DEFAULT_LEVEL = "off";
 // Live-mirror mode: when on, we skip the replayBuffer accumulation and
 // the lazy `fetch_scrollback` path entirely. The terminal only renders
 // the host's current viewport plus live deltas. Default off so existing
@@ -102,8 +113,20 @@ backendBaseInput.value =
 tokenInput.value = localStorage.getItem("ghostty-sharing-token") ?? "";
 lockHostSizeInput.checked = localStorage.getItem(LOCK_HOST_SIZE_KEY) === "1";
 desktopWidthInput.checked = localStorage.getItem(DESKTOP_WIDTH_KEY) === "1";
-lowResRenderInput.checked = localStorage.getItem(LOW_RES_RENDER_KEY) === "1";
+lowResRenderSelect.value = getInitialLowResLevel();
 liveMirrorModeInput.checked = localStorage.getItem(LIVE_MIRROR_KEY) === "1";
+
+// Resolve the stored low-res level on boot, applying the legacy
+// migration: the old single-checkbox UI stored "1" (= on, balanced
+// cap) and "0" (= off). New presets are "off"/"light"/"balanced"/
+// "strong". Anything unrecognised falls back to the default so a
+// stray value can't break the select.
+function getInitialLowResLevel() {
+  const raw = localStorage.getItem(LOW_RES_RENDER_KEY);
+  if (raw === "1") return "balanced";
+  if (raw && raw !== "0" && raw in LOW_RES_LEVELS) return raw;
+  return LOW_RES_DEFAULT_LEVEL;
+}
 const debugEnabled = localStorage.getItem(DEBUG_MODE_KEY) === "1";
 debugModeInput.checked = debugEnabled;
 debugModeInput.addEventListener("change", () => {
@@ -591,14 +614,17 @@ desktopWidthInput.addEventListener("change", () => {
   syncDesktopWidthMode();
 });
 
-lowResRenderInput.addEventListener("change", () => {
-  localStorage.setItem(
-    LOW_RES_RENDER_KEY,
-    lowResRenderInput.checked ? "1" : "0",
-  );
+lowResRenderSelect.addEventListener("change", () => {
+  const level = lowResRenderSelect.value;
+  // Defence against a stray DOM mutation: only persist values we
+  // actually recognise so the next page-load doesn't fall back to
+  // default silently because the value is gibberish.
+  if (level in LOW_RES_LEVELS) {
+    localStorage.setItem(LOW_RES_RENDER_KEY, level);
+  }
   // Apply live to the active terminal. When no terminal is open yet
   // (user is still on the launcher) this is a no-op — the next
-  // installOnDemandRender will read the localStorage value.
+  // installOnDemandRender will read the select value.
   applyRendererDpr();
   // After the DPR cap changes, cellW in CSS px is unchanged (metric
   // is DPR-independent), but `currentCellWidthPx` derives from
@@ -880,19 +906,21 @@ function installOnDemandRender(t) {
   schedulePaint();
 }
 
-// Low-res rendering toggle. When on, cap the renderer's effective DPR
-// so the canvas backing buffer shrinks (4× pixel savings on a DPR=3
-// phone with cap=1.5). The cap is applied per-instance because
-// `Terminal` constructor doesn't forward `RendererOptions.devicePixelRatio`
-// — we have to reach into `terminal.renderer.devicePixelRatio` after
+// Low-res rendering preset. Cap the renderer's effective DPR so the
+// canvas backing buffer shrinks (4× pixel savings on a DPR=3 phone at
+// "balanced"). The cap is applied per-instance because `Terminal`'s
+// constructor doesn't forward `RendererOptions.devicePixelRatio` — we
+// have to reach into `terminal.renderer.devicePixelRatio` after
 // `terminal.open()` builds the CanvasRenderer.
-function isLowResRenderMode() {
-  return lowResRenderInput?.checked ?? false;
+function currentLowResCap() {
+  const level = lowResRenderSelect?.value ?? LOW_RES_DEFAULT_LEVEL;
+  const cap = LOW_RES_LEVELS[level];
+  return Number.isFinite(cap) ? cap : Number.POSITIVE_INFINITY;
 }
 
 function computeRendererDpr() {
   const native = window.devicePixelRatio || 1;
-  return isLowResRenderMode() ? Math.min(native, LOW_RES_DPR_CAP) : native;
+  return Math.min(native, currentLowResCap());
 }
 
 // Apply the target DPR to the live renderer. `force=true` always
