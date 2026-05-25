@@ -23,7 +23,6 @@ const tokenInput = document.querySelector("#token");
 const saveTokenButton = document.querySelector("#saveToken");
 const downloadApkButton = document.querySelector("#downloadApk");
 const downloadApkHint = document.querySelector("#downloadApkHint");
-const reloadAppButton = document.querySelector("#reloadApp");
 const sessionList = document.querySelector("#sessionList");
 const sessionMeta = document.querySelector("#sessionMeta");
 const terminalMount = document.querySelector("#terminal");
@@ -109,19 +108,25 @@ debugModeInput.addEventListener("change", () => {
 // is documented in the launcher help text.
 let activeMirrorMode = false;
 
-saveTokenButton.addEventListener("click", async () => {
+saveTokenButton.addEventListener("click", () => {
   localStorage.setItem(
     "ghostty-sharing-backend-base",
     backendBaseInput.value.trim(),
   );
   localStorage.setItem("ghostty-sharing-token", tokenInput.value.trim());
-  // After save: jump to the session list only if a token is now present.
-  // Without a token the list can't load anything, so we stay on the
-  // settings page so the user can finish the only thing that matters.
+  // Save folds the previous explicit "重新加载页面" entry — the rest of
+  // the SPA reads backend / token from localStorage at boot, so a soft
+  // reload is the simplest "apply settings everywhere" path and also
+  // clears any wedged terminal / WebSocket / cache state in one shot.
+  // Skip the reload when no token is set: there's nothing to reload
+  // into, the user just landed on settings to fill the token field.
   if (tokenInput.value.trim()) {
-    showLauncherHome();
+    performAppReload();
+    return;
   }
-  await refreshSessions();
+  // Token-less branch: stay on settings, refresh sessions list defensively
+  // so any tab the user may switch to picks up cleared state.
+  refreshSessions();
   scheduleSessionRefresh();
 });
 
@@ -195,9 +200,12 @@ refreshSessionsButton.addEventListener("click", async () => {
 // something gets wedged (terminal stuck mid-frame, IME composer stuck,
 // stale CSS variables after a viewport oddity) and the user wants a
 // clean slate without quitting/relaunching the APK. Two entry points
-// keep the rare case reachable: an explicit button in settings, and a
-// two-finger pull-down on the session list (mobile-friendly gesture
-// that bypasses the single-finger list scroll).
+// keep the rare case reachable: the "保存并刷新" button in settings
+// (folds settings-apply + reload into one action — the rest of the
+// SPA reads backend/token from localStorage at boot so a soft reload
+// is the simplest "apply everywhere" path), and a two-finger
+// pull-down on the session list (mobile-friendly gesture that
+// bypasses the single-finger list scroll).
 function performAppReload() {
   // location.reload() is identical to a browser soft refresh: WebView
   // re-fetches index.html from the local assets, the module graph is
@@ -207,8 +215,6 @@ function performAppReload() {
   // boolean argument trips MDN/lint warnings without any benefit here.
   window.location.reload();
 }
-
-reloadAppButton.addEventListener("click", performAppReload);
 
 // Two-finger pull-down on the session list as a quick gesture. Single
 // finger is reserved for normal list scrolling; requiring two touch
