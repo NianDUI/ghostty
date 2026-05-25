@@ -152,7 +152,7 @@ export function createUploadManager(deps) {
   // upload_id -> internal handle (set by start, drained by ack).
   const pending = new Map();
 
-  async function start(file) {
+  async function start(file, options = {}) {
     const sessionId = deps.getActiveSessionId();
     if (!sessionId) {
       deps.onToast({
@@ -171,7 +171,9 @@ export function createUploadManager(deps) {
       });
       return;
     }
-    const toastId = `pending-${cryptoRandomId()}`;
+    // Caller may pass an existing toastId so a queued "等待重新连接..."
+    // toast morphs into "准备上传..." in place instead of stacking.
+    const toastId = options.toastId ?? `pending-${cryptoRandomId()}`;
     deps.onToast({
       id: toastId,
       kind: "pending",
@@ -206,6 +208,17 @@ export function createUploadManager(deps) {
         }),
       });
       const text = await res.text();
+      if (res.status === 401) {
+        // Session likely expired on the relay; let the caller decide
+        // whether to bounce the WebSocket + re-queue, instead of
+        // surfacing a confusing "未授权" toast that the user can't act
+        // on. The pending toast stays as-is so the caller can morph it.
+        const unauthorized = new Error("upload_init_unauthorized");
+        unauthorized.code = "unauthorized";
+        unauthorized.toastId = toastId;
+        unauthorized.name = name;
+        throw unauthorized;
+      }
       if (!res.ok) {
         deps.onToast({
           id: toastId,
@@ -217,6 +230,12 @@ export function createUploadManager(deps) {
       }
       initResponse = JSON.parse(text);
     } catch (err) {
+      if (err && err.code === "unauthorized") {
+        // Re-throw so the caller's retry/reconnect logic runs. The pending
+        // toast is intentionally left in place — the caller flips it back
+        // to "等待重新连接..." or to a final error once it gives up.
+        throw err;
+      }
       log(`upload init network error: ${err}`);
       deps.onToast({
         id: toastId,

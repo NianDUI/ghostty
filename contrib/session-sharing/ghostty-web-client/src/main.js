@@ -1465,6 +1465,14 @@ async function connectToSession(session, { updateHistory = true } = {}) {
       socket.close();
       socket = null;
     }
+    // Switching to a different session invalidates any queued uploads
+    // that were waiting for the previous session's WS to recover —
+    // they were scoped to the old session_id. A same-session reconnect
+    // (auto-reconnect path) keeps the queue intact so flush-on-open
+    // can pick them up.
+    if (activeSession && activeSession.id !== session.id) {
+      cancelPendingUploads("已切换会话，上传取消");
+    }
 
     shouldReconnect = true;
     activeSession = session;
@@ -1501,6 +1509,11 @@ async function connectToSession(session, { updateHistory = true } = {}) {
       updateDocumentTitle();
       setTerminalStatus("已连接", "connected");
       refreshUploadLauncherVisibility();
+      // Drain any uploads that arrived while the WS was down (typically
+      // dropped/pasted right after foreground-resume, or queued by the
+      // 401 auto-retry path). They share the existing toastId so the
+      // pending toast morphs into "上传中" instead of stacking.
+      flushPendingUploads();
       if (!isHostSizeLocked()) {
         sendControlFrame({
           type: "resize",
@@ -1708,23 +1721,167 @@ uploadFileInput.addEventListener("change", () => {
   enqueueUploads(files);
 });
 
+// How long a queued upload waits for the WebSocket to come back before
+// we give up and surface an error toast. 15 s covers the common
+// foreground-resume reconnect (≤ 5 s with the default backoff) plus
+// some headroom for a flaky network without making the user stare at
+// a stuck spinner.
+const UPLOAD_PENDING_TIMEOUT_MS = 15_000;
+// Hard cap on auto-retries when init returns 401. One retry covers
+// "session expired mid-resume, bounce the WS and the relay re-issues a
+// hello" without looping forever if the user's token is truly dead.
+const UPLOAD_AUTH_RETRY_LIMIT = 1;
+
+// Queued files that arrived while the WS was down. Drained from
+// socket.onopen and from a 1 s sweep that enforces the deadline.
+const pendingUploads = [];
+let pendingUploadSweepTimer = null;
+
+function isUploadReady() {
+  return (
+    activeSession != null
+    && socket != null
+    && socket.readyState === WebSocket.OPEN
+  );
+}
+
 function enqueueUploads(files) {
   if (!files || files.length === 0) return;
-  if (!activeSession || !socket || socket.readyState !== WebSocket.OPEN) {
-    // The relay won't accept an init without an online session, so don't
-    // even start the request: surface a toast so the user knows why their
-    // drop / paste seemed to vanish.
-    renderUploadToast({
-      id: `noop-${Date.now()}`,
-      kind: "error",
-      title: "未连接",
-      message: "请先连接到会话再上传",
-    });
+  for (const file of files) {
+    queueUpload(file);
+  }
+}
+
+function queueUpload(file, { toastId = null, attempt = 0 } = {}) {
+  // Always render *something* immediately: when the user drops or
+  // pastes a file with the socket down, the silence before the actual
+  // upload starts otherwise feels like the action vanished.
+  const id = toastId ?? `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  if (isUploadReady()) {
+    startSingleUpload(file, id, attempt);
     return;
   }
-  for (const file of files) {
-    uploadManager.start(file).catch((err) => {
-      logEvt(`upload start failed: ${err}`);
+  renderUploadToast({
+    id,
+    kind: "pending",
+    title: file.name,
+    message: "等待重新连接...",
+  });
+  pendingUploads.push({
+    file,
+    toastId: id,
+    deadline: Date.now() + UPLOAD_PENDING_TIMEOUT_MS,
+    attempt,
+  });
+  ensurePendingUploadSweep();
+}
+
+function startSingleUpload(file, toastId, attempt) {
+  uploadManager.start(file, { toastId }).catch((err) => {
+    if (err && err.code === "unauthorized") {
+      // The relay said 401 (almost always session expired). Bounce the
+      // socket so scheduleReconnect kicks in, then re-queue so the file
+      // rides the new connection — but only up to UPLOAD_AUTH_RETRY_LIMIT
+      // so a permanently-invalid token doesn't loop.
+      const used = attempt;
+      logEvt(
+        `upload init 401, attempt=${used} limit=${UPLOAD_AUTH_RETRY_LIMIT}`,
+      );
+      if (used >= UPLOAD_AUTH_RETRY_LIMIT) {
+        renderUploadToast({
+          id: toastId,
+          kind: "error",
+          title: err.name ?? file.name,
+          message: "会话已过期，请重新选择会话",
+        });
+        return;
+      }
+      // Forcing a close fires scheduleReconnect via socket.onclose,
+      // which is what eventually re-issues "hello" on a fresh session.
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.close(4000, "upload_auth_resync");
+      }
+      renderUploadToast({
+        id: toastId,
+        kind: "pending",
+        title: err.name ?? file.name,
+        message: "会话失效，正在重连...",
+      });
+      pendingUploads.push({
+        file,
+        toastId,
+        deadline: Date.now() + UPLOAD_PENDING_TIMEOUT_MS,
+        attempt: used + 1,
+      });
+      ensurePendingUploadSweep();
+      return;
+    }
+    logEvt(`upload start failed: ${err?.message ?? err}`);
+  });
+}
+
+function ensurePendingUploadSweep() {
+  if (pendingUploadSweepTimer != null) return;
+  pendingUploadSweepTimer = window.setInterval(sweepPendingUploads, 1000);
+}
+
+function sweepPendingUploads() {
+  if (pendingUploads.length === 0) {
+    stopPendingUploadSweep();
+    return;
+  }
+  const now = Date.now();
+  // Split the queue into expired / still-waiting in one pass so we
+  // don't mutate while iterating.
+  const stillWaiting = [];
+  const expired = [];
+  for (const item of pendingUploads) {
+    if (now >= item.deadline) expired.push(item);
+    else stillWaiting.push(item);
+  }
+  pendingUploads.length = 0;
+  pendingUploads.push(...stillWaiting);
+  for (const item of expired) {
+    renderUploadToast({
+      id: item.toastId,
+      kind: "error",
+      title: item.file.name,
+      message: "连接未恢复，已放弃上传",
+    });
+  }
+  if (pendingUploads.length === 0) stopPendingUploadSweep();
+}
+
+function stopPendingUploadSweep() {
+  if (pendingUploadSweepTimer != null) {
+    window.clearInterval(pendingUploadSweepTimer);
+    pendingUploadSweepTimer = null;
+  }
+}
+
+function flushPendingUploads() {
+  if (pendingUploads.length === 0) return;
+  if (!isUploadReady()) return;
+  const items = pendingUploads.splice(0);
+  stopPendingUploadSweep();
+  for (const item of items) {
+    startSingleUpload(item.file, item.toastId, item.attempt);
+  }
+}
+
+function cancelPendingUploads(reason) {
+  if (pendingUploads.length === 0) {
+    stopPendingUploadSweep();
+    return;
+  }
+  const items = pendingUploads.splice(0);
+  stopPendingUploadSweep();
+  for (const item of items) {
+    renderUploadToast({
+      id: item.toastId,
+      kind: "error",
+      title: item.file.name,
+      message: reason,
     });
   }
 }
@@ -2121,6 +2278,9 @@ function enterTerminalView(session, { updateHistory = true } = {}) {
 function leaveTerminalView({ updateHistory = true } = {}) {
   shouldReconnect = false;
   cancelReconnect();
+  // Queued uploads are scoped to the session the user left — if they
+  // pick a different one we shouldn't silently push the files into it.
+  cancelPendingUploads("已退出会话，上传取消");
   activeSession = null;
   activeSessionId = null;
   pendingCtrlModifier = false;

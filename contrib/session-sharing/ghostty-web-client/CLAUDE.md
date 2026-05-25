@@ -307,6 +307,55 @@ pan 的 X+Y**,不动 terminal scrollback (scrollback 走 dist smoothScroll
 - ❌ 调 friction 接近 1.0 ("更顺滑"):会让 momentum 跑十几秒,用户
   按不停。0.95 是 iOS 实测值,别动。
 
+## 上传排队 + 401 自动重连重发
+
+`src/main.js` 的 `enqueueUploads` 不再直接 fail-closed。drop / paste /
+launcher 触发的文件统一进 `queueUpload`,根据 socket 状态决定:
+
+- `isUploadReady()` (`activeSession + socket OPEN`):立即调 `uploadManager.start`
+- 没就绪:推 `pendingUploads`,弹一个 **pending** kind 的 toast "等待
+  重新连接...",启动 1 s sweep。socket onopen 调 `flushPendingUploads`
+  draining 出去,同一 `toastId` 复用 → 用户看到 toast 文案从"等待重连"
+  morph 成"上传中"。
+- 单个文件 deadline = 入队时刻 + `UPLOAD_PENDING_TIMEOUT_MS = 15_000`。
+  超时 sweep 把它变 error toast "连接未恢复,已放弃上传"。
+
+`startSingleUpload` 捕获 `upload.js` start() 抛的 `{ code: "unauthorized" }`
+(init 收 401 → relay 端 session.expires_at 已过):
+- 关 socket(`close(4000, "upload_auth_resync")`)→ 触发 `scheduleReconnect`
+  → 重连后 server 重新发 hello,session 在 relay 那边重新 active
+- 把 file 重新入 `pendingUploads`(同 toastId,文案 morph 成"会话失效,
+  正在重连..."),attempt+1
+- `UPLOAD_AUTH_RETRY_LIMIT = 1` —— 401 自动重试**一次**,再 401 就
+  fail 成 "会话已过期,请重新选择会话"。防 token 真的死掉时无限循环。
+
+队列清空入口:
+- `leaveTerminalView`(用户主动退到 sessions 列表)→ "已退出会话,上传取消"
+- `connectToSession` 切到**不同** session.id → "已切换会话,上传取消"
+- 同 session reconnect(`scheduleReconnect → connectToSession`,同 id)
+  **不**清,这样 401 重连后 flush 还能把 file 接上
+
+**Why**:之前 enqueueUploads 在 socket 没 OPEN 时直接弹"未连接,请先
+连接到会话再上传",体感是文件凭空消失;切回 APP 后台后 visibility
+resync 主动 `socket.close(4000, "visibility_resync")` 会留一个秒级
+window,paste / drag 经常踩到。401 同理 —— relay session 过期但
+WS 还没收到 4408,upload init 就 401,toast "未授权"用户没头绪。
+
+**反模式**:
+- ❌ `enqueueUploads` 退回成 fail-closed。"socket 没 OPEN 就拒"的体感
+  比"等几秒"更差,尤其在弱网。
+- ❌ 把 `UPLOAD_PENDING_TIMEOUT_MS` 调到分钟级。用户已经在等,15s 是
+  "短到能让人放弃重试的容忍",再长就会怀疑 APP 卡死。
+- ❌ `UPLOAD_AUTH_RETRY_LIMIT > 1`。401 真不是 transient(token 死了就
+  死了),多重试无意义,只让"会话失效"toast 闪烁更多次。
+- ❌ 在 `upload.js` start() 内对 401 直接 toast "未授权"。它必须 throw,
+  让 main 这层把 401 跟 socket 状态联动起来 —— upload.js 不知道 socket
+  在哪。
+- ❌ 把 PUT/PATCH 401 也加进自动重试。PUT/PATCH 401 极少见(session 在
+  init 之后才过期),即使发生,中途文件已传一半,重传整个文件不值得。
+  现状是 PUT/PATCH 收 401 走 readablePutError → "上传失败 (401)",
+  用户手动重试即可。
+
 ## 远端是 Linux 的小坑
 
 - 校验文件 sha 用 `sha256sum`,不是 macOS 的 `shasum`。
