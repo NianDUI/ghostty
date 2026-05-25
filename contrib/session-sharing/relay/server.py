@@ -456,6 +456,7 @@ class RelayState:
         self.metrics: dict[str, int] = {
             "register_requests_total": 0,
             "register_rejected_total": 0,
+            "register_reused_total": 0,
             "agent_connect_total": 0,
             "agent_disconnect_total": 0,
             "client_connect_total": 0,
@@ -875,23 +876,68 @@ async def handle_register(
         return
 
     now = time.time()
-    session = Session(
-        session_id=session_id,
-        name=name,
-        user_token=token,
-        agent_token=secrets.token_urlsafe(24),
-        client_token=secrets.token_urlsafe(24),
-        expires_at=now + state.config.token_ttl,
-        online=False,
-        last_seen_at=now,
-    )
     async with state.lock:
-        if len(state.sessions) >= state.config.max_sessions and session_id not in state.sessions:
+        existing = state.sessions.get(session_id)
+        if existing is None and len(state.sessions) >= state.config.max_sessions:
             state.increment_metric("register_rejected_total")
             await send_response(writer, 503, json_bytes({"error": "session capacity reached"}))
             return
-        state.sessions[session_id] = session
-    log_event("register", session_id=session_id, name_length=len(name), online=False)
+
+        if existing is not None:
+            # Re-register of a session_id we already track — this is the
+            # common case when the macOS agent's WebSocket drops (idle
+            # NAT / nginx upstream timeout / Wi-Fi flap) and the agent
+            # re-establishes within token TTL. Rotate the tokens and
+            # extend expires_at so the client side picks up fresh
+            # credentials, but preserve every field that the live
+            # session has been accumulating since the original register:
+            #
+            #   - name: auto-sync mode always sends register with
+            #     name="" and then drips `name_update` frames as the
+            #     PTY title changes. A naive re-create here used to
+            #     wipe name back to "" — and because the macOS side
+            #     uses a diff-based lastSentTitleUpdate cache, the
+            #     unchanged title would never re-publish, leaving the
+            #     web session list showing "未命名会话" indefinitely.
+            #     Accept a non-empty `name` override (explicit rename
+            #     path) but otherwise hold onto the live value.
+            #   - backlog: dropping it would force every reconnecting
+            #     web client to start from a fresh screen snapshot and
+            #     lose the rolling history of bin frames in between.
+            #
+            # We deliberately do NOT cross-check the incoming user_token
+            # against existing.user_token: session_id is a client-side
+            # UUID (collision-free in practice) and the original
+            # handler also accepted whatever token the agent provided.
+            existing.user_token = token
+            existing.agent_token = secrets.token_urlsafe(24)
+            existing.client_token = secrets.token_urlsafe(24)
+            existing.expires_at = now + state.config.token_ttl
+            existing.last_seen_at = now
+            existing.online = False
+            if name:
+                existing.name = name
+            session = existing
+            state.increment_metric("register_reused_total")
+        else:
+            session = Session(
+                session_id=session_id,
+                name=name,
+                user_token=token,
+                agent_token=secrets.token_urlsafe(24),
+                client_token=secrets.token_urlsafe(24),
+                expires_at=now + state.config.token_ttl,
+                online=False,
+                last_seen_at=now,
+            )
+            state.sessions[session_id] = session
+    log_event(
+        "register",
+        session_id=session_id,
+        name_length=len(name),
+        online=False,
+        reused=existing is not None,
+    )
 
     await send_response(
         writer,
