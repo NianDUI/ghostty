@@ -152,6 +152,24 @@ export function createUploadManager(deps) {
   // upload_id -> internal handle (set by start, drained by ack).
   const pending = new Map();
 
+  // String-concat'ing `${backendBase}/api/upload/init` was painting us
+  // into a corner: when the user pasted a trailing-slash base into the
+  // settings sheet we'd issue `POST //api/upload/init`, and Nginx HTTP/2
+  // does *not* merge_slashes before forwarding upstream, so the relay
+  // saw `//api/upload/init`, no route matched, and serve_static returned
+  // a 9-byte plain text "not found" → JSON.parse failed → the user got
+  // a useless "服务器拒绝 (404)" toast. Construct a real URL instead so
+  // the path is always exactly "/api/upload/init" regardless of how the
+  // base is typed; mirrors main.js's apiURL() helper.
+  function buildUploadURL(pathname) {
+    const base = deps.backendBase || "";
+    const url = new URL(base || "/", window.location.origin);
+    url.pathname = pathname;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
   async function start(file, options = {}) {
     const sessionId = deps.getActiveSessionId();
     if (!sessionId) {
@@ -193,8 +211,9 @@ export function createUploadManager(deps) {
     }
 
     let initResponse;
+    const initURL = buildUploadURL("/api/upload/init");
     try {
-      const res = await fetchImpl(`${deps.backendBase}/api/upload/init`, {
+      const res = await fetchImpl(initURL, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -207,6 +226,7 @@ export function createUploadManager(deps) {
           sha256,
         }),
       });
+      log(`upload init url=${initURL} status=${res.status}`);
       const text = await res.text();
       if (res.status === 401) {
         // Session likely expired on the relay; let the caller decide
@@ -257,7 +277,10 @@ export function createUploadManager(deps) {
       progress: 0,
     });
 
-    const uploadURL = `${deps.backendBase}${initResponse.upload_url}`;
+    // initResponse.upload_url is a server-issued absolute path like
+    // "/api/upload/<id>"; pipe it through the same builder so trailing
+    // slashes on backendBase can't sneak a `//` past nginx HTTP/2.
+    const uploadURL = buildUploadURL(initResponse.upload_url);
     const useChunked = file.size > CHUNKED_UPLOAD_THRESHOLD_BYTES;
 
     try {

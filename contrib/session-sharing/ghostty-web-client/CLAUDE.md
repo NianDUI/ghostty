@@ -356,6 +356,42 @@ WS 还没收到 4408,upload init 就 401,toast "未授权"用户没头绪。
   现状是 PUT/PATCH 收 401 走 readablePutError → "上传失败 (401)",
   用户手动重试即可。
 
+## `backendBase` 拼接必须用 URL.pathname 覆盖,不能字符串拼接
+
+`src/upload.js` 的 `buildUploadURL` 用 `new URL(base, location.origin)`
++ `url.pathname = "/api/upload/..."` 覆盖,跟 `src/main.js` 的 `apiURL`
+行为一致。**禁止**回退成 `` `${backendBase}/api/upload/init` `` 字符串
+拼接。
+
+**Why**:用户在 settings 里填的 `Backend URL Base` 末尾经常带一个 `/`
+(`https://example.com:28443/`),字符串拼接会出 `https://example.com:28443//api/upload/init`。
+nginx HTTP/2 在 ICL-AL20 / 鸿蒙等 HarmonyOS WebView 路径下**不**
+`merge_slashes` 就把 `//api/upload/init` 原样转发给 upstream,relay 的
+`handle_connection` 路由匹配走 `path == "/api/upload/init"`,**双斜杠
+不匹配** → fallthrough 到 `serve_static` → 返 9 字节 plain text
+`b"not found"`(`server.py:2291`),前端 `JSON.parse("not found")` 失败 →
+`readableInitError` 兜底成 "服务器拒绝 (404)",用户看了一头雾水。
+
+诊断步骤:线上 relay nginx `/var/log/nginx/access.log` 一行就能确认
+请求 path 形状:
+
+```
+POST //api/upload/init HTTP/2.0  404 9
+                    ^^ 双斜杠
+                                       ^^^ 9 字节 = "not found" plain text
+```
+
+**反模式**:
+
+- ❌ "末尾斜杠让前端 trim 掉就行"。trim 是治标,buildUploadURL 治本,
+  以后再加新 endpoint 也不会复现这个坑。
+- ❌ "让 nginx `merge_slashes on` 解决"。它在 HTTP/2 + 部分 WebView UA
+  下不生效,且不是所有部署都能改 nginx 配置(比如自建反代),客户端
+  归一化更可靠。
+- ❌ 关闭 `buildUploadURL` 的 `url.search = ""` / `url.hash = ""` 清空。
+  虽然 backendBase 一般不带 query,但 `apiURL` 也清,保持一致避免
+  reviewer 困惑。
+
 ## 远端是 Linux 的小坑
 
 - 校验文件 sha 用 `sha256sum`,不是 macOS 的 `shasum`。
