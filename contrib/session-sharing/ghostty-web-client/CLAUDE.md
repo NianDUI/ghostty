@@ -297,7 +297,46 @@ belt-and-braces,即使 force window 没启动也兜得住:
   invalidate dist dirty tracking,不 force 的话 clean row 仍用旧主题色
 - `case "screen"` 即 `applyScreenSnapshot` 末尾(原本就有)
 
+### forceAll 帧再加 `renderer.clear()` + `scrollToBottom`
+
+`schedulePaint` rAF 内,如果 forceAll=true,先 `renderer.clear()`
+做整屏 fillRect,再调 dist `renderer.render`。同时若 `viewportY !== 0`
+顺手 `scrollToBottom()` reanchor 到底。
+
+**Why**:
+
+1. **HarmonyOS / ICL-AL20 WebView GPU compositor 缓存**:dist 的
+   `renderLine` 是 per-row fillRect 清的(`ctx.fillRect(0, rowY, cols*w,
+   h)`),这些 rect 写进 2D context backing buffer 没问题,但 HarmonyOS
+   WebView 的 compositor 缓存 canvas layer texture 时,**per-row 的小
+   fillRect 不触发完整 layer invalidation** —— 用户看到 "两个 terminal
+   叠在一起"(pre-suspend 的内容 + reconnect 后的 snapshot 同时可见),
+   连 forceAll 都救不回。一次整屏 fillRect (`renderer.clear()` 就是
+   `fillRect(0, 0, canvas.width, canvas.height)`) 能强制 compositor
+   把整个 layer 标 dirty,per-row 写入才会落地。
+2. **viewportY > 0 时 dist render 混画 scrollback + active**:dist
+   render line 1431-1438 在 `g > 0`(viewportY)时,visible rows 上
+   半截读 `scrollbackProvider.getScrollbackLine(...)`,下半截读
+   `wasmTerm.getLine(t - viewportY)`。如果 visibility resync 期间
+   smoothScrollTo 还在跑/有残留 target,forceAll 也会画出"上面是历史
+   scrollback 下面是新 snapshot 的 active"这种重叠效果。tick 内强
+   reanchor 是最直接的兜底。
+
+**成本**:整屏 fillRect 在 cap DPR 1.5 时 ~1-2 ms,只在 forceAll 帧
+触发(force window 期或显式 `scheduleFullPaint`),日常 dirty-only
+write 路径不受影响。
+
 **反模式**:
+
+- ❌ 在所有 `schedulePaint` 帧都 `renderer.clear()`。日常 dirty-only
+  paint 本来是 ~50 µs / 帧的开销,前面加个 1-2 ms 整屏 fillRect 直接
+  把电量优势打折。只在 forceAll 帧加。
+- ❌ 把 reanchor 改成 `terminal.scrollToBottom()` 无条件调用(去掉
+  `viewportY !== 0` guard)。dist scrollToBottom 内部已有同款 guard
+  (line 2594),但同时还会 `showScrollbar`,触发 fade-in rAF 链,空跑
+  浪费。
+
+### scheduleFullPaint 反模式
 
 - ❌ 把所有 `schedulePaint()` 改成 `scheduleFullPaint()`。日常 write
   路径每帧 forceAll 会让 cap DPR 的功耗优势打折; 只在上述三个点

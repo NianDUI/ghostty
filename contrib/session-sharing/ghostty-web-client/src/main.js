@@ -994,6 +994,30 @@ function schedulePaint(force = false) {
     const wasm = terminal.wasmTerm;
     if (!renderer || !wasm) return;
     try {
+      if (forceAll) {
+        // Belt over dist's per-row fillRect clearing inside renderLine.
+        // HarmonyOS / ICL-AL20 WebView GPU compositors have been
+        // observed to keep showing pre-eviction pixels under areas
+        // that dist's renderLine just fillRected — the rect lands in
+        // the 2D context's backing buffer but doesn't propagate to
+        // the compositor's cached layer texture, producing the
+        // "two terminals overlapping" symptom after APP foreground
+        // resume. A single full-canvas fillRect at the start of a
+        // forceAll paint forces the entire layer to invalidate
+        // before the per-row writes land, which the compositor
+        // honours where the per-row writes alone do not.
+        //
+        // ~1-2 ms extra per forceAll paint at DPR 1.5; only fires in
+        // the forcePaintUntil window or on explicit scheduleFullPaint
+        // (snapshot / install / appearance / resize / hello), not in
+        // steady-state writes. Daily on-demand paints stay cheap.
+        // Reanchor viewportY to bottom on the same tick so a stale
+        // smooth-scroll target can't leave the renderer drawing
+        // scrollback + active mixed (dist render line 1431 splits
+        // the visible rows between buffers when viewportY > 0).
+        if (terminal.viewportY !== 0) terminal.scrollToBottom?.();
+        renderer.clear();
+      }
       renderer.render(
         wasm,
         forceAll,
