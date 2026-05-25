@@ -594,8 +594,14 @@
           height: auto;
           /* Containing block for the absolute-positioned toggle and
              upload-launcher pills that straddle the wrap's bottom
-             edge. */
+             edge. The explicit z-index promotes the wrap to its own
+             stacking context above the toolbar's (z-index: 20) — the
+             toolbar's backdrop-filter:blur(16px) already creates a
+             stacking context, and without the wrap matching that, the
+             absolute pills overflowing the wrap's bottom render
+             beneath the toolbar despite their own z-index: 30. */
           position: relative;
+          z-index: 25;
         }
 
         .terminal-page .terminal-host > #terminal {
