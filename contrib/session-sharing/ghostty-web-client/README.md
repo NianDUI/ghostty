@@ -1,6 +1,6 @@
 # Session Sharing Web Client with `ghostty-web`
 
-这个目录是并行于现有 `contrib/session-sharing/web` 的第二代网页客户端原型。
+这个目录是 session sharing 的网页客户端（取代了早期的 `contrib/session-sharing/web` 原型，那个目录已删）。
 
 目标：
 

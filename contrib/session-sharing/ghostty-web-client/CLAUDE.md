@@ -151,6 +151,34 @@ HTTP 下载呈现的文件名是 `ghostty-sharing.apk`(Content-Disposition 决�
   浏览器域名访问完全 OK。`curl LibreSSL` 偶发 SSL_ERROR_SYSCALL 是
   macOS 系统 curl 跟某层 TLS 实现的 niche 兼容性问题,不影响生产。
 
+## ghostty-web render loop monkey-patch
+
+`src/main.js` 的 `installOnDemandRender` 在 `terminal.open()` 后立刻
+覆盖实例的 `startRenderLoop` + wrap `write/clear/reset/paste` + 订阅
+`onScroll/onSelectionChange/onResize`,把上游无条件 60 Hz rAF 改成
+"state 真变了才 schedule 一帧"的 on-demand 渲染。配套 `schedulePaint`
+做 rAF dedupe,`disposeTerminal` 走 `cancelScheduledPaint`。
+
+**Why**: ghostty-web v0.4.0 dist 的 `startRenderLoop` 没 dirty 检测、
+没 already-running guard,即使 `cursorBlink: false` + 内容静止仍 60 Hz
+烧主线程,移动端电量/发热明显。fork 上游维护成本高,monkey-patch 全
+在我们仓库里 review/审计成本低,且 `onScroll`/`onSelectionChange` 是
+公开 emitter API,稳定性 OK。
+
+**升 ghostty-web 包时必查**(任一失败说明 patch 不再兼容,需重审):
+
+```bash
+# 1. 公开 emitter 仍齐全 (我们订阅的三个)
+grep -E "onScroll|onSelectionChange|onResize" node_modules/ghostty-web/dist/index.d.ts
+
+# 2. wrap 的方法仍是原型方法 (不是 arrow-bound 实例属性)
+grep -E "^    (write|clear|reset|paste)\(" node_modules/ghostty-web/dist/index.d.ts
+```
+
+**反模式**: 看见 `installOnDemandRender` 多此一举就删掉。`processMouseMove`
+改 hover 状态无公开 emitter,terminalMount 上的 capture-phase mouse/touch
+listener 作为唯一兜底,**不要**为了 "lint clean" 把它们也删了。
+
 ## 远端是 Linux 的小坑
 
 - 校验文件 sha 用 `sha256sum`,不是 macOS 的 `shasum`。
