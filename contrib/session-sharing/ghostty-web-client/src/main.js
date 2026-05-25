@@ -1474,19 +1474,27 @@ function applyScreenSnapshot(frame) {
     logEvt(`screen bytes=${bytes.length} tail=${repr}`);
   }
   // In live-mirror mode we never read the replayBuffer, so don't bother
-  // feeding it. The reset+write below still runs because the agent's
-  // snapshot is a re-anchor checkpoint and we want it to land cleanly.
+  // feeding it. Snapshot still writes through below — it's the host's
+  // re-anchor checkpoint and we want the viewport to match.
   if (!activeMirrorMode) replayBuffer.onScreen(bytes);
-  // The agent prefixes its snapshot with `\x1b[2J\x1b[H`, but reset()
-  // also clears the active scrollback so a stale checkpoint can't
-  // bleed through after the host re-emits the current viewport.
   // Drop anything coalesced for the next rAF: those bytes are
   // pre-snapshot live frames; the snapshot is a re-anchor checkpoint
-  // and any earlier delta is by definition redundant once we've reset.
+  // and any earlier delta is by definition redundant once the
+  // snapshot lands.
   dropPendingWrites();
-  if (typeof terminal.reset === "function") {
-    terminal.reset();
-  }
+  // Do NOT call terminal.reset() here — the agent's snapshot bytes
+  // already begin with `\x1b[2J\x1b[H` (erase-in-display + home),
+  // which clears the visible viewport per the VT spec without
+  // touching scrollback. terminal.reset() goes further and wipes the
+  // entire scrollback buffer; calling it on every snapshot was
+  // producing the user-visible "screen blanks and gets redrawn"
+  // flicker on a strict 5-minute cadence — nginx's upstream idle
+  // timeout drops the agent's WebSocket, the agent auto-reconnects
+  // and re-emits hello+appearance+screen, the relay forwards the
+  // snapshot to every online client, and we used to reset+repaint
+  // the entire terminal. Letting the snapshot's own CSI escapes do
+  // the clearing makes the redraw seamless (no flash, scrollback
+  // preserved across reconnects).
   terminal.write(bytes);
   // When the locked host grid is taller than the mobile viewport
   // (e.g. host 46 rows in a 33-row visible window), the snapshot
