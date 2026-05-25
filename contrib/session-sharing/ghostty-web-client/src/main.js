@@ -582,6 +582,7 @@ function flushPendingWrites() {
   pendingWriteChunks = [];
   pendingWriteSize = 0;
   terminal.write(combined);
+  rearmRenderLoop();
 }
 
 function dropPendingWrites() {
@@ -593,6 +594,58 @@ function dropPendingWrites() {
   }
 }
 
+// Idle-pause the upstream render loop.
+//
+// `ghostty-web` v0.4.0's `Terminal.startRenderLoop` re-schedules
+// requestAnimationFrame unconditionally — even when no row is dirty
+// and cursorBlink is off, the loop keeps waking the main thread at
+// the display refresh rate. On a mobile WebView this pins CPU
+// frequency above idle indefinitely, most visibly in desktop-width
+// landscape mode where the canvas backing buffer is oversized so
+// each no-op tick still costs GPU compositor work.
+//
+// We let the library run its loop as-is during activity but cancel
+// the rAF after RENDER_IDLE_PAUSE_MS of silence; the phone CPU then
+// drops to true idle frequency. Any new write, scroll, touch, mouse,
+// wheel, or visibility-restore re-arms the loop. Selection drags
+// fire touchmove continuously so they keep it alive without per-
+// event hooks. Internal animations that bypass `animationFrameId`
+// (scrollbar fade, animateScroll) own their own rAF chain and are
+// unaffected by the pause.
+const RENDER_IDLE_PAUSE_MS = 250;
+let renderIdleTimer = null;
+
+function rearmRenderLoop() {
+  if (!terminal || terminal.isDisposed || !terminal.isOpen) return;
+  if (renderIdleTimer != null) {
+    window.clearTimeout(renderIdleTimer);
+    renderIdleTimer = null;
+  }
+  // v0.4.0 dist has no "already running" guard inside startRenderLoop,
+  // so we gate externally to avoid stacking parallel rAF chains when
+  // rearm is called while the loop is still active.
+  if (terminal.animationFrameId == null) {
+    try {
+      terminal.startRenderLoop();
+    } catch (_) {}
+  }
+  renderIdleTimer = window.setTimeout(() => {
+    renderIdleTimer = null;
+    if (!terminal) return;
+    if (terminal.animationFrameId != null) {
+      window.cancelAnimationFrame(terminal.animationFrameId);
+      terminal.animationFrameId = undefined;
+    }
+  }, RENDER_IDLE_PAUSE_MS);
+}
+
+function cancelRenderIdlePause() {
+  if (renderIdleTimer != null) {
+    window.clearTimeout(renderIdleTimer);
+    renderIdleTimer = null;
+  }
+}
+
 // Tear down the xterm instance + DOM nodes it created, so the next
 // `ensureTerminal()` call rebuilds from scratch. `terminal.reset()` /
 // `\x1b[3J` cannot clean cross-session leaks like cursor blink state,
@@ -601,6 +654,7 @@ function dropPendingWrites() {
 // `replayBuffer` and other module state separately.
 function disposeTerminal() {
   if (!terminal) return;
+  cancelRenderIdlePause();
   // Any rAF-queued bytes belong to the terminal we're about to throw
   // away; flushing them onto the next instance would smear stale
   // frames into a fresh session.
@@ -643,6 +697,10 @@ async function ensureTerminal() {
     },
   });
   terminal.open(terminalMount);
+  // `terminal.open` kicks off the unconditional render loop; arm the
+  // idle-pause immediately so an open-but-silent terminal still drops
+  // to idle after RENDER_IDLE_PAUSE_MS. See rearmRenderLoop.
+  rearmRenderLoop();
   // Re-anchor the pan to the bottom-right whenever .terminal-host
   // resizes — the soft keyboard appearing, the mobile toolbar
   // expanding, or the URL bar showing/hiding all shrink the visible
@@ -708,6 +766,33 @@ async function ensureTerminal() {
       },
       { capture: true },
     );
+    // Wake the render loop on user interaction. Write-driven output
+    // already calls rearmRenderLoop via flushPendingWrites; these
+    // listeners cover the paths that change canvas state without
+    // going through `terminal.write`: selection drag (touchmove /
+    // mousemove updates selectionManager state), wheel-scroll
+    // (animateScroll owns its own rAF but the post-scroll resting
+    // viewport still depends on the main loop), and tab-restore
+    // after backgrounding. Listeners are installed once on terminalMount
+    // and survive disposeTerminal because the mount element itself is
+    // not destroyed.
+    const wake = () => rearmRenderLoop();
+    const wakeEvents = [
+      "touchstart",
+      "touchmove",
+      "mousedown",
+      "mousemove",
+      "wheel",
+    ];
+    for (const evt of wakeEvents) {
+      terminalMount.addEventListener(evt, wake, {
+        capture: true,
+        passive: true,
+      });
+    }
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) rearmRenderLoop();
+    });
     globalTerminalListenersInstalled = true;
   }
   fitAddon = new FitAddon();
@@ -721,6 +806,10 @@ async function ensureTerminal() {
     }
   });
   terminal.onResize(({ cols, rows }) => {
+    // Wake the render loop so the new grid paints even if the resize
+    // landed during an idle pause (e.g. host pushed a resize after
+    // the user stopped interacting).
+    rearmRenderLoop();
     // Recompute the inline #terminal pixel width on every grid change,
     // regardless of which side initiated it (FitAddon, hello, host
     // resize). This is the catch-all path — the explicit calls in
