@@ -31,6 +31,7 @@ const mobileToolbar = document.querySelector("#mobileToolbar");
 const mobileToolbarToggle = document.querySelector("#mobileToolbarToggle");
 const lockHostSizeInput = document.querySelector("#lockHostSize");
 const desktopWidthInput = document.querySelector("#desktopWidth");
+const lowResRenderInput = document.querySelector("#lowResRender");
 const liveMirrorModeInput = document.querySelector("#liveMirrorMode");
 const debugModeInput = document.querySelector("#debugMode");
 const mobileUploadLauncher = document.querySelector("#mobileUploadLauncher");
@@ -73,6 +74,14 @@ const SCROLLBACK_FETCH_BATCH = 200;
 const SCROLLBACK_TOP_TRIGGER_LINES = 50;
 const LOCK_HOST_SIZE_KEY = "ghostty-sharing-lock-host-size";
 const DESKTOP_WIDTH_KEY = "ghostty-sharing-desktop-width";
+// Cap `terminal.renderer.devicePixelRatio` to this when the user enables
+// low-res rendering. 1.5 is the sweet spot: on DPR=3 phones the backing
+// pixel count drops to 25% of native (4× GPU fill / texture-upload
+// savings), while text remains legible — going to 1.0 makes box-drawing
+// chars and small fonts visibly mushy. Off (= no cap) preserves the
+// upstream default of `window.devicePixelRatio`.
+const LOW_RES_RENDER_KEY = "ghostty-sharing-low-res-render";
+const LOW_RES_DPR_CAP = 1.5;
 // Live-mirror mode: when on, we skip the replayBuffer accumulation and
 // the lazy `fetch_scrollback` path entirely. The terminal only renders
 // the host's current viewport plus live deltas. Default off so existing
@@ -93,6 +102,7 @@ backendBaseInput.value =
 tokenInput.value = localStorage.getItem("ghostty-sharing-token") ?? "";
 lockHostSizeInput.checked = localStorage.getItem(LOCK_HOST_SIZE_KEY) === "1";
 desktopWidthInput.checked = localStorage.getItem(DESKTOP_WIDTH_KEY) === "1";
+lowResRenderInput.checked = localStorage.getItem(LOW_RES_RENDER_KEY) === "1";
 liveMirrorModeInput.checked = localStorage.getItem(LIVE_MIRROR_KEY) === "1";
 const debugEnabled = localStorage.getItem(DEBUG_MODE_KEY) === "1";
 debugModeInput.checked = debugEnabled;
@@ -501,10 +511,18 @@ function currentCellWidthPx() {
   // by the renderer based on its own font metrics, independent of any
   // CSS constraint, so dividing by DPR + cols always yields the real
   // per-cell CSS width.
+  //
+  // Must read DPR from the renderer instance, not `window.devicePixelRatio`:
+  // the low-resolution rendering setting caps `renderer.devicePixelRatio`
+  // below `window.devicePixelRatio`, and reading the window value here
+  // would divide canvas.width by too large a denominator → cellW reported
+  // as ~half real → desktop-width container under-allocated → right
+  // columns clipped.
   const canvas = terminal?.element?.querySelector?.("canvas");
   const cols = terminal?.cols ?? 0;
   if (canvas && canvas.width > 0 && cols > 0) {
-    const dpr = window.devicePixelRatio || 1;
+    const dpr =
+      terminal?.renderer?.devicePixelRatio ?? window.devicePixelRatio ?? 1;
     return canvas.width / dpr / cols;
   }
   const metric = terminal?.renderer?.getMetrics?.();
@@ -571,6 +589,24 @@ desktopWidthInput.addEventListener("change", () => {
     desktopWidthInput.checked ? "1" : "0",
   );
   syncDesktopWidthMode();
+});
+
+lowResRenderInput.addEventListener("change", () => {
+  localStorage.setItem(
+    LOW_RES_RENDER_KEY,
+    lowResRenderInput.checked ? "1" : "0",
+  );
+  // Apply live to the active terminal. When no terminal is open yet
+  // (user is still on the launcher) this is a no-op — the next
+  // installOnDemandRender will read the localStorage value.
+  applyRendererDpr();
+  // After the DPR cap changes, cellW in CSS px is unchanged (metric
+  // is DPR-independent), but `currentCellWidthPx` derives from
+  // canvas.width / DPR — and `renderer.resize` runs synchronously
+  // inside applyRendererDpr. Re-run applyDesktopWidthSize so the
+  // desktop-width container width stays in sync if the user is
+  // toggling while in desktop-width mode.
+  applyDesktopWidthSize();
 });
 
 liveMirrorModeInput.addEventListener("change", () => {
@@ -827,10 +863,59 @@ function installOnDemandRender(t) {
   t.onSelectionChange(() => schedulePaint());
   t.onResize(() => schedulePaint());
 
-  // (5) dist's open() already painted once before startRenderLoop.
+  // (5) Apply the low-res DPR cap immediately so the very first
+  // post-open paint already runs at the chosen resolution. Without
+  // this the canvas would briefly allocate at native DPR before the
+  // cap kicks in (one frame of wasted backing buffer + an avoidable
+  // re-resize).
+  applyRendererDpr(true);
+
+  // (6) dist's open() already painted once before startRenderLoop.
   // We just cancelled that loop; schedule one explicit paint so any
   // post-open state mutation that landed before installOnDemandRender
-  // ran is reflected.
+  // ran is reflected. applyRendererDpr already calls schedulePaint
+  // when it actually changes DPR, but it's a no-op when the requested
+  // DPR equals what dist initialised — explicit schedule here covers
+  // that branch.
+  schedulePaint();
+}
+
+// Low-res rendering toggle. When on, cap the renderer's effective DPR
+// so the canvas backing buffer shrinks (4× pixel savings on a DPR=3
+// phone with cap=1.5). The cap is applied per-instance because
+// `Terminal` constructor doesn't forward `RendererOptions.devicePixelRatio`
+// — we have to reach into `terminal.renderer.devicePixelRatio` after
+// `terminal.open()` builds the CanvasRenderer.
+function isLowResRenderMode() {
+  return lowResRenderInput?.checked ?? false;
+}
+
+function computeRendererDpr() {
+  const native = window.devicePixelRatio || 1;
+  return isLowResRenderMode() ? Math.min(native, LOW_RES_DPR_CAP) : native;
+}
+
+// Apply the target DPR to the live renderer. `force=true` always
+// resizes (used on first install where the renderer was created with
+// the upstream default — we may want to override even when the values
+// happen to match a freshly-set field). Otherwise no-op when the
+// requested DPR equals the currently-applied one.
+//
+// Calling `renderer.resize(cols, rows)` is mandatory after changing
+// `devicePixelRatio`: it (a) reallocates canvas.width/height to
+// cssW × newDPR, (b) re-applies `ctx.scale(newDPR, newDPR)` so all
+// subsequent draws are scaled correctly. Without the resize the ctx
+// scale stays at the old DPR and rendering output is misaligned.
+function applyRendererDpr(force = false) {
+  if (!terminal || terminal.isDisposed || !terminal.isOpen) return;
+  const renderer = terminal.renderer;
+  if (!renderer) return;
+  const target = computeRendererDpr();
+  if (!force && renderer.devicePixelRatio === target) return;
+  renderer.devicePixelRatio = target;
+  try {
+    renderer.resize(terminal.cols, terminal.rows);
+  } catch (_) {}
   schedulePaint();
 }
 

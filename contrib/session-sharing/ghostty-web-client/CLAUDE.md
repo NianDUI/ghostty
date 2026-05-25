@@ -179,6 +179,42 @@ grep -E "^    (write|clear|reset|paste)\(" node_modules/ghostty-web/dist/index.d
 改 hover 状态无公开 emitter,terminalMount 上的 capture-phase mouse/touch
 listener 作为唯一兜底,**不要**为了 "lint clean" 把它们也删了。
 
+## 低分辨率渲染设置(`#lowResRender`)
+
+settings 页 checkbox,关联 `LOW_RES_RENDER_KEY`,开启时把
+`terminal.renderer.devicePixelRatio` cap 到 `LOW_RES_DPR_CAP = 1.5`
+(在 DPR=3 手机上 backing 像素降到 25%,4× GPU 填充节省;字体边缘略糊
+但仍可读,box-drawing 字符是受影响最明显的)。默认 off 保持原生 DPR
+不影响桌面用户感知。
+
+**实现要点**:
+
+- `ITerminalOptions` 不暴露 `devicePixelRatio`(dist Terminal 构造
+  renderer 时只透传 fontSize/fontFamily/cursorStyle/cursorBlink/theme)。
+  必须 instance-level patch:`terminal.renderer.devicePixelRatio = X` +
+  `terminal.renderer.resize(cols, rows)`(触发 ctx.scale 重算 + canvas
+  backing 重分配)。
+- `installOnDemandRender` 末尾 `applyRendererDpr(true)` 在 dist 首帧
+  render **之前**应用,避免一次性多余的 native-DPR backing 分配。
+- 切换 setting 时除 `applyRendererDpr` 外**必须再跑** `applyDesktopWidthSize`:
+  desktop-width 容器宽度依赖 `currentCellWidthPx` 推导, cap 后 canvas
+  backing 大小变了, 但 cellW 是稳定的(metric.width × cols × DPR /
+  DPR / cols) — 重跑确保布局缓存刷新。
+
+**Latent bug 历史**: `currentCellWidthPx` 原本读 `window.devicePixelRatio`
+推算 cellW, cap 上线后 `renderer.devicePixelRatio ≠ window.devicePixelRatio`
+会让宽度算错(canvas.width/window.DPR/cols 得 ≈ 真实 cellW 的一半 →
+desktop-width 容器被严重低估 → 右侧列被裁), 同 commit 已修成读
+`terminal.renderer.devicePixelRatio`。**未来从 canvas.{width,height}
+反推 CSS px 时一律读 renderer 的 DPR 字段, 不读 window**。
+
+**dist 内部小坑**: `Terminal.resize`(行 2422) 在 `renderer.resize` 之后
+又用 `metric × cols` 覆盖 `canvas.width` **不乘 DPR**, 但下一帧
+`renderer.render`(行 1401) 检测尺寸不匹配会自动调 `renderer.resize` 修正
++ force redraw。结果是每次 grid resize 会多一次"错-self-heal"循环,
+对 cap DPR 无影响(self-heal 用的也是实例 `devicePixelRatio` 字段)。
+升包时注意确认这个自愈逻辑还在。
+
 ## 远端是 Linux 的小坑
 
 - 校验文件 sha 用 `sha256sum`,不是 macOS 的 `shasum`。
