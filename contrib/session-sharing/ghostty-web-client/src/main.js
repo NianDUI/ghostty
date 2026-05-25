@@ -2496,10 +2496,25 @@ terminalView.addEventListener("pointerdown", (event) => {
 window.addEventListener("focus", focusTerminal);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
-    // Drain anything that accumulated while the page was hidden so
-    // the user sees the latest host state immediately instead of an
-    // old snapshot until the next live frame arrives.
-    flushPendingWrites();
+    // While the tab was hidden scheduleTermWrite kept appending to
+    // pendingWriteChunks but skipped the flush (see the
+    // `if (document.hidden) return;` guard there). The ring buffer
+    // FIFO-drops once it crosses PENDING_WRITE_CAP_BYTES, so the
+    // tail may now contain a stale screen snapshot followed by
+    // partial bytes that are no longer self-consistent — writing
+    // them straight into the terminal paints "the picture as it was
+    // mid-hide", which on Android looks like the canvas suddenly
+    // reverting to an older frame as soon as the user taps to
+    // unblank. Instead: drop the queued bytes (no replay of stale
+    // content) and bounce the WebSocket so the relay re-emits a
+    // client_connected event — the macOS agent reacts by pushing a
+    // fresh screen snapshot, which is the only source-of-truth way
+    // to reach the current host state. scheduleReconnect (already
+    // wired via socket.onclose) handles the backoff + status UI.
+    dropPendingWrites();
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.close(4000, "visibility_resync");
+    }
     focusTerminal();
   }
 });
