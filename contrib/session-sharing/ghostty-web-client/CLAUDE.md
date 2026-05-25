@@ -220,6 +220,64 @@ desktop-width 容器被严重低估 → 右侧列被裁), 同 commit 已修成�
 对 cap DPR 无影响(self-heal 用的也是实例 `devicePixelRatio` 字段)。
 升包时注意确认这个自愈逻辑还在。
 
+## Layer-isolation wrapper: `.terminal-canvas-host`
+
+`ensureTerminal` 在 `terminalMount` 内部 append 一个 `<div
+class="terminal-canvas-host">`,带 `will-change: transform` +
+`transform: translateZ(0)`,然后把 dist `terminal.open(canvasHost)`
+指向这个 wrapper(**不是** terminalMount 本身)。dist 的 canvas +
+helper textarea 都创建在 wrapper 里。
+
+**Why**:WebView GPU compositor 给 `transform`-promoted 元素分配独立
+layer texture。terminalMount 自带 desktop-pan 的 `translate3d(...)` →
+它有自己的 layer。如果 canvas 直接挂 terminalMount 下,canvas 像素
+画进 terminalMount 的 layer texture。
+
+HarmonyOS / ICL-AL20 WebView 实测:这个 layer texture **在 canvas
+被 removeChild 后不会立刻 release**。disposeTerminal → ensureTerminal
+新建的 canvas 插回 terminalMount → 走同一个 layer slot →
+compositor 残留 pre-dispose canvas 的像素,新 canvas 的 fillRect
+落地 ctx backing buffer 但 layer texture 滞后 → 用户看到"两个
+terminal 叠在一起"。**只有 `location.reload()` 这种整页 navigation
+触发 layer tree 整体重建**才能彻底清。
+
+修复:把 canvas 隔到自己的 layer。`canvasHost` 因为 `will-change`
++ `translateZ(0)` 拿到独立 layer,canvas 像素画进 canvasHost 的
+layer。disposeTerminal 的 `terminalMount.innerHTML = ""` 销毁
+canvasHost → 它的 layer 直接 release → 下次 ensureTerminal 新建
+canvasHost 拿到全新 layer texture,等同 reload 的关键步骤但用户
+无感。
+
+**不变量**:
+
+- terminalMount 自身**不要**重建 —— 大量 listener
+  (`touchstart/move/end/cancel/click/pointerup`)和 ResizeObserver
+  都直接 attach 在 terminalMount 上;重建会丢这些,需要把它们全部
+  搬进一个 `installMountListeners(mount)` 函数再重新挂,改动面太大,
+  现在 wrapper 方案不需要动这些。
+- canvasHost 必须**继承** terminalMount 的 width/height
+  (`width:100%; height:100%`),否则 desktop-width 容器宽度 / 移动端
+  viewport 适配会跟 canvas 不一致。
+- 别给 canvasHost 加 `position:absolute` —— dist 的 helper textarea
+  是 `position:absolute`,它会从 wrapper 找 positioned ancestor,
+  目前找到 `.terminal-host`(index.html 设 `position:relative`),
+  保持这个就好。
+- canvas 自身**不要**额外 `will-change`/`transform`。再 promote
+  一层 layer 是浪费(canvasHost 已经 promote 了),而且会跟 dist
+  内部 canvas style 写法冲突。
+
+**反模式**:
+
+- ❌ 把 `terminal.open(canvasHost)` 换回 `terminal.open(terminalMount)`
+  "省一个 div"。会直接复活"切后台再回来文字重叠"的 bug。
+- ❌ 在 disposeTerminal 加 `canvasHost = null` 或专门变量管理。
+  canvasHost 是 ensureTerminal 局部变量,wrapper 引用走
+  `terminal.element`,terminal.dispose() 已经清干净,GC 处理释放。
+  额外 module-level 引用会阻 GC。
+- ❌ 给 canvasHost 加更多 promotion hint(`backface-visibility:hidden`
+  / `perspective` 等)"保险一些"。promotion 本身是 boolean,够了就行,
+  叠加只增 GPU 内存不增效果。
+
 ## Stale canvas backing: forceAll 路径
 
 `schedulePaint(force=true)` / `scheduleFullPaint()` 在三个特殊点使用,

@@ -1187,6 +1187,11 @@ function disposeTerminal() {
   } catch (_) {}
   fitAddon = null;
   terminal = null;
+  // Wipes the layer-promoted `.terminal-canvas-host` wrapper along
+  // with the canvas + textarea it holds. Wrapper destruction is what
+  // releases the GPU compositor layer; without it the next canvas
+  // would inherit stale layer pixels on HarmonyOS WebView.
+  // See ensureTerminal's canvasHost block for the why.
   if (terminalMount) terminalMount.innerHTML = "";
   // Pan transforms live on the mount element; once we wipe the DOM
   // they're effectively meaningless but the inline style hangs around
@@ -1216,7 +1221,42 @@ async function ensureTerminal() {
       foreground: "#f5f0e8",
     },
   });
-  terminal.open(terminalMount);
+  // Compositor-layer isolation wrapper. dist's `terminal.open(host)`
+  // appends `<canvas>` + helper `<textarea>` into `host`. If `host` is
+  // terminalMount directly, the canvas pixels paint into the same
+  // GPU compositor layer that terminalMount owns (terminalMount gets
+  // its own layer because we put `transform: translate3d(...)` on it
+  // for desktop-width pan). On HarmonyOS / ICL-AL20 WebView that
+  // layer texture is **persistent across canvas replacements** — when
+  // disposeTerminal removes the old canvas and ensureTerminal builds
+  // a new one, the new canvas's fillRects land in the 2D context's
+  // backing buffer but the compositor keeps showing the previous
+  // canvas's pixels for a while (observed: 2 "terminals" overlapping
+  // after APP foreground resume; only a full `location.reload()` —
+  // which rebuilds the whole DOM tree and releases all layers —
+  // clears it).
+  //
+  // Workaround without a reload: insert a child wrapper into
+  // terminalMount and promote *that* to its own layer (will-change +
+  // translateZ(0)). Now the canvas is part of the wrapper's layer,
+  // not terminalMount's. When disposeTerminal wipes
+  // `terminalMount.innerHTML`, the wrapper is destroyed → its layer
+  // is released → the next wrapper from this function gets a fresh
+  // layer texture, just like reload would.
+  //
+  // Layout invariants: wrapper inherits terminalMount's width/height
+  // (100%), so desktop-width sizing and mobile viewport fit are
+  // unaffected. Pan transform stays on terminalMount and moves the
+  // wrapper's layer as a child (compositor applies parent transform
+  // to promoted children).
+  const canvasHost = document.createElement("div");
+  canvasHost.className = "terminal-canvas-host";
+  canvasHost.style.width = "100%";
+  canvasHost.style.height = "100%";
+  canvasHost.style.willChange = "transform";
+  canvasHost.style.transform = "translateZ(0)";
+  terminalMount.appendChild(canvasHost);
+  terminal.open(canvasHost);
   // `terminal.open` starts dist's unconditional 60 Hz rAF chain.
   // Replace it with the on-demand single-frame schedule.
   // See installOnDemandRender / schedulePaint.
