@@ -417,6 +417,11 @@ function isHostSizeLocked() {
 function syncDesktopWidthMode() {
   const enabled = desktopWidthInput?.checked ?? false;
   terminalView.classList.toggle("desktop-width-mode", enabled);
+  // Stop any in-flight momentum before we wipe pan state. Without
+  // this, a flying momentum step could fire one frame later and
+  // re-commit a translate while applyDesktopWidthSize is still in
+  // its rAF deferring panToBottom.
+  cancelPanMomentum();
   // Drop any leftover pan transform so re-entering the mode always
   // starts at the top-left corner.
   desktopPanX = 0;
@@ -480,6 +485,137 @@ function applyDesktopPanY(y) {
   desktopPanY = Math.min(maxDesktopPanY(), Math.max(0, y));
   commitDesktopPan();
 }
+
+// Pan momentum: after the user lifts their finger from a swipe, keep
+// scrolling for ~800ms-1s under decaying velocity so the gesture feels
+// like physical inertia instead of "snap-stop on release". iOS-style
+// (friction 0.95 / frame).
+//
+// Scope: only desktop-width pan (X + Y). Terminal scrollback is left to
+// dist's smoothScroll (which has its own ~150ms ease-out). Boundary
+// behaviour: hit panX=0 / panX=max → cancel immediately, no rubber-
+// banding, no transfer-to-scrollback. Any new touchstart cancels
+// in-flight momentum so the next gesture starts from rest.
+//
+// The rAF chain here is short-lived (200-800ms) and only mutates
+// `terminalMount.style.transform` via commitDesktopPan — it doesn't
+// touch canvas or trigger schedulePaint, so it's compositor-only and
+// doesn't fight the on-demand render strategy.
+const PAN_MOMENTUM_FRICTION = 0.95; // per 16ms frame
+const PAN_MOMENTUM_MIN_VELOCITY = 0.05; // px/ms (≈3 px/frame at 60Hz)
+const PAN_MOMENTUM_SAMPLE_WINDOW_MS = 100;
+// Cap on the velocity seeded into the momentum chain. Without this, a
+// spurious final touchmove sample (last 2 events 1ms apart but 30px
+// jump because of pointer-coalescing) could seed v > 20 px/ms which
+// flings the pan past max in a single frame and feels unhinged.
+const PAN_MOMENTUM_MAX_INITIAL_VELOCITY = 4.0; // px/ms
+
+let panMomentumFrame = null;
+let panMomentumAxis = null; // 'x' | 'y' | null
+let panMomentumVelocity = 0; // px/ms
+let panMomentumLastT = 0;
+
+function cancelPanMomentum() {
+  if (panMomentumFrame !== null) {
+    cancelAnimationFrame(panMomentumFrame);
+    panMomentumFrame = null;
+  }
+  panMomentumAxis = null;
+  panMomentumVelocity = 0;
+}
+
+function startPanMomentum(axis, velocity) {
+  if (axis !== "x" && axis !== "y") return;
+  if (!isDesktopWidthMode()) return;
+  if (Math.abs(velocity) < PAN_MOMENTUM_MIN_VELOCITY) return;
+  cancelPanMomentum();
+  panMomentumAxis = axis;
+  // Clamp absurd seed values from coalesced pointer events.
+  panMomentumVelocity = Math.max(
+    -PAN_MOMENTUM_MAX_INITIAL_VELOCITY,
+    Math.min(PAN_MOMENTUM_MAX_INITIAL_VELOCITY, velocity),
+  );
+  panMomentumLastT = performance.now();
+  panMomentumFrame = requestAnimationFrame(panMomentumStep);
+}
+
+function panMomentumStep(t) {
+  if (panMomentumAxis === null) {
+    panMomentumFrame = null;
+    return;
+  }
+  // Cap dt so a slow rAF (tab in background just resurfaced, GC pause)
+  // doesn't fling the pan by a huge delta on the recovery frame.
+  const dt = Math.max(1, Math.min(50, t - panMomentumLastT));
+  panMomentumLastT = t;
+  // Frame-rate-independent decay: at 60 Hz (dt≈16) this matches the
+  // chosen per-frame friction exactly; at 30 Hz the per-step decay is
+  // friction^2 so the visible curve is unchanged.
+  panMomentumVelocity *= Math.pow(PAN_MOMENTUM_FRICTION, dt / 16);
+  if (Math.abs(panMomentumVelocity) < PAN_MOMENTUM_MIN_VELOCITY) {
+    cancelPanMomentum();
+    return;
+  }
+  const delta = panMomentumVelocity * dt;
+  // applyDesktopPan{,Y} both clamp to [0, max]; we detect "hit a
+  // boundary" by checking whether the value moved when we asked it to.
+  if (panMomentumAxis === "x") {
+    const prev = desktopPanX;
+    applyDesktopPan(desktopPanX - delta);
+    if (desktopPanX === prev && delta !== 0) {
+      cancelPanMomentum();
+      return;
+    }
+  } else {
+    const prev = desktopPanY;
+    applyDesktopPanY(desktopPanY - delta);
+    if (desktopPanY === prev && delta !== 0) {
+      cancelPanMomentum();
+      return;
+    }
+  }
+  panMomentumFrame = requestAnimationFrame(panMomentumStep);
+}
+
+// Record a touchmove sample into the gesture's ring buffer. Bounded
+// at 24 entries because we only need the last 100ms (≈6 frames on
+// 60Hz), and a tight cap stops a slow drag from accumulating a
+// thousand-entry buffer.
+function recordPanSample(state, touch) {
+  if (!state || !state.panSamples) return;
+  state.panSamples.push({
+    t: performance.now(),
+    x: touch.clientX,
+    y: touch.clientY,
+  });
+  if (state.panSamples.length > 24) {
+    state.panSamples.shift();
+  }
+}
+
+// Compute fling velocity from the tail of the touchmove sample buffer.
+// We use the oldest sample within the last PAN_MOMENTUM_SAMPLE_WINDOW_MS
+// rather than the last 2 samples because pointer-coalescing in modern
+// browsers means consecutive samples can be unreliable (same-frame events
+// merged into one dispatch with synthetic timestamps).
+function computePanVelocity(samples, axis) {
+  if (!samples || samples.length < 2) return 0;
+  const last = samples[samples.length - 1];
+  const cutoff = last.t - PAN_MOMENTUM_SAMPLE_WINDOW_MS;
+  let first = null;
+  for (let i = 0; i < samples.length; i++) {
+    if (samples[i].t >= cutoff) {
+      first = samples[i];
+      break;
+    }
+  }
+  if (!first || first === last) return 0;
+  const dt = last.t - first.t;
+  if (dt <= 0) return 0;
+  const delta = axis === "x" ? last.x - first.x : last.y - first.y;
+  return delta / dt;
+}
+
 // Vertical pan strategy:
 //
 // - Default to "pan to grid bottom" so the host TUI's status bar /
@@ -956,6 +1092,11 @@ function applyRendererDpr(force = false) {
 function disposeTerminal() {
   if (!terminal) return;
   cancelScheduledPaint();
+  // Pan momentum may be flying over the about-to-die canvas; the
+  // step rAF only touches DOM transform on terminalMount (which we
+  // wipe below) but cleaning up first avoids a stray rAF callback
+  // operating on a stale terminalMount.style after innerHTML clear.
+  cancelPanMomentum();
   // Any rAF-queued bytes belong to the terminal we're about to throw
   // away; flushing them onto the next instance would smear stale
   // frames into a fresh session.
@@ -2396,6 +2537,12 @@ function scrollbarLineForTouchY(canvasRect, scrollback, touchY) {
 terminalMount.addEventListener(
   "touchstart",
   (event) => {
+    // Any finger-down cancels in-flight momentum so the new gesture
+    // starts from rest. Without this, touchstart records lastPanX/Y
+    // at the current finger position while momentum keeps shifting
+    // desktopPanX/Y under it — the first touchmove computes dxStep
+    // against a stale baseline and the pan jumps.
+    cancelPanMomentum();
     if (event.touches.length !== 1) {
       touchScrollState = null;
       return;
@@ -2430,6 +2577,15 @@ terminalMount.addEventListener(
       lastPanY: touch.clientY,
       cellHeight: currentCellHeightPx(),
       moved: false,
+      // Ring buffer of recent samples, used by computePanVelocity at
+      // touchend to seed momentum. Reset per gesture so a slow drag
+      // followed by a fast flick doesn't average the two.
+      panSamples: [],
+      // Set by touchmove's pan branches; consumed by endTouchScroll to
+      // decide whether to start momentum (and on which axis). null means
+      // the gesture never entered a pan branch (scrollback fall-through
+      // or a tap).
+      lastPanAxis: null,
     };
     const _scroller = terminalMount.parentElement;
     const _sl = _scroller ? _scroller.scrollLeft | 0 : 0;
@@ -2510,6 +2666,8 @@ terminalMount.addEventListener(
           applyDesktopPan(desktopPanX - dxStep);
           touchScrollState.lastPanX = touch.clientX;
         }
+        touchScrollState.lastPanAxis = "x";
+        recordPanSample(touchScrollState, touch);
       }
       if (event.cancelable) event.preventDefault();
       logEvt(
@@ -2544,6 +2702,8 @@ terminalMount.addEventListener(
       if (!panToScrollback && !unwindScrollback) {
         applyDesktopPanY(desktopPanY - dyStep);
         touchScrollState.lastPanY = touch.clientY;
+        touchScrollState.lastPanAxis = "y";
+        recordPanSample(touchScrollState, touch);
         if (event.cancelable) event.preventDefault();
         return;
       }
@@ -2611,7 +2771,20 @@ function endTouchScroll() {
   }
   const wasMovedSwipe =
     touchScrollState.type === "swipe" && touchScrollState.moved;
+  // Snapshot momentum inputs BEFORE nulling the state. computePanVelocity
+  // reads the recorded sample buffer; sign convention matches
+  // applyDesktopPan(desktopPanX - delta) — positive velocity = finger
+  // moving in the + direction, which propagates the pan in the same
+  // direction the user was already swiping.
+  const momentumAxis = touchScrollState.lastPanAxis;
+  const momentumVelocity =
+    wasMovedSwipe && momentumAxis
+      ? computePanVelocity(touchScrollState.panSamples, momentumAxis)
+      : 0;
   touchScrollState = null;
+  if (wasMovedSwipe && momentumAxis) {
+    startPanMomentum(momentumAxis, momentumVelocity);
+  }
   if (wasTap && shouldUseMobileInput()) {
     focusTerminal();
     return;

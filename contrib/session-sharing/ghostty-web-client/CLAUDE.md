@@ -220,6 +220,47 @@ desktop-width 容器被严重低估 → 右侧列被裁), 同 commit 已修成�
 对 cap DPR 无影响(self-heal 用的也是实例 `devicePixelRatio` 字段)。
 升包时注意确认这个自愈逻辑还在。
 
+## Desktop-width pan momentum
+
+src/main.js 在 touchend 后启动短期 rAF 链 (`panMomentumStep`),按
+iOS 风 friction=0.95/frame 衰减,~800ms-1s 自然停。**只覆盖 desktop-width
+pan 的 X+Y**,不动 terminal scrollback (scrollback 走 dist smoothScroll
+自带的 ease-out,不要重复)。
+
+**关键决策与边界**:
+
+- **边界行为 = 立即停**:`applyDesktopPan` 内部 clamp 到 [0,max],
+  step 内检测到 `desktopPanX === prev && delta !== 0` 立刻 cancel。
+  不做 rubber-band 也不把 momentum 转移到 scrollback (用户实测中
+  "弹回"和"穿过边界继续滚"都会引起失控感)。
+- **任何新 touchstart 必先 cancelPanMomentum**:同一根手指再次落屏时,
+  momentum 必须停在落点,否则 touchmove 的 dxStep 算在过期 baseline
+  上 → 视觉跳变。
+- **syncDesktopWidthMode 内主动 cancel**:toggle desktop-width 时
+  momentum 仍在飞 → 一帧后 self-heal (撞 max=0 停),但显式 cancel
+  避开 `desktopPanX=0 → applyDesktopWidthSize rAF 内 panToBottom`
+  这条 race。
+- **disposeTerminal 内 cancel**:terminalMount.innerHTML 已 wipe,
+  momentum step 操作的 style.transform 落在 stale node 上无意义。
+- **velocity 上限 `PAN_MOMENTUM_MAX_INITIAL_VELOCITY = 4 px/ms`**:
+  防止 pointer-coalescing 把两个相邻事件合并成"1ms 内移动 30px"的
+  虚假高速,seed 一个能 fling 半个屏幕的 momentum。
+- **dt 上下限 `[1, 50]ms`**:背景 tab / GC pause 之后第一帧 dt 可能
+  几百 ms,不 cap 的话 momentum 一帧飞过整个 pan 范围。
+- **momentum rAF 只动 `terminalMount.style.transform`**,**不调
+  schedulePaint** —— translate3d 走 compositor 不需要 canvas 重绘,
+  跟 on-demand render 完全互不影响。
+
+**反模式**:
+
+- ❌ 看 `panMomentumStep` 里的 friction 觉得是上次坏代码留下的常驻
+  rAF 而删掉。它是 touchend 后才启动、衰减后自停的短期 rAF,跟
+  startRenderLoop 完全不同。
+- ❌ 给 terminal scrollback 也加 momentum。scrollback 不归我们管,
+  动它要侵入 dist。
+- ❌ 调 friction 接近 1.0 ("更顺滑"):会让 momentum 跑十几秒,用户
+  按不停。0.95 是 iOS 实测值,别动。
+
 ## 远端是 Linux 的小坑
 
 - 校验文件 sha 用 `sha256sum`,不是 macOS 的 `shasum`。
