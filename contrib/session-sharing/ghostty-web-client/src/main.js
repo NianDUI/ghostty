@@ -23,6 +23,7 @@ const tokenInput = document.querySelector("#token");
 const saveTokenButton = document.querySelector("#saveToken");
 const downloadApkButton = document.querySelector("#downloadApk");
 const downloadApkHint = document.querySelector("#downloadApkHint");
+const reloadAppButton = document.querySelector("#reloadApp");
 const sessionList = document.querySelector("#sessionList");
 const sessionMeta = document.querySelector("#sessionMeta");
 const terminalMount = document.querySelector("#terminal");
@@ -188,6 +189,94 @@ refreshSessionsButton.addEventListener("click", async () => {
     }, remainder);
   }
 });
+
+// Full SPA reload — drops WebSocket / terminal / pending writes / DOM
+// state and re-parses the bundled assets from scratch. Useful when
+// something gets wedged (terminal stuck mid-frame, IME composer stuck,
+// stale CSS variables after a viewport oddity) and the user wants a
+// clean slate without quitting/relaunching the APK. Two entry points
+// keep the rare case reachable: an explicit button in settings, and a
+// two-finger pull-down on the session list (mobile-friendly gesture
+// that bypasses the single-finger list scroll).
+function performAppReload() {
+  // location.reload() is identical to a browser soft refresh: WebView
+  // re-fetches index.html from the local assets, the module graph is
+  // rebuilt, and every closure / event listener from the previous run
+  // is dropped. We do NOT pass `true` (force-reload) — APK assets are
+  // local files so cache semantics don't apply, and the deprecated
+  // boolean argument trips MDN/lint warnings without any benefit here.
+  window.location.reload();
+}
+
+reloadAppButton.addEventListener("click", performAppReload);
+
+// Two-finger pull-down on the session list as a quick gesture. Single
+// finger is reserved for normal list scrolling; requiring two touch
+// points makes the gesture intentional and removes any conflict with
+// scrollTop tracking or rubber-band overscroll. Threshold is the
+// average vertical displacement of the two contact points, so users
+// don't have to keep their fingers perfectly parallel.
+const TWO_FINGER_RELOAD_THRESHOLD_PX = 60;
+let twoFingerStartY = null;
+let twoFingerTriggered = false;
+
+launcherHomeView.addEventListener(
+  "touchstart",
+  (event) => {
+    if (event.touches.length !== 2) {
+      twoFingerStartY = null;
+      twoFingerTriggered = false;
+      return;
+    }
+    twoFingerStartY = (event.touches[0].clientY + event.touches[1].clientY) / 2;
+    twoFingerTriggered = false;
+  },
+  { passive: true },
+);
+
+launcherHomeView.addEventListener(
+  "touchmove",
+  (event) => {
+    if (twoFingerStartY == null) return;
+    if (event.touches.length !== 2) {
+      // User lifted/added a finger mid-gesture — abandon the pull so a
+      // later single-finger scroll doesn't accidentally cross the
+      // threshold against the stale anchor.
+      twoFingerStartY = null;
+      twoFingerTriggered = false;
+      return;
+    }
+    const currentY =
+      (event.touches[0].clientY + event.touches[1].clientY) / 2;
+    if (
+      currentY - twoFingerStartY >= TWO_FINGER_RELOAD_THRESHOLD_PX &&
+      !twoFingerTriggered
+    ) {
+      twoFingerTriggered = true;
+    }
+  },
+  { passive: true },
+);
+
+launcherHomeView.addEventListener(
+  "touchend",
+  () => {
+    const shouldReload = twoFingerTriggered;
+    twoFingerStartY = null;
+    twoFingerTriggered = false;
+    if (shouldReload) performAppReload();
+  },
+  { passive: true },
+);
+
+launcherHomeView.addEventListener(
+  "touchcancel",
+  () => {
+    twoFingerStartY = null;
+    twoFingerTriggered = false;
+  },
+  { passive: true },
+);
 // Keep the back button's enabled state in sync as the user types or
 // clears the token — without this, clearing the field mid-edit leaves
 // the button enabled and the user could escape with no token.
