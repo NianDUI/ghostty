@@ -700,7 +700,6 @@ function flushPendingWrites() {
   pendingWriteChunks = [];
   pendingWriteSize = 0;
   terminal.write(combined);
-  rearmRenderLoop();
 }
 
 function dropPendingWrites() {
@@ -712,56 +711,127 @@ function dropPendingWrites() {
   }
 }
 
-// Idle-pause the upstream render loop.
+// On-demand render: replace upstream's unconditional 60 Hz rAF chain
+// with a single-frame rAF scheduled only when terminal state actually
+// changes.
 //
-// `ghostty-web` v0.4.0's `Terminal.startRenderLoop` re-schedules
-// requestAnimationFrame unconditionally — even when no row is dirty
-// and cursorBlink is off, the loop keeps waking the main thread at
-// the display refresh rate. On a mobile WebView this pins CPU
-// frequency above idle indefinitely, most visibly in desktop-width
-// landscape mode where the canvas backing buffer is oversized so
-// each no-op tick still costs GPU compositor work.
+// `ghostty-web` v0.4.0's `Terminal.startRenderLoop` re-arms
+// `requestAnimationFrame` every frame regardless of dirty state, and
+// the only paint path lives inside that loop — `write`, `clear`,
+// `reset`, selection updates, and smooth-scroll all mutate state then
+// rely on the next tick of the loop to paint. On a mobile WebView
+// this pins CPU above idle even with `cursorBlink: false` and no
+// inbound writes, worst in desktop-width landscape where the canvas
+// backing buffer is oversized.
 //
-// We let the library run its loop as-is during activity but cancel
-// the rAF after RENDER_IDLE_PAUSE_MS of silence; the phone CPU then
-// drops to true idle frequency. Any new write, scroll, touch, mouse,
-// wheel, or visibility-restore re-arms the loop. Selection drags
-// fire touchmove continuously so they keep it alive without per-
-// event hooks. Internal animations that bypass `animationFrameId`
-// (scrollbar fade, animateScroll) own their own rAF chain and are
-// unaffected by the pause.
-const RENDER_IDLE_PAUSE_MS = 250;
-let renderIdleTimer = null;
+// Strategy:
+//   1. Kill the constant rAF chain entirely (override startRenderLoop).
+//   2. Provide a single-frame `schedulePaint` with rAF dedupe.
+//   3. Wrap the prototype methods that mutate visible state but don't
+//      paint themselves (`write` / `clear` / `reset` / `paste`).
+//   4. Subscribe to the public emitters that fire on every internal
+//      mutation that doesn't go through (3): `onScroll` covers smooth-
+//      scroll / wheel / scrollTo*; `onSelectionChange` covers selection
+//      drag; `onResize` is idempotent (dist already paints in resize).
+//   5. Keep the existing capture-phase mouse/touch/wheel DOM listeners
+//      as a belt for `processMouseMove` (hover link state change has
+//      no emitter — the only blind spot in the emitter coverage).
+//
+// Idle behaviour: zero rAF, zero main-thread wake. Under burst writes
+// the existing pendingWrite throttle (50 ms desktop / 80 ms mobile)
+// caps rAF frequency to ≤20 Hz.
+let scheduledPaintFrame = null;
 
-function rearmRenderLoop() {
+function schedulePaint() {
   if (!terminal || terminal.isDisposed || !terminal.isOpen) return;
-  if (renderIdleTimer != null) {
-    window.clearTimeout(renderIdleTimer);
-    renderIdleTimer = null;
-  }
-  // v0.4.0 dist has no "already running" guard inside startRenderLoop,
-  // so we gate externally to avoid stacking parallel rAF chains when
-  // rearm is called while the loop is still active.
-  if (terminal.animationFrameId == null) {
+  if (scheduledPaintFrame != null) return;
+  scheduledPaintFrame = window.requestAnimationFrame(() => {
+    scheduledPaintFrame = null;
+    if (!terminal || terminal.isDisposed || !terminal.isOpen) return;
+    const renderer = terminal.renderer;
+    const wasm = terminal.wasmTerm;
+    if (!renderer || !wasm) return;
     try {
-      terminal.startRenderLoop();
+      renderer.render(
+        wasm,
+        false,
+        terminal.viewportY,
+        terminal,
+        terminal.scrollbarOpacity,
+      );
     } catch (_) {}
-  }
-  renderIdleTimer = window.setTimeout(() => {
-    renderIdleTimer = null;
-    if (!terminal) return;
-    if (terminal.animationFrameId != null) {
-      window.cancelAnimationFrame(terminal.animationFrameId);
-      terminal.animationFrameId = undefined;
-    }
-  }, RENDER_IDLE_PAUSE_MS);
+  });
 }
 
-function cancelRenderIdlePause() {
-  if (renderIdleTimer != null) {
-    window.clearTimeout(renderIdleTimer);
-    renderIdleTimer = null;
+function cancelScheduledPaint() {
+  if (scheduledPaintFrame != null) {
+    window.cancelAnimationFrame(scheduledPaintFrame);
+    scheduledPaintFrame = null;
   }
+}
+
+// Install the on-demand patch on a fresh Terminal instance. Must run
+// AFTER `terminal.open(parent)` because (a) open() starts the dist
+// rAF chain we need to cancel, and (b) `selectionManager` is created
+// inside open() — onSelectionChange fires nothing until then.
+function installOnDemandRender(t) {
+  // (1) Cancel the rAF chain dist's open() just started.
+  if (t.animationFrameId != null) {
+    window.cancelAnimationFrame(t.animationFrameId);
+    t.animationFrameId = undefined;
+  }
+  // (2) Neutralise startRenderLoop. dist's resize / setColsRows do
+  // NOT call it again (they paint inline), but any future refresh
+  // path that does will simply enqueue one frame.
+  t.startRenderLoop = function () {
+    schedulePaint();
+  };
+
+  // (3) Wrap mutating prototype methods on this instance. Prototype-
+  // level wrap would leak across hypothetical future Terminal
+  // instances; instance wrap is scoped and survives dispose by virtue
+  // of the next ensureTerminal() building a fresh instance.
+  const origWrite = t.write.bind(t);
+  t.write = function (data, callback) {
+    const ret = origWrite(data, callback);
+    schedulePaint();
+    return ret;
+  };
+  const origClear = t.clear.bind(t);
+  t.clear = function () {
+    const ret = origClear();
+    schedulePaint();
+    return ret;
+  };
+  const origReset = t.reset.bind(t);
+  t.reset = function () {
+    const ret = origReset();
+    schedulePaint();
+    return ret;
+  };
+  const origPaste = t.paste.bind(t);
+  t.paste = function (data) {
+    const ret = origPaste(data);
+    schedulePaint();
+    return ret;
+  };
+
+  // (4) Subscribe to public emitters for state changes that don't
+  // route through (3). dist source verified for v0.4.0:
+  //   - animateScroll only fires scrollEmitter (no inline render)
+  //   - selectionManager.onSelectionChange only fires
+  //     selectionChangeEmitter (no inline render)
+  //   - resize already paints inline; onResize subscription is
+  //     idempotent (rAF dedupes the second schedule away)
+  t.onScroll(() => schedulePaint());
+  t.onSelectionChange(() => schedulePaint());
+  t.onResize(() => schedulePaint());
+
+  // (5) dist's open() already painted once before startRenderLoop.
+  // We just cancelled that loop; schedule one explicit paint so any
+  // post-open state mutation that landed before installOnDemandRender
+  // ran is reflected.
+  schedulePaint();
 }
 
 // Tear down the xterm instance + DOM nodes it created, so the next
@@ -772,7 +842,7 @@ function cancelRenderIdlePause() {
 // `replayBuffer` and other module state separately.
 function disposeTerminal() {
   if (!terminal) return;
-  cancelRenderIdlePause();
+  cancelScheduledPaint();
   // Any rAF-queued bytes belong to the terminal we're about to throw
   // away; flushing them onto the next instance would smear stale
   // frames into a fresh session.
@@ -815,10 +885,10 @@ async function ensureTerminal() {
     },
   });
   terminal.open(terminalMount);
-  // `terminal.open` kicks off the unconditional render loop; arm the
-  // idle-pause immediately so an open-but-silent terminal still drops
-  // to idle after RENDER_IDLE_PAUSE_MS. See rearmRenderLoop.
-  rearmRenderLoop();
+  // `terminal.open` starts dist's unconditional 60 Hz rAF chain.
+  // Replace it with the on-demand single-frame schedule.
+  // See installOnDemandRender / schedulePaint.
+  installOnDemandRender(terminal);
   // Re-anchor the pan to the bottom-right whenever .terminal-host
   // resizes — the soft keyboard appearing, the mobile toolbar
   // expanding, or the URL bar showing/hiding all shrink the visible
@@ -884,17 +954,19 @@ async function ensureTerminal() {
       },
       { capture: true },
     );
-    // Wake the render loop on user interaction. Write-driven output
-    // already calls rearmRenderLoop via flushPendingWrites; these
-    // listeners cover the paths that change canvas state without
-    // going through `terminal.write`: selection drag (touchmove /
-    // mousemove updates selectionManager state), wheel-scroll
-    // (animateScroll owns its own rAF but the post-scroll resting
-    // viewport still depends on the main loop), and tab-restore
-    // after backgrounding. Listeners are installed once on terminalMount
-    // and survive disposeTerminal because the mount element itself is
-    // not destroyed.
-    const wake = () => rearmRenderLoop();
+    // Belt for the one emitter blind spot: `processMouseMove` updates
+    // hoveredHyperlinkId / hoveredLinkRange without firing any public
+    // emitter, so without these listeners the hover link underline +
+    // cursor style change wouldn't repaint until something else fires
+    // a paint. Listeners are installed once on terminalMount and
+    // survive disposeTerminal because the mount element itself is not
+    // destroyed.
+    //
+    // The other paths (write/scroll/selection/resize) are already
+    // covered by installOnDemandRender's emitter subscriptions and
+    // method wraps — these listeners are redundant for those but
+    // schedulePaint dedupes via rAF so the overlap is free.
+    const wake = () => schedulePaint();
     const wakeEvents = [
       "touchstart",
       "touchmove",
@@ -909,7 +981,7 @@ async function ensureTerminal() {
       });
     }
     document.addEventListener("visibilitychange", () => {
-      if (!document.hidden) rearmRenderLoop();
+      if (!document.hidden) schedulePaint();
     });
     globalTerminalListenersInstalled = true;
   }
@@ -924,10 +996,8 @@ async function ensureTerminal() {
     }
   });
   terminal.onResize(({ cols, rows }) => {
-    // Wake the render loop so the new grid paints even if the resize
-    // landed during an idle pause (e.g. host pushed a resize after
-    // the user stopped interacting).
-    rearmRenderLoop();
+    // No explicit paint needed: installOnDemandRender subscribes to
+    // onResize and dist itself paints inline inside resize().
     // Recompute the inline #terminal pixel width on every grid change,
     // regardless of which side initiated it (FitAddon, hello, host
     // resize). This is the catch-all path — the explicit calls in
