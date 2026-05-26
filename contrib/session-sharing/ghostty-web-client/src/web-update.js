@@ -60,14 +60,66 @@ export async function getLocalWebVersion() {
 // Download + verify + unpack into filesDir/web/<version>/. Returns the
 // unpacked path so the caller can hand it to setServerBasePath.
 //
-// The plugin runs the work on a background thread, so the JS await
-// doesn't block the UI. token is the user's Bearer token (required —
-// /api/web/bundle is Bearer-only, no grant flow because the plugin
-// can set the header directly).
-export async function downloadWebBundle({ url, sha256, version, token }) {
+// The HTTP fetch deliberately runs in JS (via the WebView's network
+// stack) rather than inside the Capacitor plugin. The plugin's previous
+// HttpURLConnection implementation hung indefinitely on HarmonyOS
+// WebView (ICL-AL20 / Android 12 wv) — likely because Capacitor +
+// HarmonyOS use divergent TLS stacks for the WebView vs the OS network
+// API, and the self-signed cert NSC pin only consistently applied to
+// the WebView side. Doing the HTTP in JS means there's exactly one
+// network code path to worry about. The bytes get base64-encoded and
+// handed to the plugin for sha verification + extract.
+//
+// Caller-supplied `onProgress` is called with {phase, ...} so the UI
+// can show download / verify / install transitions; phases:
+//   "download"  bytes received  -> {received, total}
+//   "verify"    base64 + sha     -> {}
+//   "install"   plugin unpack    -> {}
+export async function downloadWebBundle({ url, sha256, version, token, onProgress }) {
   const p = plugin();
   if (!p) throw new Error("web update not supported on this platform");
-  return p.download({ url, sha256, version, token });
+  if (!url || !sha256 || !version) throw new Error("url, sha256, version are required");
+  if (!token) throw new Error("missing bearer token");
+
+  onProgress?.({ phase: "download", received: 0, total: 0 });
+  const response = await fetch(url, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+    credentials: "omit",
+  });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const buffer = await response.arrayBuffer();
+  onProgress?.({ phase: "download", received: buffer.byteLength, total: buffer.byteLength });
+
+  onProgress?.({ phase: "verify" });
+  const base64 = await arrayBufferToBase64(buffer);
+
+  onProgress?.({ phase: "install" });
+  return p.installFromBase64({ data: base64, sha256, version });
+}
+
+// Convert ArrayBuffer to base64 string. Uses FileReader.readAsDataURL
+// because the browser's native base64 encoder is faster than a JS loop
+// of fromCharCode + btoa for buffers > a few KB, and avoids the
+// argument-count limit of String.fromCharCode.apply.
+function arrayBufferToBase64(buffer) {
+  return new Promise((resolve, reject) => {
+    const blob = new Blob([buffer]);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      const comma = typeof dataUrl === "string" ? dataUrl.indexOf(",") : -1;
+      if (comma < 0) {
+        reject(new Error("base64 encode failed"));
+        return;
+      }
+      resolve(dataUrl.slice(comma + 1));
+    };
+    reader.onerror = () => reject(reader.error || new Error("base64 encode failed"));
+    reader.readAsDataURL(blob);
+  });
 }
 
 // Switch the WebView to the freshly downloaded bundle. setServerBasePath

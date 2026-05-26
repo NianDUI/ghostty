@@ -1,5 +1,7 @@
 package com.ghostty.sessionsharing;
 
+import android.util.Base64;
+
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -10,10 +12,6 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -21,51 +19,53 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 /**
- * Web OTA helper. Downloads, verifies, and unpacks a zipped dist into
- * {@code filesDir/web/&lt;version&gt;/}. Routing/persistence is handled by
- * Capacitor's built-in WebView plugin via {@code Bridge.setServerBasePath}
- * + {@code persistServerBasePath} from the JS side — we deliberately do
- * not duplicate that logic here.
+ * Web OTA helper. Verifies + unpacks a zipped dist into
+ * {@code filesDir/web/&lt;version&gt;/}. The plugin is intentionally
+ * "no network" — JS fetches the bundle via the WebView's HTTP stack
+ * (the only one we've verified works on the target HarmonyOS WebView)
+ * and hands us the bytes as base64. Routing/persistence stay with
+ * Capacitor 8's built-in WebView plugin (setServerBasePath +
+ * persistServerBasePath).
  *
- * <p>Atomic update: download -&gt; sha256 verify -&gt; unzip into
+ * <p>Atomic update: base64-decode + sha256 verify -&gt; unzip into
  * {@code &lt;version&gt;.partial/_unpack/} -&gt; rename to
- * {@code &lt;version&gt;/}. A {@code .version} marker is written last so
- * partial directories cannot be activated.
+ * {@code &lt;version&gt;/}. A {@code .version} marker (version + sha)
+ * is written last so partial directories cannot be activated.
  */
 @CapacitorPlugin(name = "GhosttyWebUpdate")
 public class WebUpdatePlugin extends Plugin {
 
     private static final String SUBDIR = "web";
-    private static final int CONNECT_TIMEOUT_MS = 30_000;
-    private static final int READ_TIMEOUT_MS = 60_000;
     private static final int BUFFER_SIZE = 64 * 1024;
 
     @PluginMethod
-    public void download(PluginCall call) {
-        final String url = call.getString("url");
+    public void installFromBase64(PluginCall call) {
+        final String data = call.getString("data");
         final String expectedSha = call.getString("sha256");
         final String version = call.getString("version");
-        final String token = call.getString("token");
-        if (url == null || expectedSha == null || version == null) {
-            call.reject("url, sha256, version are required");
+        if (data == null || expectedSha == null || version == null) {
+            call.reject("data, sha256, version are required");
             return;
         }
         if (!isValidVersion(version)) {
             call.reject("invalid version label");
             return;
         }
+        // Background thread keeps base64 decode + unzip off the UI
+        // thread — neither is huge for a 200 KB dist, but blocking the
+        // bridge thread blocks every other plugin call too.
         new Thread(() -> {
             try {
-                File destDir = doDownload(url, expectedSha, version, token);
+                File destDir = doInstall(data, expectedSha, version);
                 JSObject ret = new JSObject();
                 ret.put("path", destDir.getAbsolutePath());
                 ret.put("version", version);
                 call.resolve(ret);
             } catch (Exception e) {
                 String msg = e.getMessage();
-                call.reject(msg == null ? "download_failed" : msg, e);
+                call.reject(msg == null ? "install_failed" : msg, e);
             }
-        }, "GhosttyWebUpdate-Download").start();
+        }, "GhosttyWebUpdate-Install").start();
     }
 
     @PluginMethod
@@ -132,7 +132,7 @@ public class WebUpdatePlugin extends Plugin {
         call.resolve(ret);
     }
 
-    private File doDownload(String url, String expectedSha, String version, String token)
+    private File doInstall(String base64Data, String expectedSha, String version)
             throws IOException, NoSuchAlgorithmException {
         File webRoot = new File(getContext().getFilesDir(), SUBDIR);
         if (!webRoot.exists() && !webRoot.mkdirs()) {
@@ -145,7 +145,7 @@ public class WebUpdatePlugin extends Plugin {
         }
         try {
             File zipFile = new File(stageDir, "bundle.zip");
-            downloadAndVerify(url, token, expectedSha, zipFile);
+            decodeAndVerify(base64Data, expectedSha, zipFile);
 
             File unpackDir = new File(stageDir, "_unpack");
             if (!unpackDir.mkdirs()) {
@@ -161,9 +161,9 @@ public class WebUpdatePlugin extends Plugin {
                 throw new IOException("could not promote stage to dest " + destDir);
             }
             // Write the version marker last so getLocalWebVersion treats
-            // partially-promoted dirs as invalid (caller can re-download).
+            // partially-promoted dirs as invalid (caller can re-install).
             // Two lines: version label, sha256. The sha is the same one
-            // we just verified the zip against, so JS-side checkUpdate
+            // we just verified the bytes against, so JS-side hasUpdate
             // can detect re-deploys that share a version label (dirty
             // builds, ad-hoc re-pushes) by comparing sha256.
             try (FileOutputStream fos = new FileOutputStream(new File(destDir, ".version"))) {
@@ -175,37 +175,25 @@ public class WebUpdatePlugin extends Plugin {
         }
     }
 
-    private void downloadAndVerify(String url, String token, String expectedSha, File dest)
+    private void decodeAndVerify(String base64Data, String expectedSha, File dest)
             throws IOException, NoSuchAlgorithmException {
-        URL u = new URL(url);
-        HttpURLConnection conn = (HttpURLConnection) u.openConnection();
-        try {
-            conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            conn.setReadTimeout(READ_TIMEOUT_MS);
-            conn.setRequestMethod("GET");
-            if (token != null && !token.isEmpty()) {
-                conn.setRequestProperty("Authorization", "Bearer " + token);
-            }
-            int code = conn.getResponseCode();
-            if (code != 200) {
-                throw new IOException("HTTP " + code);
-            }
-            MessageDigest sha = MessageDigest.getInstance("SHA-256");
-            try (InputStream in = conn.getInputStream();
-                 OutputStream out = new FileOutputStream(dest)) {
-                byte[] buf = new byte[BUFFER_SIZE];
-                int n;
-                while ((n = in.read(buf)) > 0) {
-                    sha.update(buf, 0, n);
-                    out.write(buf, 0, n);
-                }
-            }
-            String actual = toHex(sha.digest());
-            if (!actual.equalsIgnoreCase(expectedSha)) {
-                throw new IOException("sha256 mismatch (expected=" + expectedSha + " actual=" + actual + ")");
-            }
-        } finally {
-            conn.disconnect();
+        // Base64 decode in one shot — Android's Base64.decode handles
+        // strings up to a few MB comfortably, and dist bundles are
+        // ~200 KB so this is fine. URL_SAFE | DEFAULT flags accept both
+        // standard and url-safe alphabets, no padding requirements.
+        byte[] bytes = Base64.decode(base64Data, Base64.DEFAULT);
+        if (bytes == null || bytes.length == 0) {
+            throw new IOException("empty bundle after base64 decode");
+        }
+        MessageDigest sha = MessageDigest.getInstance("SHA-256");
+        sha.update(bytes);
+        String actual = toHex(sha.digest());
+        if (!actual.equalsIgnoreCase(expectedSha)) {
+            throw new IOException(
+                "sha256 mismatch (expected=" + expectedSha + " actual=" + actual + ")");
+        }
+        try (FileOutputStream fos = new FileOutputStream(dest)) {
+            fos.write(bytes);
         }
     }
 

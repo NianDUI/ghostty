@@ -739,10 +739,24 @@ function refreshWebVersionUI() {
 }
 
 async function installWebUpdate() {
-  if (!isWebUpdateSupported() || webVersionInfo.busy) return;
-  if (!webVersionInfo.hasUpdate) return;
+  logEvt(
+    `installWebUpdate enter native=${isWebUpdateSupported()} busy=${webVersionInfo.busy} hasUpdate=${webVersionInfo.hasUpdate} localSha=${webVersionInfo.localSha.slice(0, 8)} serverSha=${webVersionInfo.serverSha.slice(0, 8)}`,
+  );
+  if (!isWebUpdateSupported()) {
+    logEvt("installWebUpdate skip: not native");
+    return;
+  }
+  if (webVersionInfo.busy) {
+    logEvt("installWebUpdate skip: busy");
+    return;
+  }
+  if (!webVersionInfo.hasUpdate) {
+    logEvt("installWebUpdate skip: no update available");
+    return;
+  }
   const token = tokenInput.value.trim();
   if (!token) {
+    logEvt("installWebUpdate skip: no token");
     if (webUpdateHintEl) {
       webUpdateHintEl.textContent = "请先填写 User Token。";
     }
@@ -768,6 +782,21 @@ async function installWebUpdate() {
       sha256: webVersionInfo.serverSha,
       version: webVersionInfo.serverVersion,
       token,
+      onProgress: (info) => {
+        logEvt(`web update progress phase=${info.phase}${info.total ? ` ${info.received}/${info.total}` : ""}`);
+        if (!webUpdateHintEl) return;
+        if (info.phase === "download") {
+          if (info.total > 0 && info.received >= info.total) {
+            webUpdateHintEl.textContent = `下载完成 (${(info.received / 1024).toFixed(1)} KB)，校验中…`;
+          } else {
+            webUpdateHintEl.textContent = "下载中…";
+          }
+        } else if (info.phase === "verify") {
+          webUpdateHintEl.textContent = "校验中…";
+        } else if (info.phase === "install") {
+          webUpdateHintEl.textContent = "解压安装中…";
+        }
+      },
     });
     if (webUpdateHintEl) webUpdateHintEl.textContent = "安装中，APP 将自动刷新…";
     // Drop older bundles BEFORE activate — activate triggers a reload
