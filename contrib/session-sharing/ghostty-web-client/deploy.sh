@@ -98,16 +98,33 @@ rm -f "$bundle_dir/dist.zip"
 bundle_sha="$(shasum -a 256 "$bundle_dir/dist.zip" | awk '{print $1}')"
 bundle_bytes="$(wc -c <"$bundle_dir/dist.zip" | tr -d ' ')"
 
+# requiredApkVersionCode = the minimum APK versionCode that can run
+# this web bundle. Stored in repo (MIN_APK_VERSION_CODE) so the bump
+# happens in the same commit that introduces the native dependency,
+# and review catches missed bumps. Default 0 = no requirement. APP
+# clients compare local APK versionCode against this on every manifest
+# fetch and force-upgrade when local is below.
+required_apk_version_code=0
+if [[ -f MIN_APK_VERSION_CODE ]]; then
+    raw="$(tr -d '[:space:]' <MIN_APK_VERSION_CODE)"
+    if [[ "$raw" =~ ^[0-9]+$ ]]; then
+        required_apk_version_code="$raw"
+    else
+        echo "deploy.sh: MIN_APK_VERSION_CODE is not a non-negative integer ('$raw'); treating as 0" >&2
+    fi
+fi
+
 cat >dist/manifest.json <<EOF
 {
   "webVersion": "$web_version",
   "sha256": "$bundle_sha",
   "sizeBytes": $bundle_bytes,
   "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "bundleUrl": "/api/web/bundle"
+  "bundleUrl": "/api/web/bundle",
+  "requiredApkVersionCode": $required_apk_version_code
 }
 EOF
-echo "Web manifest: version=$web_version sha256=${bundle_sha:0:12}… size=${bundle_bytes}B"
+echo "Web manifest: version=$web_version sha256=${bundle_sha:0:12}… size=${bundle_bytes}B requiredApkVersionCode=$required_apk_version_code"
 
 rsync_args=(-avz --delete)
 if [[ "$dry_run" -eq 1 ]]; then

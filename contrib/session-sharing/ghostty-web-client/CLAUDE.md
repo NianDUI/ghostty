@@ -114,6 +114,50 @@ APK 出去之后还能把 `dist/` 单独热更,不用让用户重装 APK。两�
 - ❌ sha256 用 dist 文件树哈希(原方案)。zip 直接哈希 zip 字节,APP
   下完就能直接校验。
 
+### 强制升级 APK 的两条触发路径
+
+老 APK + 新 web bundle 是危险状态(plugin 方法可能没有 / NSC 改了 /
+新 manifest 字段读不到)。两个独立 floor,谁高谁说了算:
+
+1. **`GHOSTTY_RELAY_MIN_APK_VERSION_CODE`(env var, ops 用)**
+   - 路径: SSH 到 relay 改 `/etc/ghostty-relay.env` + `systemctl restart ghostty-relay`
+   - 用途: **运营层紧急下架** —— 比如发现已发布 APK 有严重漏洞 / 跟新 relay
+     协议不兼容,要立刻挡住所有低版本用户,不等下次 web deploy
+   - 不要日常用,改完容易忘记跟 repo 同步
+
+2. **`ghostty-web-client/MIN_APK_VERSION_CODE`(repo 文件,开发用)**
+   - 路径: 改文件 + commit + `./deploy.sh`,值会写进 `dist/manifest.json` 的
+     `requiredApkVersionCode`
+   - 用途: **跟 native 改动同 commit 提**。改 `android/` 下 Java/Manifest/build.gradle
+     且新 web bundle 依赖该改动时,bump 到当前 commit 的
+     `git rev-list --count HEAD + 1`(下一次 build APK 的 versionCode)
+   - 走 repo 评审,不依赖人记忆
+
+**前端逻辑**(`main.js`):
+```
+effectiveMin = max(apkVersionInfo.minVersionCode, webVersionInfo.requiredApkVersionCode)
+local < effectiveMin → apkForceModal 全屏挡 UI
+```
+
+**bump 决策表**:
+
+| 改动 | bump `MIN_APK_VERSION_CODE`? |
+|------|------------------------------|
+| 纯 `src/*.js` / `index.html` / CSS | ❌ 不 bump |
+| 升 ghostty-web 等纯 JS 依赖 | ❌ 不 bump |
+| 改 Java/Kotlin plugin 但 web 不调用新方法 | ❌ 不 bump(老 APK 仍能跑当前 web) |
+| 改 plugin 且 web 调用新方法 | ✅ bump |
+| 改 NSC / AndroidManifest / build.gradle | ✅ bump |
+| 换 keystore / applicationId | ✅ bump(其实必须先卸载,bump 是兜底通知) |
+
+**反模式**:
+
+- ❌ 不该 bump 时 bump(纯 web 改动)。老 APK 用户被无谓挡住,要花流量重装。
+- ❌ 该 bump 不 bump。OTA 下来新 web 调老 APK 没有的方法 → 卡死,用户只能
+  清数据 / 重装,Web 端能修但需要先卸载 APK,UX 很糟。
+- ❌ 同时改 env var 和 repo 文件。一个就够,语义重叠反而 reviewer 困惑;
+  非紧急场景固定用 repo 文件那条路径。
+
 ## APK 文件名:两处必须一致
 
 - 服务器磁盘上 `<APK_REMOTE_DIR>/app-release.apk`(gradle 默认名,

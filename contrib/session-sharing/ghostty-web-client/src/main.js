@@ -97,6 +97,13 @@ const webVersionInfo = {
   serverBuiltAt: "",
   serverAvailable: false,
   hasUpdate: false,
+  // Repo-pinned minimum APK versionCode required by the currently
+  // deployed web bundle (manifest.json field). Compared against local
+  // APK code in refreshVersionUI; refreshVersionUI also folds in
+  // apkVersionInfo.minVersionCode (relay env var) so whichever floor
+  // is higher wins. Keeps "native bump" enforcement in the same
+  // commit/deploy that needs it — no manual server env var dance.
+  requiredApkVersionCode: 0,
   lastCheckedAt: 0,
   lastCheckOk: false,
   busy: false,
@@ -512,10 +519,7 @@ async function checkApkVersion() {
     // Hard-block when the running APK is below the minimum required.
     // Fail-open: only force when we actually have a positive local code
     // (browser builds = 0) AND a positive min (relay env disabled = 0).
-    apkVersionInfo.forceUpgrade =
-      apkVersionInfo.localVersionCode > 0 &&
-      apkVersionInfo.minVersionCode > 0 &&
-      apkVersionInfo.localVersionCode < apkVersionInfo.minVersionCode;
+    apkVersionInfo.forceUpgrade = computeForceUpgrade();
     apkVersionInfo.lastCheckedAt = Date.now();
     apkVersionInfo.lastCheckOk = true;
     refreshVersionUI();
@@ -527,7 +531,35 @@ async function checkApkVersion() {
   }
 }
 
+// Effective minimum APK versionCode below which forceUpgrade fires.
+// Two independent floors are folded together with max():
+//   - apkVersionInfo.minVersionCode   relay env var (operator-set)
+//   - webVersionInfo.requiredApkVersionCode  repo-pinned (commit-set)
+// The repo-pinned floor lets a deploy that requires a newer APK
+// enforce the bump without needing an SSH/env-var change. The
+// operator floor stays useful for emergency lockouts that don't go
+// through web deploy (e.g. urgent security recall of a bad APK).
+function effectiveMinApkVersionCode() {
+  const env = apkVersionInfo.minVersionCode || 0;
+  const repo = webVersionInfo.requiredApkVersionCode || 0;
+  return Math.max(env, repo);
+}
+
+function computeForceUpgrade() {
+  const min = effectiveMinApkVersionCode();
+  return (
+    apkVersionInfo.localVersionCode > 0 &&
+    min > 0 &&
+    apkVersionInfo.localVersionCode < min
+  );
+}
+
 function refreshVersionUI() {
+  // forceUpgrade depends on BOTH the APK check (env-var min) and the
+  // web manifest check (repo-pinned required). Re-evaluate every
+  // refresh so whichever check completed most recently can flip the
+  // gate without waiting for the other.
+  apkVersionInfo.forceUpgrade = computeForceUpgrade();
   if (apkLocalVersionEl) {
     if (apkVersionInfo.localVersionCode > 0) {
       apkLocalVersionEl.textContent = `${apkVersionInfo.localVersionName} (build ${apkVersionInfo.localVersionCode})`;
@@ -566,7 +598,10 @@ function refreshVersionUI() {
         apkForceModalLocal.textContent = String(apkVersionInfo.localVersionCode);
       }
       if (apkForceModalMin) {
-        apkForceModalMin.textContent = String(apkVersionInfo.minVersionCode);
+        // Show the effective floor (max of env-var + repo-pinned) so
+        // the user sees the real number they need to hit, not whichever
+        // single source happened to set it.
+        apkForceModalMin.textContent = String(effectiveMinApkVersionCode());
       }
     }
   }
@@ -666,6 +701,7 @@ async function checkWebManifest() {
     webVersionInfo.serverBuiltAt =
       typeof data.builtAt === "string" ? data.builtAt : "";
     webVersionInfo.serverAvailable = !!data.available;
+    webVersionInfo.requiredApkVersionCode = Number(data.requiredApkVersionCode) || 0;
     // sha256 is the source of truth — a dirty rebuild keeps the same
     // version label ("...-dirty") but ships different bytes, and we
     // want the user to be able to re-install. Version label is just
@@ -689,6 +725,10 @@ async function checkWebManifest() {
 }
 
 function refreshWebVersionUI() {
+  // Also re-evaluate force-upgrade — webVersionInfo.requiredApkVersionCode
+  // is one of the two inputs to computeForceUpgrade, so a fresh manifest
+  // fetch needs to refresh the modal even when no APK-side check ran.
+  refreshVersionUI();
   if (webLocalVersionEl) {
     if (!isWebUpdateSupported()) {
       webLocalVersionEl.textContent = "(浏览器)";

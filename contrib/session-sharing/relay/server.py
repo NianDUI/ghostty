@@ -1240,12 +1240,18 @@ async def handle_web_manifest(
         return
 
     size_bytes = decoded.get("sizeBytes")
+    required_apk = decoded.get("requiredApkVersionCode")
     response = {
         "webVersion": str(decoded.get("webVersion", "unknown")),
         "sha256": str(decoded.get("sha256", "")),
         "sizeBytes": int(size_bytes) if isinstance(size_bytes, (int, float)) else 0,
         "builtAt": str(decoded.get("builtAt", "")),
         "bundleUrl": str(decoded.get("bundleUrl", "")),
+        # Repo-pinned minimum APK versionCode that can run this bundle.
+        # Client uses max(this, /api/app/version's minVersionCode) as
+        # the effective force-upgrade floor — so a deploy can require a
+        # newer APK without touching the relay's env var.
+        "requiredApkVersionCode": int(required_apk) if isinstance(required_apk, (int, float)) else 0,
         "available": True,
     }
     await send_response(writer, 200, json_bytes(response))
