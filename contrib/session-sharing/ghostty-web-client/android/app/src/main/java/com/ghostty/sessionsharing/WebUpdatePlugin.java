@@ -244,13 +244,24 @@ public class WebUpdatePlugin extends Plugin {
         final android.webkit.WebView wv = bridge.getWebView();
         final String url = bridge.getLocalUrl();
         wv.post(() -> {
-            // setServerBasePath() updates localServer routing AND posts
-            // a loadUrl of its own. Our stopLoading + cache-buster
-            // loadUrl after that overrides the queued one — the
-            // cache-buster query also avoids HarmonyOS WebView's
-            // "already navigating to same URL, drop" dedupe that was
-            // swallowing reloads in the previous attempt.
-            bridge.setServerBasePath(path);
+            if (path.isEmpty()) {
+                // Empty path = revert to APK-bundled assets. We must
+                // use setServerAssetPath (not setServerBasePath(""))
+                // because the latter calls localServer.hostFiles("")
+                // which leaves the local server with no served path,
+                // and the WebView ends up with ERR_CONNECTION_REFUSED.
+                // "public" is Capacitor's default asset directory
+                // (capacitor.config webDir → assets/public/ at build).
+                bridge.setServerAssetPath("public");
+            } else {
+                // setServerBasePath() updates localServer routing AND
+                // posts a loadUrl of its own. Our stopLoading +
+                // cache-buster loadUrl below overrides the queued
+                // one — the cache-buster query also avoids HarmonyOS
+                // WebView's "already navigating to same URL, drop"
+                // dedupe that was swallowing reloads previously.
+                bridge.setServerBasePath(path);
+            }
             wv.stopLoading();
             wv.loadUrl(url + "?ota=" + System.currentTimeMillis());
         });
