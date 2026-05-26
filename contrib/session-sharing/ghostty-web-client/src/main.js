@@ -4,6 +4,14 @@ import { redactErrorMessage } from "./redaction.js";
 import { createCoalescedScroll } from "./scroll.js";
 import { createReplayBuffer } from "./scrollback.js";
 import { createUploadManager } from "./upload.js";
+import {
+  activateWebBundle,
+  clearOldBundles,
+  downloadWebBundle,
+  getLocalWebVersion,
+  isWebUpdateSupported,
+  resetToBundled,
+} from "./web-update.js";
 
 const DEFAULT_TITLE = "Ghostty Session Sharing";
 const SESSION_QUERY_KEY = "session";
@@ -37,6 +45,62 @@ const debugModeInput = document.querySelector("#debugMode");
 const mobileUploadLauncher = document.querySelector("#mobileUploadLauncher");
 const uploadFileInput = document.querySelector("#uploadFileInput");
 const uploadToastStack = document.querySelector("#uploadToastStack");
+const apkLocalVersionEl = document.querySelector("#apkLocalVersion");
+const apkServerVersionEl = document.querySelector("#apkServerVersion");
+const checkApkVersionBtn = document.querySelector("#checkApkVersionBtn");
+const apkUpgradeBanner = document.querySelector("#apkUpgradeBanner");
+const apkUpgradeBannerText = document.querySelector("#apkUpgradeBannerText");
+const apkUpgradeBannerBtn = document.querySelector("#apkUpgradeBannerBtn");
+const apkForceModal = document.querySelector("#apkForceModal");
+const apkForceModalBtn = document.querySelector("#apkForceModalBtn");
+const apkForceModalLocal = document.querySelector("#apkForceModalLocal");
+const apkForceModalMin = document.querySelector("#apkForceModalMin");
+const webLocalVersionEl = document.querySelector("#webLocalVersion");
+const webServerVersionEl = document.querySelector("#webServerVersion");
+const installWebUpdateBtn = document.querySelector("#installWebUpdateBtn");
+const resetWebBundleBtn = document.querySelector("#resetWebBundleBtn");
+const webUpdateHintEl = document.querySelector("#webUpdateHint");
+
+// APK OTA version state. Populated on boot by loadLocalApkVersion +
+// checkApkVersion, refreshed when the user opens settings or taps
+// "check now". Compared in refreshVersionUI which paints the
+// settings page + an upgrade-available banner.
+const apkVersionInfo = {
+  localVersionCode: 0,
+  localVersionName: "(browser)",
+  serverVersionCode: 0,
+  serverVersionName: "unknown",
+  serverAvailable: false,
+  serverBuiltAt: "",
+  hasUpdate: false,
+  // minVersionCode comes from GHOSTTY_RELAY_MIN_APK_VERSION_CODE on
+  // the relay. 0 = disabled (default). When local < min, the force
+  // modal blocks all UI interaction until the user upgrades.
+  minVersionCode: 0,
+  forceUpgrade: false,
+  lastCheckedAt: 0,
+  lastCheckOk: false,
+};
+
+// Web OTA state. Local version is read via the GhosttyWebUpdate plugin
+// (it reads the .version marker that the plugin writes after a
+// successful extract). Server version comes from /api/web/manifest.json.
+// On the browser build, localVersion stays "" and both buttons stay
+// disabled — the hint text explains why.
+const webVersionInfo = {
+  localVersion: "",
+  localSha: "",
+  localPath: "",
+  serverVersion: "",
+  serverSha: "",
+  serverBundleUrl: "",
+  serverBuiltAt: "",
+  serverAvailable: false,
+  hasUpdate: false,
+  lastCheckedAt: 0,
+  lastCheckOk: false,
+  busy: false,
+};
 
 let terminal = null;
 let fitAddon = null;
@@ -387,6 +451,373 @@ downloadApkButton.addEventListener("click", () => {
 });
 
 syncDownloadApkButton();
+
+// APK version check / OTA upgrade-available prompt. Public endpoint
+// (/api/app/version), no Bearer required, so this works on first boot
+// before the user has saved their token. The result feeds into
+// refreshVersionUI which paints both the settings row and the
+// upgrade-available banner. We never block the rest of the boot on
+// it — failures are silent + visible only in debug log.
+//
+// Local APK BuildConfig comes from @capacitor/app App.getInfo(); on
+// the browser build there is no native version, we keep the default
+// "(browser)" string so the settings row stays consistent.
+async function loadLocalApkVersion() {
+  if (!window.Capacitor?.isNativePlatform?.()) {
+    apkVersionInfo.localVersionName = "(浏览器)";
+    return;
+  }
+  try {
+    const { App } = await import("@capacitor/app");
+    const info = await App.getInfo();
+    apkVersionInfo.localVersionCode = parseInt(info.build, 10) || 0;
+    apkVersionInfo.localVersionName = info.version || "unknown";
+  } catch (err) {
+    logEvt(`App.getInfo failed ${err?.message || err}`);
+  }
+}
+
+async function checkApkVersion() {
+  let url;
+  try {
+    url = apiURL("/api/app/version");
+  } catch (err) {
+    logEvt(`apk version url invalid ${err?.message || err}`);
+    return;
+  }
+  try {
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      credentials: "omit",
+    });
+    if (!response.ok) {
+      logEvt(`apk version check failed status=${response.status}`);
+      apkVersionInfo.lastCheckedAt = Date.now();
+      apkVersionInfo.lastCheckOk = false;
+      refreshVersionUI();
+      return;
+    }
+    const data = await response.json();
+    apkVersionInfo.serverVersionCode = Number(data.versionCode) || 0;
+    apkVersionInfo.serverVersionName =
+      typeof data.versionName === "string" ? data.versionName : "unknown";
+    apkVersionInfo.serverAvailable = !!data.available;
+    apkVersionInfo.serverBuiltAt =
+      typeof data.builtAt === "string" ? data.builtAt : "";
+    apkVersionInfo.minVersionCode = Number(data.minVersionCode) || 0;
+    apkVersionInfo.hasUpdate =
+      apkVersionInfo.serverAvailable &&
+      apkVersionInfo.localVersionCode > 0 &&
+      apkVersionInfo.serverVersionCode > apkVersionInfo.localVersionCode;
+    // Hard-block when the running APK is below the minimum required.
+    // Fail-open: only force when we actually have a positive local code
+    // (browser builds = 0) AND a positive min (relay env disabled = 0).
+    apkVersionInfo.forceUpgrade =
+      apkVersionInfo.localVersionCode > 0 &&
+      apkVersionInfo.minVersionCode > 0 &&
+      apkVersionInfo.localVersionCode < apkVersionInfo.minVersionCode;
+    apkVersionInfo.lastCheckedAt = Date.now();
+    apkVersionInfo.lastCheckOk = true;
+    refreshVersionUI();
+  } catch (err) {
+    logEvt(`apk version check error ${err?.message || err}`);
+    apkVersionInfo.lastCheckedAt = Date.now();
+    apkVersionInfo.lastCheckOk = false;
+    refreshVersionUI();
+  }
+}
+
+function refreshVersionUI() {
+  if (apkLocalVersionEl) {
+    if (apkVersionInfo.localVersionCode > 0) {
+      apkLocalVersionEl.textContent = `${apkVersionInfo.localVersionName} (build ${apkVersionInfo.localVersionCode})`;
+    } else {
+      apkLocalVersionEl.textContent = apkVersionInfo.localVersionName;
+    }
+  }
+  if (apkServerVersionEl) {
+    if (!apkVersionInfo.lastCheckedAt) {
+      apkServerVersionEl.textContent = "检查中…";
+    } else if (!apkVersionInfo.lastCheckOk) {
+      apkServerVersionEl.textContent = "(无法连接到服务器)";
+    } else if (!apkVersionInfo.serverAvailable) {
+      apkServerVersionEl.textContent = "(服务器未发布)";
+    } else {
+      apkServerVersionEl.textContent = `${apkVersionInfo.serverVersionName} (build ${apkVersionInfo.serverVersionCode})`;
+    }
+    // Highlight the row when an upgrade is available.
+    const line = apkServerVersionEl.closest(".apk-version-line");
+    if (line) line.classList.toggle("upgrade", apkVersionInfo.hasUpdate);
+  }
+  if (apkUpgradeBanner) {
+    // Force-modal supersedes the soft banner — no point showing both.
+    const showBanner =
+      apkVersionInfo.hasUpdate && !apkVersionInfo.forceUpgrade;
+    apkUpgradeBanner.classList.toggle("hidden", !showBanner);
+    if (apkUpgradeBannerText && showBanner) {
+      apkUpgradeBannerText.textContent =
+        `有新版本 APP 可用：${apkVersionInfo.serverVersionName} (build ${apkVersionInfo.serverVersionCode})`;
+    }
+  }
+  if (apkForceModal) {
+    apkForceModal.classList.toggle("hidden", !apkVersionInfo.forceUpgrade);
+    if (apkVersionInfo.forceUpgrade) {
+      if (apkForceModalLocal) {
+        apkForceModalLocal.textContent = String(apkVersionInfo.localVersionCode);
+      }
+      if (apkForceModalMin) {
+        apkForceModalMin.textContent = String(apkVersionInfo.minVersionCode);
+      }
+    }
+  }
+}
+
+if (checkApkVersionBtn) {
+  checkApkVersionBtn.addEventListener("click", async () => {
+    checkApkVersionBtn.disabled = true;
+    const originalText = checkApkVersionBtn.textContent;
+    checkApkVersionBtn.textContent = "检查中…";
+    try {
+      await Promise.all([
+        loadLocalApkVersion(),
+        checkApkVersion(),
+        loadLocalWebVersion(),
+        checkWebManifest(),
+      ]);
+    } finally {
+      checkApkVersionBtn.disabled = false;
+      checkApkVersionBtn.textContent = originalText;
+    }
+  });
+}
+
+if (apkUpgradeBannerBtn) {
+  // Banner shortcut reuses the same grant-flow downloadApk path the
+  // settings button uses. Keeps a single auth + Content-Disposition
+  // flow regardless of how the user triggered it.
+  apkUpgradeBannerBtn.addEventListener("click", () => downloadApk());
+}
+
+if (apkForceModalBtn) {
+  // Force-modal upgrade button: same grant-flow download path. The
+  // modal stays up after click — user must restart APP with the new
+  // APK before forceUpgrade clears (the new version check on next boot
+  // will close the modal automatically).
+  apkForceModalBtn.addEventListener("click", () => downloadApk());
+}
+
+// Kick off both checks in parallel — local read is sync-ish, server
+// fetch is async. UI re-paints after each completes.
+loadLocalApkVersion().then(refreshVersionUI);
+checkApkVersion();
+
+// --- Web OTA --------------------------------------------------------
+//
+// Mirrors the APK version flow but uses /api/web/manifest.json +
+// /api/web/bundle. Install path is the GhosttyWebUpdate plugin →
+// Capacitor's built-in WebView.setServerBasePath → reload. Browser
+// builds stay no-op since setServerBasePath only applies inside the
+// APK WebView.
+
+async function loadLocalWebVersion() {
+  if (!isWebUpdateSupported()) {
+    webVersionInfo.localVersion = "";
+    webVersionInfo.localSha = "";
+    webVersionInfo.localPath = "";
+    return;
+  }
+  try {
+    const info = await getLocalWebVersion();
+    webVersionInfo.localVersion = info?.version ?? "";
+    webVersionInfo.localSha = info?.sha256 ?? "";
+    webVersionInfo.localPath = info?.path ?? "";
+  } catch (err) {
+    logEvt(`getLocalWebVersion failed ${err?.message || err}`);
+  }
+}
+
+async function checkWebManifest() {
+  let url;
+  try {
+    url = apiURL("/api/web/manifest.json");
+  } catch (err) {
+    logEvt(`web manifest url invalid ${err?.message || err}`);
+    return;
+  }
+  try {
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      credentials: "omit",
+    });
+    if (!response.ok) {
+      logEvt(`web manifest check failed status=${response.status}`);
+      webVersionInfo.lastCheckedAt = Date.now();
+      webVersionInfo.lastCheckOk = false;
+      refreshWebVersionUI();
+      return;
+    }
+    const data = await response.json();
+    webVersionInfo.serverVersion =
+      typeof data.webVersion === "string" ? data.webVersion : "";
+    webVersionInfo.serverSha =
+      typeof data.sha256 === "string" ? data.sha256 : "";
+    webVersionInfo.serverBundleUrl =
+      typeof data.bundleUrl === "string" ? data.bundleUrl : "";
+    webVersionInfo.serverBuiltAt =
+      typeof data.builtAt === "string" ? data.builtAt : "";
+    webVersionInfo.serverAvailable = !!data.available;
+    // sha256 is the source of truth — a dirty rebuild keeps the same
+    // version label ("...-dirty") but ships different bytes, and we
+    // want the user to be able to re-install. Version label is just
+    // informational. Local sha "" means we're on bundled APK assets
+    // (no .version marker), which also counts as "outdated" so the
+    // first install button is enabled.
+    webVersionInfo.hasUpdate =
+      webVersionInfo.serverAvailable &&
+      webVersionInfo.serverSha !== "" &&
+      webVersionInfo.serverBundleUrl !== "" &&
+      webVersionInfo.serverSha !== webVersionInfo.localSha;
+    webVersionInfo.lastCheckedAt = Date.now();
+    webVersionInfo.lastCheckOk = true;
+    refreshWebVersionUI();
+  } catch (err) {
+    logEvt(`web manifest check error ${err?.message || err}`);
+    webVersionInfo.lastCheckedAt = Date.now();
+    webVersionInfo.lastCheckOk = false;
+    refreshWebVersionUI();
+  }
+}
+
+function refreshWebVersionUI() {
+  if (webLocalVersionEl) {
+    if (!isWebUpdateSupported()) {
+      webLocalVersionEl.textContent = "(浏览器)";
+    } else if (webVersionInfo.localVersion) {
+      webLocalVersionEl.textContent = webVersionInfo.localVersion;
+    } else {
+      webLocalVersionEl.textContent = "(内置)";
+    }
+  }
+  if (webServerVersionEl) {
+    if (!webVersionInfo.lastCheckedAt) {
+      webServerVersionEl.textContent = "检查中…";
+    } else if (!webVersionInfo.lastCheckOk) {
+      webServerVersionEl.textContent = "(无法连接到服务器)";
+    } else if (!webVersionInfo.serverAvailable) {
+      webServerVersionEl.textContent = "(服务器未发布)";
+    } else {
+      webServerVersionEl.textContent = webVersionInfo.serverVersion || "(unknown)";
+    }
+    const line = webServerVersionEl.closest(".apk-version-line");
+    if (line) line.classList.toggle("upgrade", webVersionInfo.hasUpdate);
+  }
+  const native = isWebUpdateSupported();
+  if (installWebUpdateBtn) {
+    installWebUpdateBtn.disabled =
+      !native || webVersionInfo.busy || !webVersionInfo.hasUpdate;
+  }
+  if (resetWebBundleBtn) {
+    // Reset only makes sense when the WebView is currently running off
+    // an OTA bundle — disable when already on bundled assets.
+    resetWebBundleBtn.disabled =
+      !native || webVersionInfo.busy || webVersionInfo.localVersion === "";
+  }
+  if (webUpdateHintEl) {
+    if (!native) {
+      webUpdateHintEl.textContent = "仅 APP 端可用。";
+    } else if (webVersionInfo.busy) {
+      webUpdateHintEl.textContent = "处理中，请勿离开页面…";
+    } else if (webVersionInfo.hasUpdate) {
+      webUpdateHintEl.textContent =
+        "下载并安装后 APP 会自动重新加载新版本。";
+    } else if (webVersionInfo.localVersion) {
+      webUpdateHintEl.textContent = "正在运行下载安装的 Web 资源。";
+    } else {
+      webUpdateHintEl.textContent = "正在运行 APK 内置的 Web 资源。";
+    }
+  }
+}
+
+async function installWebUpdate() {
+  if (!isWebUpdateSupported() || webVersionInfo.busy) return;
+  if (!webVersionInfo.hasUpdate) return;
+  const token = tokenInput.value.trim();
+  if (!token) {
+    if (webUpdateHintEl) {
+      webUpdateHintEl.textContent = "请先填写 User Token。";
+    }
+    return;
+  }
+  webVersionInfo.busy = true;
+  refreshWebVersionUI();
+  if (webUpdateHintEl) webUpdateHintEl.textContent = "下载中…";
+  let bundleURL;
+  try {
+    bundleURL = apiURL(webVersionInfo.serverBundleUrl);
+  } catch (err) {
+    webVersionInfo.busy = false;
+    refreshWebVersionUI();
+    if (webUpdateHintEl) {
+      webUpdateHintEl.textContent = `下载地址无效：${err?.message || err}`;
+    }
+    return;
+  }
+  try {
+    const result = await downloadWebBundle({
+      url: bundleURL.toString(),
+      sha256: webVersionInfo.serverSha,
+      version: webVersionInfo.serverVersion,
+      token,
+    });
+    if (webUpdateHintEl) webUpdateHintEl.textContent = "安装中，APP 将自动刷新…";
+    // Drop older bundles BEFORE activate — activate triggers a reload
+    // and this JS instance dies, taking any pending cleanup with it.
+    try {
+      await clearOldBundles(webVersionInfo.serverVersion);
+    } catch (cleanupErr) {
+      logEvt(`clearOldBundles failed ${cleanupErr?.message || cleanupErr}`);
+    }
+    await activateWebBundle(result.path);
+    // activateWebBundle posts a reload — execution past here is best-
+    // effort; the new JS bundle takes over momentarily.
+  } catch (err) {
+    webVersionInfo.busy = false;
+    refreshWebVersionUI();
+    if (webUpdateHintEl) {
+      webUpdateHintEl.textContent = `安装失败：${err?.message || err}`;
+    }
+    logEvt(`web update install failed ${err?.message || err}`);
+  }
+}
+
+async function resetWebToBundled() {
+  if (!isWebUpdateSupported() || webVersionInfo.busy) return;
+  if (webVersionInfo.localVersion === "") return;
+  webVersionInfo.busy = true;
+  refreshWebVersionUI();
+  if (webUpdateHintEl) webUpdateHintEl.textContent = "正在恢复内置版本…";
+  try {
+    await resetToBundled();
+    // Same reload caveat as installWebUpdate — APP reloads, JS dies.
+  } catch (err) {
+    webVersionInfo.busy = false;
+    refreshWebVersionUI();
+    if (webUpdateHintEl) {
+      webUpdateHintEl.textContent = `恢复失败：${err?.message || err}`;
+    }
+    logEvt(`web reset failed ${err?.message || err}`);
+  }
+}
+
+if (installWebUpdateBtn) {
+  installWebUpdateBtn.addEventListener("click", () => installWebUpdate());
+}
+if (resetWebBundleBtn) {
+  resetWebBundleBtn.addEventListener("click", () => resetWebToBundled());
+}
+
+loadLocalWebVersion().then(refreshWebVersionUI);
+checkWebManifest();
 
 // Persist the lock-host-size preference and re-apply on the active
 // session so the user sees the change immediately without needing
@@ -1064,6 +1495,34 @@ function installOnDemandRender(t) {
   // of the next ensureTerminal() building a fresh instance.
   const origWrite = t.write.bind(t);
   t.write = function (data, callback) {
+    // dist Terminal.write (ghostty-web v0.4.0, line 2390) has an
+    // unconditional `this.viewportY !== 0 && this.scrollToBottom()`
+    // inside — every write yanks the user back to the live area, even
+    // if they're actively reading scrollback. Compensate when the
+    // user has opted into history (userFollowBottom === false):
+    //   1. snapshot viewportY (rows above bottom) + baseY (live row)
+    //   2. let dist write; it will reset viewportY to 0
+    //   3. baseY just grew by N; restore viewportY to oldViewportY+N
+    //      so the visible window stays anchored to the same buffer
+    //      lines (cap to scrollbackLength so we don't overshoot the
+    //      buffer if rows fell off the top).
+    // userFollowBottom = true → original behaviour (dist's scroll
+    // wins, snapshot of new content visible immediately).
+    if (!userFollowBottom) {
+      const oldViewportY = t.viewportY ?? 0;
+      const oldBaseY = t.buffer?.active?.baseY ?? 0;
+      const ret = origWrite(data, callback);
+      const newBaseY = t.buffer?.active?.baseY ?? 0;
+      const delta = newBaseY - oldBaseY;
+      const desired = oldViewportY + Math.max(0, delta);
+      const maxOffset = t.getScrollbackLength?.() ?? desired;
+      const restored = Math.min(desired, maxOffset);
+      if (restored !== t.viewportY) {
+        t.viewportY = restored;
+      }
+      schedulePaint();
+      return ret;
+    }
     const ret = origWrite(data, callback);
     schedulePaint();
     return ret;
@@ -1498,7 +1957,7 @@ function renderSession(session) {
     <div class="status ${session.online ? "online" : "offline"}">${session.online ? "在线" : "离线"}</div>
   `;
   if (session.online) {
-    item.addEventListener("click", () => connectToSession(session));
+    item.addEventListener("click", () => switchToSession(session));
   } else {
     item.disabled = true;
   }
@@ -1526,13 +1985,55 @@ function sortSessions(sessions) {
 
 function displaySessionName(session) {
   const name = typeof session.name === "string" ? session.name.trim() : "";
-  return name || "未命名会话";
+  if (name) return name;
+  // Fallback when the macOS agent hasn't published a PTY title yet
+  // (bash / zsh defaults don't emit ESC]2;TITLE). Showing the same
+  // "未命名会话" string for every nameless session made it impossible
+  // to tell them apart — including the session id's leading 8 chars
+  // makes each fallback row unique and recognisable in the list /
+  // tooltip / quick switcher.
+  const shortId = typeof session.id === "string" ? session.id.slice(0, 8) : "";
+  return shortId ? `会话 ${shortId}` : "未命名会话";
 }
 
 function timestampForSort(value) {
   if (!value) return 0;
   const time = new Date(value).getTime();
   return Number.isNaN(time) ? 0 : time;
+}
+
+// APP-mode wrapper for user-initiated session selection. HarmonyOS /
+// ICL-AL20 WebView keeps the GPU compositor layer texture across
+// disposeTerminal + ensureTerminal rebuilds, so any in-place session
+// switch leaks pixels from the prior session (same root cause as the
+// visibility=visible reload). location.replace + ?session=<id> does a
+// full document navigation that tears down the layer tree; the new
+// SPA boot routes back into the picked session via routeFromLocation.
+//
+// Browser builds keep the cheap in-place path — they don't exhibit
+// the layer-stacking bug and a full reload here would be a visible
+// regression (launcher flashes, vite chunks re-evaluate).
+//
+// Only user-driven `<button class="session">` clicks go through this
+// wrapper; the auto-recover paths (popstate routing, scheduleReconnect
+// retry, deep-link boot) keep calling connectToSession directly with
+// updateHistory:false because they're already running in the right
+// document and a reload would be wasteful.
+function switchToSession(session) {
+  if (window.Capacitor?.isNativePlatform?.()) {
+    const url = new URL(window.location.href);
+    url.searchParams.set(SESSION_QUERY_KEY, session.id);
+    persistDebugLogsForReload();
+    // assign (NOT replace) — replace overwrites the current history
+    // entry, leaving only one entry total; the Android backButton
+    // handler then sees `canGoBack=false` and exits the APP instead of
+    // taking the user back to the launcher. assign pushes a new entry
+    // so back → popstate → routeFromLocation → leaveTerminalView
+    // returns the user to the session list as expected.
+    window.location.assign(url.toString());
+    return;
+  }
+  connectToSession(session);
 }
 
 async function connectToSession(session, { updateHistory = true } = {}) {
@@ -1560,6 +2061,9 @@ async function connectToSession(session, { updateHistory = true } = {}) {
     activeSessionId = session.id;
     helloReceived = false;
     activeMirrorMode = isLiveMirrorEnabled();
+    // Fresh session view starts at the bottom; any previous user pan
+    // intent belonged to the prior session.
+    userFollowBottom = true;
     // Tear the prior xterm instance down before the terminal element
     // is un-hidden. `reset()` + `\x1b[3J` weren't enough — cross-session
     // residue still leaked through (renderer textures, IME composer
@@ -1667,24 +2171,39 @@ function handleControlFrame(data) {
         Number.isInteger(frame.rows) &&
         terminal
       ) {
-        hostRows = frame.rows;
-        hostCols = frame.cols;
+        const cols = frame.cols;
+        const rows = frame.rows;
+        // Skip the resize + paint storm when the grid hasn't actually
+        // changed. The relay should dedup essential metadata in the
+        // backlog, but defend in case an older relay (or replay race)
+        // floods us with identical hello frames — every needless
+        // terminal.resize() triggers dist's "set canvas.width → paint
+        // self-heal" cycle, which on HarmonyOS WebView appears to feed
+        // the compositor extra stale frames. helloReceived gates the
+        // very first hello through unconditionally (terminal was just
+        // created with default cols/rows, we still need the resize).
+        const helloChanged =
+          !helloReceived || cols !== hostCols || rows !== hostRows;
+        hostRows = rows;
+        hostCols = cols;
         helloReceived = true;
-        // Mirror the host's grid verbatim. We previously trimmed rows
-        // on mobile to avoid the canvas-overflow clip at the bottom,
-        // but that made absolute cursor positioning escapes from live
-        // frames (host computed them against its 46-row grid) land at
-        // the wrong visual row in our shorter grid — TUI status bars
-        // ended up stacked on top of unrelated content. With rows
-        // preserved, applyDesktopWidthSize sizes #terminal to the
-        // natural canvas height and we expose the off-screen rows via
-        // vertical transform pan.
-        terminal.resize(frame.cols, frame.rows);
-        applyDesktopWidthSize();
-        // hello often lands just before the backlog/snapshot pair on
-        // reconnect. Force the next paint so the resize-triggered
-        // self-heal doesn't leave us with a half-rendered viewport.
-        scheduleFullPaint();
+        if (helloChanged) {
+          // Mirror the host's grid verbatim. We previously trimmed rows
+          // on mobile to avoid the canvas-overflow clip at the bottom,
+          // but that made absolute cursor positioning escapes from live
+          // frames (host computed them against its 46-row grid) land at
+          // the wrong visual row in our shorter grid — TUI status bars
+          // ended up stacked on top of unrelated content. With rows
+          // preserved, applyDesktopWidthSize sizes #terminal to the
+          // natural canvas height and we expose the off-screen rows via
+          // vertical transform pan.
+          terminal.resize(cols, rows);
+          applyDesktopWidthSize();
+          // hello often lands just before the backlog/snapshot pair on
+          // reconnect. Force the next paint so the resize-triggered
+          // self-heal doesn't leave us with a half-rendered viewport.
+          scheduleFullPaint();
+        }
       }
       return;
     case "resize":
@@ -1803,13 +2322,62 @@ function refreshUploadLauncherVisibility() {
   mobileUploadLauncher.disabled = !visible;
 }
 
-mobileUploadLauncher.addEventListener("click", () => {
+// File-picker grace window for the APP-mode visibilitychange handler.
+// The native file chooser hides our WebView (visibility=hidden); when
+// the user dismisses the chooser the WebView returns to visibility=
+// visible and the handler would normally `location.reload()` — which
+// throws away the <input> element + change callback before the
+// selected file event can land, so the upload silently does nothing.
+//
+// Setting this timestamp on every uploadFileInput.click() lets the
+// handler short-circuit the reload while the chooser is plausibly
+// still open. Clearing it on `change` covers the select-success path
+// immediately; the WINDOW_MS fallback covers the cancel path (no
+// change event fires on cancel).
+//
+// Window length: chooser sessions can run minutes (browsing albums,
+// granting permissions, scrolling), but we'd rather over-stay the
+// grace than miss a reload. 60s is enough for the common "tap upload
+// → scroll album → confirm" flow on slower devices while keeping
+// the reload responsive when the APP actually backgrounds.
+//
+// Safety wrt the layer-stacking bug: while the chooser is on top the
+// WebView is not rendering, so the compositor isn't accumulating any
+// new stale frames during this window. Skipping the reload here is
+// safe even though we'd normally treat any hidden→visible as a fresh
+// stack event.
+let filePickerOpenAt = 0;
+const FILE_PICKER_VISIBLE_GRACE_MS = 60_000;
+
+function openUploadFilePicker() {
+  filePickerOpenAt = Date.now();
+  logEvt(`openUploadFilePicker filePickerOpenAt=${filePickerOpenAt}`);
   uploadFileInput.value = "";
   uploadFileInput.click();
+}
+
+mobileUploadLauncher.addEventListener("click", () => {
+  openUploadFilePicker();
 });
 
 uploadFileInput.addEventListener("change", () => {
   const files = Array.from(uploadFileInput.files ?? []);
+  logEvt(`uploadFileInput change files=${files.length}`);
+  // DO NOT clear filePickerOpenAt synchronously. On HarmonyOS WebView
+  // the `change` event fires ~50 ms *before* visibilitychange=visible
+  // (verified via debug log: `change files=1` at t=23235, `visibility
+  // =visible … dt=-1` at t=23281). A synchronous clear here lets the
+  // visibility handler see grace=0 → grace MISS → location.reload(),
+  // which kills the in-flight upload init request before it can land.
+  //
+  // Deferring the clear by 2 s covers the visibility transition + the
+  // typical upload init RTT (a few hundred ms). After the timeout the
+  // flag goes back to 0 so the next genuine backgrounding triggers
+  // reload as expected. The cancel path (no change event) naturally
+  // relies on the 60 s window in openUploadFilePicker for its grace.
+  window.setTimeout(() => {
+    filePickerOpenAt = 0;
+  }, 2_000);
   uploadFileInput.value = "";
   enqueueUploads(files);
 });
@@ -2119,6 +2687,10 @@ function applyScreenSnapshot(frame) {
   // could be stale (Android backgrounded WebView, driver page reuse,
   // ctx state from a recent renderer.resize).
   scheduleFullPaint();
+  // Snapshot is a re-anchor checkpoint — restore follow-mode even if
+  // the user had scrolled into history before. The accompanying scroll
+  // below then runs without being short-circuited by !userFollowBottom.
+  userFollowBottom = true;
   // When the locked host grid is taller than the mobile viewport
   // (e.g. host 46 rows in a 33-row visible window), the snapshot
   // lands but xterm's viewport stays at the top → the user sees the
@@ -2454,6 +3026,13 @@ function formatLastSeen(value) {
 
 function focusTerminal() {
   if (shouldUseMobileInput()) {
+    // Don't reset follow-mode here — focusTerminal is fired from
+    // viewport-resize / system handlers too, not only user intent.
+    // The mobileInput "focus" event listener handles the user-driven
+    // case (genuine new focus = user wants to type = follow restore);
+    // if mobileInput is already focused, focus() is a no-op and we
+    // intentionally leave userFollowBottom untouched so the user's
+    // history-reading state survives keyboard show/hide.
     if (mobileFocusTimer !== null) {
       window.clearTimeout(mobileFocusTimer);
       mobileFocusTimer = null;
@@ -2464,10 +3043,46 @@ function focusTerminal() {
   if (terminal) terminal.focus();
 }
 
+// Follow-mode: when the user is actively reading history (pan or wasm
+// scrollback away from the live area), we suppress the auto-anchor that
+// runs on every binary frame / paint. New output keeps accumulating
+// into wasmTerm but the visible viewport stays put, so the user isn't
+// yanked back to the bottom mid-read. Restored to true by:
+//   - snapshot landing (re-anchor checkpoint)
+//   - user keyboard input via sendInput (typing implies they want to
+//     see the response)
+//   - user pan/scroll that lands back at the bottom
+//   - enterTerminalView / connectToSession (fresh session = follow)
+let userFollowBottom = true;
+
+function isAtBottom() {
+  if (!terminal) return true;
+  const buf = terminal.buffer?.active;
+  const wasmAtBottom = !buf || buf.viewportY === buf.baseY;
+  const panMax = maxDesktopPanY();
+  const panAtBottom = panMax <= 0 || desktopPanY === panMax;
+  return wasmAtBottom && panAtBottom;
+}
+
 function scrollTerminalToBottom() {
   if (!terminal) return;
+  if (!userFollowBottom) return;
   if (typeof terminal.scrollToBottom === "function") {
     terminal.scrollToBottom();
+  }
+  // xterm's scrollToBottom only moves wasmTerm's internal viewport.
+  // In desktop-width-mode the visible window is also clipped by our
+  // own `desktopPanY` translate3d on .terminal-host (because the
+  // host grid is taller than the mobile viewport and we expose the
+  // off-screen rows via vertical pan). Without panToBottom here the
+  // user lands on the grid top after every snapshot / busy producer
+  // burst and only sees the bottom rows after the soft keyboard
+  // opens (visualViewport resize fires the .terminal-host
+  // ResizeObserver at main.js:1276, which calls panToBottom). Doing
+  // it inline keeps the two viewport axes in sync on every content
+  // update — cheap (clamped translate3d write, no canvas repaint).
+  if (shouldUseMobileInput() && isDesktopWidthMode()) {
+    panToBottom();
   }
 }
 
@@ -2519,6 +3134,11 @@ function shouldUseMobileInput() {
 
 function sendInput(data) {
   if (!socket || socket.readyState !== WebSocket.OPEN || !data) return;
+  // Any user-driven keypress / paste / toolbar tap means they want to
+  // see the response — re-enable follow-mode even if they were reading
+  // history a moment ago. The next binary frame's auto-anchor will then
+  // bring them back to the bottom.
+  userFollowBottom = true;
   socket.send(data);
 }
 
@@ -2604,7 +3224,23 @@ function sendToolbarKeyEvent(name) {
   pendingCtrlModifier = false;
   pendingAltModifier = false;
   syncModifierButtons();
-  terminalMount.dispatchEvent(event);
+  // User-driven tap on a toolbar key → re-enable follow-mode (same
+  // policy as sendInput). The post-tap scrollTerminalToBottom() then
+  // actually anchors.
+  userFollowBottom = true;
+  // dist's keyboard handler is attached to its helper textarea (inside
+  // the `.terminal-canvas-host` wrapper now, not terminalMount). Events
+  // dispatched on terminalMount bubble UP to document and never reach
+  // the textarea, so arrow/Tab/Home/etc. silently no-op. Dispatch on
+  // the textarea directly so dist's listener fires. Fall back to
+  // terminal.element / terminalMount only if textarea isn't exposed
+  // (older dist versions).
+  const target =
+    terminal.textarea ||
+    terminal.element?.querySelector("textarea") ||
+    terminal.element ||
+    terminalMount;
+  target.dispatchEvent(event);
   return true;
 }
 
@@ -2680,6 +3316,14 @@ const TOUCH_TAP_THRESHOLD_PX = 6;
 // no-ops and none of the listeners or observers below are wired.
 let logEvt = (_line) => {};
 let setDebugBar = (_text) => {};
+// Snapshot the current ring buffer to localStorage before a path that
+// blows the buffer away (location.reload). The next boot prepends the
+// snapshot so the DL button still shows what happened across the
+// reload boundary. No-op when debug is off. Defined at module scope
+// so visibility handlers below can call it; the implementation is
+// installed inside the `if (debugEnabled)` block.
+const DEBUG_PERSIST_KEY = "ghostty-debug-prev-logs";
+let persistDebugLogsForReload = () => {};
 if (debugEnabled) {
   const debugBar = document.createElement("div");
   debugBar.style.cssText =
@@ -2709,22 +3353,98 @@ if (debugEnabled) {
     debugLogs.push(`${t.padStart(8, " ")} ${line}`);
     if (debugLogs.length > DEBUG_LOG_CAP) debugLogs.shift();
   };
+  // Hydrate ring buffer with logs persisted by a previous reload path.
+  // We pull then immediately clear so a fresh boot without a prior
+  // reload behaves identically to before. The boundary marker makes
+  // the DL output easy to scan when diagnosing reload-induced bugs.
+  try {
+    const prev = localStorage.getItem(DEBUG_PERSIST_KEY);
+    if (prev) {
+      localStorage.removeItem(DEBUG_PERSIST_KEY);
+      const lines = prev.split("\n").filter(Boolean);
+      const carry = lines.slice(-DEBUG_LOG_CAP);
+      for (const line of carry) debugLogs.push(line);
+      debugLogs.push("-------- reload boundary --------");
+    }
+  } catch (_) {}
+  persistDebugLogsForReload = () => {
+    try {
+      localStorage.setItem(DEBUG_PERSIST_KEY, debugLogs.join("\n"));
+    } catch (_) {}
+  };
   debugDlBtn.addEventListener("click", () => {
     const body = debugLogs.join("\n") + "\n";
-    const blob = new Blob([body], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `touch-log-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    // Capacitor WebView (HarmonyOS / Android) silently drops blob URL +
+    // <a download>. Fall back to "copy to clipboard + show in a full-screen
+    // <textarea> for manual select+copy" — same trade-off documented in
+    // ../CLAUDE.md (APK download grant flow). Browser builds keep the
+    // real blob download because it produces an actual file.
+    if (window.Capacitor?.isNativePlatform?.()) {
+      showDebugLogOverlay(body);
+    } else {
+      const blob = new Blob([body], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `touch-log-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
   });
   debugClrBtn.addEventListener("click", () => {
     debugLogs.length = 0;
     setDebugBar("(cleared)");
   });
+  // Full-screen overlay used as APP-mode fallback for the DL button.
+  // Tries clipboard first; always shows the textarea so long-press
+  // select+copy works if Clipboard API is rejected by the WebView.
+  function showDebugLogOverlay(body) {
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.92);display:flex;flex-direction:column;padding:env(safe-area-inset-top) 8px env(safe-area-inset-bottom);gap:6px;";
+    const status = document.createElement("div");
+    status.style.cssText =
+      "font:12px ui-monospace,monospace;color:#7de3bb;padding:4px 2px;";
+    status.textContent = "正在复制到剪贴板...";
+    const ta = document.createElement("textarea");
+    ta.readOnly = true;
+    ta.value = body;
+    ta.style.cssText =
+      "flex:1;width:100%;font:11px/1.3 ui-monospace,monospace;background:#111;color:#ddd;border:1px solid #333;border-radius:4px;padding:6px;resize:none;-webkit-user-select:text;user-select:text;";
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;";
+    const selectAllBtn = document.createElement("button");
+    selectAllBtn.textContent = "全选";
+    selectAllBtn.style.cssText =
+      "flex:1;font:13px ui-monospace,monospace;background:#444;color:#fff;border:0;border-radius:4px;padding:10px;";
+    const closeBtn = document.createElement("button");
+    closeBtn.textContent = "关闭";
+    closeBtn.style.cssText =
+      "flex:1;font:13px ui-monospace,monospace;background:#7de3bb;color:#000;border:0;border-radius:4px;padding:10px;";
+    row.append(selectAllBtn, closeBtn);
+    overlay.append(status, ta, row);
+    document.body.appendChild(overlay);
+    selectAllBtn.addEventListener("click", () => {
+      ta.focus();
+      ta.select();
+    });
+    closeBtn.addEventListener("click", () => overlay.remove());
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(body).then(
+        () => {
+          status.textContent =
+            "已复制到剪贴板。可直接粘贴到笔记 / 微信。也可下方长按全选手动复制。";
+        },
+        (err) => {
+          status.textContent = `自动复制失败 (${err?.message || err})，请点"全选"后长按 → 复制。`;
+        },
+      );
+    } else {
+      status.textContent = '剪贴板 API 不可用，请点"全选"后长按 → 复制。';
+    }
+  }
   logEvt(`UA ${navigator.userAgent}`);
   // Log every focus change so we can identify what raised the
   // mobile soft keyboard. focusin bubbles unlike focus, so a single
@@ -3008,6 +3728,11 @@ terminalMount.addEventListener(
       const unwindScrollback = !draggingDown && viewportY > 0;
       if (!panToScrollback && !unwindScrollback) {
         applyDesktopPanY(desktopPanY - dyStep);
+        // User actively steered the Y pan — recompute follow-mode so
+        // a subsequent binary frame doesn't yank them back. Re-bottom
+        // pan restores follow automatically (isAtBottom checks both
+        // axes).
+        userFollowBottom = isAtBottom();
         touchScrollState.lastPanY = touch.clientY;
         touchScrollState.lastPanAxis = "y";
         recordPanSample(touchScrollState, touch);
@@ -3024,6 +3749,8 @@ terminalMount.addEventListener(
     );
     if (lines !== 0) {
       terminal.scrollLines(lines);
+      // Same as above — user moved wasmTerm viewport, recompute follow.
+      userFollowBottom = isAtBottom();
       touchScrollState.lastY -= lines * cellHeight;
     }
     if (event.cancelable) {
@@ -3172,49 +3899,89 @@ terminalView.addEventListener("pointerdown", (event) => {
 });
 window.addEventListener("focus", focusTerminal);
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") {
-    // Tear down the terminal *immediately* on resume — do not paint
-    // even one extra frame on the pre-suspend canvas. HarmonyOS /
-    // ICL-AL20 WebView caches the GPU compositor layer texture across
-    // visibility transitions and merges every paint we issue here on
-    // top of the previously-cached frame. Each visibility round-trip
-    // therefore stacks another layer of stale pixels, producing the
-    // "two (or more) terminals overlapping, with content from even
-    // earlier sessions visible underneath" symptom users hit after
-    // 2-5 minutes in the background.
-    //
-    // Only a full DOM rebuild releases the layer (which is why
-    // `location.reload()` looks clean). disposeTerminal wipes the
-    // layer-promoted `.terminal-canvas-host` wrapper now, so the
-    // cached texture is dropped before the compositor can fold in
-    // another stale frame. The reconnect path below routes through
-    // scheduleReconnect → connectToSession → ensureTerminal, which
-    // rebuilds the wrapper + canvas + xterm instance from scratch
-    // and lets the agent's fresh snapshot paint into a clean layer.
-    //
-    // Trade-off: user sees the terminal background colour for ~1-2 s
-    // (reconnect RTT + snapshot delivery) before content reappears.
-    // We treat that as strictly better than "older session's pixels
-    // bleeding through the live frame".
-    if (terminal) disposeTerminal();
-    setTerminalStatus("重连中", "reconnecting");
-    // Open the force-paint window for the post-reconnect render path
-    // (snapshot + backlog frames land into the fresh canvas and we
-    // still want every visible row redrawn). socket.open re-opens it
-    // too, this is just belt-and-braces against the reconnect-delay
-    // gap. The window outliving the dispose is harmless: it's a bare
-    // timestamp the next ensureTerminal's schedulePaint will read.
-    startForcePaintWindow("visibility_visible");
-    // While the tab was hidden scheduleTermWrite kept appending to
-    // pendingWriteChunks but skipped the flush. After dispose those
-    // bytes are also meaningless (the new terminal will re-receive
-    // its world view via the snapshot), so drop them.
-    dropPendingWrites();
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.close(4000, "visibility_resync");
+  if (document.visibilityState !== "visible") return;
+  // HarmonyOS / ICL-AL20 WebView caches the GPU compositor layer
+  // texture across visibility transitions and merges every paint we
+  // issue on top of the previously-cached frame. Every visibility
+  // round-trip stacks another layer of stale pixels — symptom is
+  // "two or more terminals overlapping, older sessions visible
+  // underneath" after a few foreground/background cycles.
+  //
+  // Things that have been tried and *do not* clear it:
+  //   - schedulePaint(force=true) / renderer.clear() — fillRect lands
+  //     in 2D context backing but the compositor keeps the cached
+  //     layer texture on top
+  //   - layer-isolation wrapper `.terminal-canvas-host` with
+  //     will-change + translateZ(0)
+  //   - disposeTerminal that wipes the wrapper before any paint
+  //     (verified via logEvt that dispose runs and ensureTerminal
+  //     builds a brand-new wrapper, but the bug still reproduces)
+  //
+  // Only `location.reload()` — a full document navigation that tears
+  // down the entire layer tree — reliably releases the cached
+  // texture. The visible cost (~1-2 s blank → SPA boot → reconnect
+  // → snapshot) is the same we paid with disposeTerminal, but this
+  // path is the only one that actually fixes the overlap on
+  // HarmonyOS.
+  //
+  // Session id lives in the URL (?session=<id>), token + backendBase
+  // in localStorage → after reload the SPA routes straight back into
+  // the same session and reconnects automatically. No user-visible
+  // state is lost beyond the in-flight uploads (uploads in the
+  // visibility-suspended state are already broken by the socket
+  // close + 401 reauth dance anyway).
+  //
+  // Desktop browsers do not exhibit this bug; gate on Capacitor
+  // native platform to keep the desktop "tab switch" experience
+  // (instant resume, no flicker).
+  if (window.Capacitor?.isNativePlatform?.()) {
+    const sincePicker =
+      filePickerOpenAt > 0 ? Date.now() - filePickerOpenAt : -1;
+    logEvt(
+      `visibility=visible APP filePickerOpenAt=${filePickerOpenAt} dt=${sincePicker}`,
+    );
+    // Skip the reload while a native file picker is plausibly open.
+    // Reloading at picker dismiss time would kill the <input> change
+    // callback before the selected file event lands, so the upload
+    // would silently do nothing. The picker overlays the WebView so
+    // no new stale frames accumulate during the grace window — this
+    // is the one resume path where skipping the layer reset is safe.
+    // See openUploadFilePicker for the timestamp + grace constant.
+    if (
+      filePickerOpenAt > 0 &&
+      sincePicker < FILE_PICKER_VISIBLE_GRACE_MS
+    ) {
+      logEvt(`grace HIT, skip reload (dt=${sincePicker}ms)`);
+      return;
     }
-    focusTerminal();
+    logEvt(`grace MISS, reload`);
+    persistDebugLogsForReload();
+    window.location.reload();
+    return;
   }
+  // Desktop fallback: cheap soft-resync. Keep the existing
+  // disposeTerminal + reconnect path because desktop's compositor
+  // does not need a full reload to drop stale layers.
+  if (terminal) disposeTerminal();
+  setTerminalStatus("重连中", "reconnecting");
+  startForcePaintWindow("visibility_visible");
+  dropPendingWrites();
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.close(4000, "visibility_resync");
+  }
+  focusTerminal();
+});
+
+// Genuine focus on mobileInput = user taps it (or focusTerminal puts
+// the IME up for them) and the input wasn't already focused. Reset
+// follow-mode here: the act of taking focus implies "I'm about to
+// type and want to see the response". focusTerminal itself doesn't
+// reset because it's also called from viewport-resize and similar
+// system bookkeeping handlers; if mobileInput was already focused,
+// focus() is a no-op and we intentionally leave the user's
+// history-reading state intact across keyboard show/hide.
+mobileInput.addEventListener("focus", () => {
+  userFollowBottom = true;
 });
 
 mobileInput.addEventListener("input", () => {
@@ -3280,33 +4047,59 @@ mobileInput.addEventListener("keydown", (event) => {
 
 mobileToolbarToggle.addEventListener("click", toggleMobileToolbar);
 
+// Toolbar / launcher / toggle buttons all live below the terminal
+// area. Tapping any of them must NOT steal focus from mobileInput —
+// on Android, the input losing focus collapses the soft keyboard, so
+// the user's keyboard would close every time they tap an arrow / Tab
+// / Ctrl etc to drive a TUI. preventDefault on pointerdown blocks the
+// default focus transfer without affecting the subsequent click. The
+// listener is delegated on the toolbar container so future
+// .mobile-tool additions are covered automatically.
+for (const el of [mobileToolbar, mobileToolbarToggle, mobileUploadLauncher]) {
+  el.addEventListener(
+    "pointerdown",
+    (event) => {
+      // If the toolbar happens to wrap a non-button child element
+      // (e.g. a label), let it through — only suppress focus
+      // transfer for the actual tappable controls.
+      if (event.target.closest("button")) event.preventDefault();
+    },
+    { capture: true },
+  );
+}
+
 mobileToolbar.addEventListener("click", (event) => {
   const button = event.target.closest(".mobile-tool");
   if (!button) return;
 
+  // Toolbar taps must NOT raise the soft keyboard. Previously each
+  // branch ended with focusTerminal() → mobileInput.focus() →
+  // Android pops the IME, which is the opposite of what the user
+  // wants when they're tapping arrow / Tab / Ctrl etc to drive a
+  // TUI. Modifier toggles, dispatched key events, and the
+  // sendInput() raw-sequence path all leave focus untouched —
+  // dist's key dispatch + sendInput don't require the helper
+  // textarea to be focused (verified via sendToolbarKeyEvent
+  // dispatching on terminal.textarea directly).
   const modifier = button.dataset.modifier;
   if (modifier === "ctrl") {
     pendingCtrlModifier = !pendingCtrlModifier;
     syncModifierButtons();
-    focusTerminal();
     return;
   }
   if (modifier === "alt") {
     pendingAltModifier = !pendingAltModifier;
     syncModifierButtons();
-    focusTerminal();
     return;
   }
 
   if (sendToolbarKeyEvent(button.dataset.seq)) {
     scrollTerminalToBottom();
-    focusTerminal();
     return;
   }
 
   const sequence = toolbarSequence(button.dataset.seq);
   sendInput(applyPendingModifiers(sequence));
-  focusTerminal();
 });
 
 window.addEventListener("resize", () => {

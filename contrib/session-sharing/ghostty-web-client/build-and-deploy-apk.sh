@@ -90,6 +90,26 @@ source "$keystore_env"
 
 apk_path="android/app/build/outputs/apk/release/app-release.apk"
 
+# Compute APK version so build.gradle's defaultConfig picks them up.
+# versionCode must be a monotonically increasing integer (Android
+# package manager refuses downgrades) — git commit count guarantees
+# that across the team. Falls back to a unix-timestamp-derived value
+# when the script runs outside a git checkout.
+if git -C "$(pwd)" rev-parse --git-dir >/dev/null 2>&1; then
+    version_code="$(git rev-list --count HEAD)"
+    version_name="$(git rev-parse --short=8 HEAD)"
+    git_dirty="$(git status --porcelain | head -n1)"
+    if [[ -n "$git_dirty" ]]; then
+        version_name="${version_name}-dirty"
+    fi
+else
+    version_code="$(date +%s)"
+    version_name="dev-${version_code}"
+fi
+export GHOSTTY_APK_VERSION_CODE="$version_code"
+export GHOSTTY_APK_VERSION_NAME="$version_name"
+echo "APK version: code=$version_code name=$version_name"
+
 if [[ "$skip_build" -eq 0 ]]; then
     npm run android:build
 
@@ -122,6 +142,25 @@ fi
 
 rsync "${rsync_args[@]}" "$apk_path" "$DEPLOY_HOST:${APK_REMOTE_DIR%/}/app-release.apk"
 
+# Sidecar version manifest — relay's /api/app/version reads this so
+# web clients can compare against the running APK's BuildConfig and
+# prompt for upgrade. JSON shape matches what main.js expects.
+version_tmp="$(mktemp -t ghostty-apk-version.json.XXXXXX)"
+trap 'rm -f "$version_tmp"' EXIT
+cat >"$version_tmp" <<EOF
+{
+  "versionCode": $version_code,
+  "versionName": "$version_name",
+  "builtAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+# mktemp creates files with 0600; relay runs as a different user and
+# needs read access. chmod before upload so rsync ships the readable
+# permission bits along with the bytes.
+chmod 644 "$version_tmp"
+rsync "${rsync_args[@]}" "$version_tmp" "$DEPLOY_HOST:${APK_REMOTE_DIR%/}/version.json"
+
 echo "Done. Verify with:"
+echo "  curl -fsS https://<relay-host>/api/app/version"
 echo "  curl -fsS -H 'Authorization: Bearer <token>' \\"
 echo "    https://<relay-host>/api/app/android -o /tmp/app.apk && ls -lh /tmp/app.apk"

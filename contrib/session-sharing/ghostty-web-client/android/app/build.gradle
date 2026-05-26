@@ -7,8 +7,17 @@ android {
         applicationId "com.ghostty.sessionsharing"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // versionCode / versionName feed both the Android package
+        // manager (for upgrade-vs-install decisions) and the OTA flow
+        // (`/api/app/version` reports the latest published code so the
+        // web client can prompt users to upgrade). build-and-deploy-apk.sh
+        // exports these from git so every commit produces a monotonic
+        // versionCode without manual bookkeeping. Falls back to 1/"1.0"
+        // for local IDE builds that don't go through the script.
+        def apkVersionCodeEnv = System.getenv("GHOSTTY_APK_VERSION_CODE")
+        def apkVersionNameEnv = System.getenv("GHOSTTY_APK_VERSION_NAME")
+        versionCode apkVersionCodeEnv ? apkVersionCodeEnv.toInteger() : 1
+        versionName apkVersionNameEnv ?: "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

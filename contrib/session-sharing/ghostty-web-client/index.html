@@ -87,6 +87,120 @@
         font-size: 13px;
       }
 
+      /* APK version display in settings + upgrade banner on home. */
+      .apk-version-row {
+        margin: 12px 0 8px;
+        padding: 10px 12px;
+        border: 1px solid rgba(42, 39, 35, 0.12);
+        border-radius: 10px;
+        background: rgba(42, 39, 35, 0.03);
+        font-size: 13px;
+      }
+      .apk-version-line {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 4px;
+      }
+      .apk-version-label {
+        color: var(--muted);
+        flex-shrink: 0;
+      }
+      .apk-version-line.upgrade > span:last-child {
+        color: #b8870f;
+        font-weight: 600;
+      }
+      .apk-check-btn {
+        margin-top: 6px;
+        width: 100%;
+        font-size: 13px;
+        padding: 8px 12px;
+      }
+      .apk-check-btn.secondary {
+        background: transparent;
+        color: var(--muted);
+        border: 1px solid rgba(42, 39, 35, 0.18);
+      }
+      .web-update-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .web-version-row .hint {
+        margin: 8px 0 0;
+        font-size: 12px;
+      }
+      .apk-upgrade-banner {
+        margin: 0 0 12px;
+        padding: 10px 14px;
+        background: #fdf2d2;
+        border: 1px solid #e6c97a;
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13px;
+        color: #715319;
+      }
+      .apk-upgrade-banner.hidden {
+        display: none;
+      }
+      .apk-upgrade-banner button {
+        width: auto;
+        flex-shrink: 0;
+        padding: 6px 12px;
+        font-size: 12px;
+      }
+
+      /* Hard-block modal shown when local APK < min_apk_version_code.
+         Covers the whole viewport so the user can't access settings /
+         sessions / terminal without upgrading first. */
+      .apk-force-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 20000;
+        background: rgba(0, 0, 0, 0.85);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        padding: 24px;
+        color: #f5f0e8;
+        gap: 16px;
+        text-align: center;
+      }
+      .apk-force-modal.hidden {
+        display: none;
+      }
+      .apk-force-modal h2 {
+        font-size: 20px;
+        margin: 0;
+      }
+      .apk-force-modal p {
+        max-width: 360px;
+        font-size: 14px;
+        line-height: 1.5;
+        color: #d9d3c8;
+        margin: 0;
+      }
+      .apk-force-modal button {
+        width: auto;
+        min-width: 200px;
+        padding: 12px 24px;
+        font-size: 15px;
+        background: #7de3bb;
+        color: #171412;
+        border: 0;
+        border-radius: 12px;
+        font-weight: 600;
+      }
+      .apk-force-modal button:disabled {
+        opacity: 0.5;
+      }
+      .apk-force-modal .meta {
+        font-size: 12px;
+        color: #a39e95;
+      }
+
 
       label {
         display: block;
@@ -683,6 +797,10 @@
     <div id="shell" class="shell">
       <div id="launcherView">
         <div id="launcherHomeView" class="launcher-stack">
+          <div id="apkUpgradeBanner" class="apk-upgrade-banner hidden">
+            <span id="apkUpgradeBannerText">有新版本 APP 可用</span>
+            <button id="apkUpgradeBannerBtn" type="button">下载</button>
+          </div>
           <div class="panel sessions">
             <div class="meta">
               <strong>会话列表</strong>
@@ -774,6 +892,38 @@
               保存后会重新加载页面（断开 WebSocket、重置终端、清空运行时缓存）。
               也可在会话列表用双指下拉手势触发刷新。
             </p>
+            <div class="apk-version-row">
+              <div class="apk-version-line">
+                <span class="apk-version-label">当前 APK：</span>
+                <span id="apkLocalVersion">检测中…</span>
+              </div>
+              <div class="apk-version-line">
+                <span class="apk-version-label">服务器最新：</span>
+                <span id="apkServerVersion">检查中…</span>
+              </div>
+              <button id="checkApkVersionBtn" type="button" class="apk-check-btn">
+                立即检查更新
+              </button>
+            </div>
+            <div class="apk-version-row web-version-row">
+              <div class="apk-version-line">
+                <span class="apk-version-label">当前 Web：</span>
+                <span id="webLocalVersion">检测中…</span>
+              </div>
+              <div class="apk-version-line">
+                <span class="apk-version-label">服务器最新：</span>
+                <span id="webServerVersion">检查中…</span>
+              </div>
+              <div class="web-update-actions">
+                <button id="installWebUpdateBtn" type="button" class="apk-check-btn" disabled>
+                  下载并安装 Web 更新
+                </button>
+                <button id="resetWebBundleBtn" type="button" class="apk-check-btn secondary" disabled>
+                  恢复内置 Web
+                </button>
+              </div>
+              <p id="webUpdateHint" class="hint">仅 APP 端可用。</p>
+            </div>
             <div class="download-apk">
               <button id="downloadApk" type="button" disabled>
                 下载 Android 安装包
@@ -862,6 +1012,16 @@
             ⌫
           </button>
         </div>
+      </div>
+    </div>
+    <div id="apkForceModal" class="apk-force-modal hidden" role="dialog" aria-modal="true">
+      <h2>APP 版本过低</h2>
+      <p id="apkForceModalText">
+        当前 APP 版本不再支持，请下载并安装最新版本继续使用。
+      </p>
+      <button id="apkForceModalBtn" type="button">下载最新 APK</button>
+      <div class="meta">
+        当前 build <span id="apkForceModalLocal">-</span> · 最低要求 <span id="apkForceModalMin">-</span>
       </div>
     </div>
     <script type="module" src="./src/main.js"></script>

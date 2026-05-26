@@ -69,16 +69,61 @@
 - 升级顺序仍是父层 CLAUDE.md 规定的 **agent → relay → web**;APK 跟在
   web 之后,改 endpoint 协议时再考虑顺序。
 
-## 文件名三处必须一致
+## Web OTA (`/api/web/bundle` + Capacitor `setServerBasePath`)
 
-APK 文件名硬编码在三个地方,改名要同步:
+APK 出去之后还能把 `dist/` 单独热更,不用让用户重装 APK。两块:zip 在
+服务器,Capacitor `WebView` plugin 在 APP 端做路由切换。
 
-- `relay/server.py` 的 `APK_DOWNLOAD_FILENAME`
-- `ghostty-web-client/src/main.js` 的 `anchor.download = "ghostty-sharing.apk"`
-- 服务器磁盘上 `<APK_REMOTE_DIR>/app-release.apk`(由 `build-and-deploy-apk.sh` 决定)
+- 服务器布局:**`dist.zip` 也是 `dist/` 的 sibling**,跟 `apk/` 平级。
+  - `deploy.sh` 自动在 `web-bundle/dist.zip` 生成并 rsync 到
+    `<DEPLOY_PATH>.parent/web-bundle/`。**zip 内容 sha256** 写进
+    `dist/manifest.json`(同一次 deploy 里 zip 字节就是 manifest 里
+    的 `sha256`,APP 端校验靠这个)。
+- relay 端 endpoint:
+  - `GET /api/web/manifest.json`(公开):返 `{webVersion, sha256,
+    sizeBytes, bundleUrl, builtAt, available}`,APP 用它决定要不要更新。
+  - `GET /api/web/bundle`(**Bearer-only**,不走 grant flow):APP 内
+    `HttpURLConnection` 直接附 token header 下载,不需要 mobile-browser
+    nav 那套 short-token,所以只留一条鉴权路径。源码 `resolve_web_bundle_path`,
+    可被 `GHOSTTY_RELAY_WEB_BUNDLE_PATH` 覆盖。
+- APP 端用 Capacitor 8 **内置** `WebView` plugin:
+  - 自写 `GhosttyWebUpdate` 只做"下载 + sha256 + 解压到
+    `filesDir/web/<version>/`"。
+  - 路由切换 = JS 调 Capacitor 内置 `WebView.setServerBasePath({path})` +
+    `persistServerBasePath()`,**不要**自己重写 `WebViewAssetLoader`。
+  - 持久化由 Capacitor 写 `SharedPreferences("CapWebViewSettings")` 的
+    `serverBasePath` 完成,APP 启动时 `Bridge.attachWebView` 自动读取
+    并应用(`Bridge.java:295` 一带)。
+- APK 升级会**自动重置** web basePath:`Bridge.isNewBinary()` 检测
+  到 versionCode/Name 变化,直接 `editor.putString(CAP_SERVER_PATH, "")`。
+  所以发新 APK = web 退回 APK 内置版本,然后用户可以再下载更新版的 web。
+- 同 origin (`https://localhost`):APK 内置 vs OTA 版本走的都是这个 origin,
+  **localStorage 不会丢**(token / 设置项跨升级保留)。
 
-注意服务器磁盘的文件叫 `app-release.apk`(gradle 出的默认名),
-HTTP 下载呈现的文件名是 `ghostty-sharing.apk`(Content-Disposition 决定)。
+**反模式**:
+
+- ❌ 自己写 `WebViewAssetLoader` + `BridgeWebViewClient.shouldInterceptRequest`。
+  Capacitor 8 已经原生支持,重复造轮子还破坏官方 reset 行为。
+- ❌ 用 file:// origin 装载 OTA 资源。**必须**走 Capacitor 路由保持
+  `https://localhost`,否则 localStorage scope 不一致,token / 设置全丢。
+- ❌ 把 OTA 的"当前版本"存 localStorage。APK 升级后 Capacitor 自动 reset
+  basePath 但 localStorage 还在 → 版本号跟实际运行不一致。**必须**让
+  plugin 读 basePath 里的 `.version` marker(`getLocalWebVersion`)。
+- ❌ 后台 auto-download。运营商流量贵,**只有**用户手动点"下载并安装
+  Web 更新"才下载。
+- ❌ sha256 用 dist 文件树哈希(原方案)。zip 直接哈希 zip 字节,APP
+  下完就能直接校验。
+
+## APK 文件名:两处必须一致
+
+- 服务器磁盘上 `<APK_REMOTE_DIR>/app-release.apk`(gradle 默认名,
+  `build-and-deploy-apk.sh` 决定)
+- `relay/server.py` 的 `APK_DOWNLOAD_FILENAME = "ghostty-sharing.apk"`
+  (Content-Disposition 决定浏览器呈现的下载文件名)
+
+main.js 改 grant flow 后**不再**自己 set 下载文件名(走
+`window.location.href = downloadURL.toString()`,浏览器跟随服务器
+Content-Disposition),所以前端没有第三处。
 
 ## Capacitor 已知坑
 
@@ -93,18 +138,15 @@ HTTP 下载呈现的文件名是 `ghostty-sharing.apk`(Content-Disposition 决�
    header 时**(非 `Authorization`/`Content-Type`),必须确认 preflight
    echo `Access-Control-Request-Headers` 已覆盖,或显式扩 Allow-Headers。
 
-2. **APK 内"下载安装包"按钮**:走 grant 流程(`POST /api/app/android/grant`
-   → `?dl=<short>` navigate),已真机验证。曾考虑直接用 blob URL +
-   `<a download>`,但华为 / UC / in-app webview 拒绝触发下载,所以
-   改成让浏览器原生跟随 `Content-Disposition`。短 token 60s TTL,可
-   重复使用(浏览器 retry 友好),`cleanup_loop` 每 5 秒清过期。
-3. 混合内容:APP 是 https,relay 必须 https。明文 http / 没被 NSC
+2. 混合内容:APP 是 https,relay 必须 https。明文 http / 没被 NSC
    trust 的自签证书都会被 WebView 拒,wss 同样连不上。**当前**用自签
    证书 + NSC pin 解决,见下面 TLS 段。
-4. 移动端 IME 路径(`src/main.js` 接近 2240 行的 `mobileInput` 段:
+3. 移动端 IME 路径(`src/main.js` 接近 2240 行的 `mobileInput` 段:
    `compositionstart/end` + Enter/Tab/Backspace 单独 handler + sticky
    Ctrl/Alt modifier)已完整,Capacitor WebView 复用浏览器移动端代码,
    **除非真机测出问题,别动这段**。
+
+(APK 内"下载安装包"按钮走 grant flow,详见 "APK 分发架构" 段。)
 
 ## TLS:全自签证书 + NSC pin(主方案,letsencrypt 已弃)
 
@@ -220,237 +262,203 @@ desktop-width 容器被严重低估 → 右侧列被裁), 同 commit 已修成�
 对 cap DPR 无影响(self-heal 用的也是实例 `devicePixelRatio` 字段)。
 升包时注意确认这个自愈逻辑还在。
 
-## Layer-isolation wrapper: `.terminal-canvas-host`
+## GPU layer texture: APP 必须 reload,桌面 dispose 即可
 
-`ensureTerminal` 在 `terminalMount` 内部 append 一个 `<div
-class="terminal-canvas-host">`,带 `will-change: transform` +
-`transform: translateZ(0)`,然后把 dist `terminal.open(canvasHost)`
-指向这个 wrapper(**不是** terminalMount 本身)。dist 的 canvas +
-helper textarea 都创建在 wrapper 里。
+**Bug 本质**: HarmonyOS / ICL-AL20 WebView 的 GPU compositor 缓存
+canvas layer texture, **只对整页 navigation 释放**。任何 DOM 内
+`disposeTerminal + ensureTerminal` 重建都会让新 wrapper 复用旧
+layer slot → 用户看到两份甚至更多 session 的内容叠在一起。
+Visibility transition 期间 paint 还会被合并进缓存层,每次切走切回
+累积一层 stale frame —— "旧那层是更早 visibility 往返时的画面"
+就是累积效应。
 
-**Why**:WebView GPU compositor 给 `transform`-promoted 元素分配独立
-layer texture。terminalMount 自带 desktop-pan 的 `translate3d(...)` →
-它有自己的 layer。如果 canvas 直接挂 terminalMount 下,canvas 像素
-画进 terminalMount 的 layer texture。
+### 实测在 ICL-AL20 上无效的修复尝试(都不要再试)
 
-HarmonyOS / ICL-AL20 WebView 实测:这个 layer texture **在 canvas
-被 removeChild 后不会立刻 release**。disposeTerminal → ensureTerminal
-新建的 canvas 插回 terminalMount → 走同一个 layer slot →
-compositor 残留 pre-dispose canvas 的像素,新 canvas 的 fillRect
-落地 ctx backing buffer 但 layer texture 滞后 → 用户看到"两个
-terminal 叠在一起"。**只有 `location.reload()` 这种整页 navigation
-触发 layer tree 整体重建**才能彻底清。
+1. `schedulePaint(force=true)` / `renderer.clear()` 整屏 fillRect ——
+   2D context backing 干净,但 compositor 把它合在缓存层之下/之上
+2. Layer-isolation wrapper `.terminal-canvas-host`(`will-change` +
+   `translateZ(0)`)—— 给 canvas 独立 layer 期望 removeChild 释放,但
+   鸿蒙 WebView 不立刻 release
+3. `disposeTerminal` 在 visibility handler 同步入口立即销毁 wrapper —
+   logEvt 验证执行了,ensureTerminal 创建了全新 canvasHost,但截图
+   仍能看到两层 snapshot 同时可见
 
-修复:把 canvas 隔到自己的 layer。`canvasHost` 因为 `will-change`
-+ `translateZ(0)` 拿到独立 layer,canvas 像素画进 canvasHost 的
-layer。disposeTerminal 的 `terminalMount.innerHTML = ""` 销毁
-canvasHost → 它的 layer 直接 release → 下次 ensureTerminal 新建
-canvasHost 拿到全新 layer texture,等同 reload 的关键步骤但用户
-无感。
+### APP 内走 reload / navigation 的入口
 
-**不变量**:
+1. `document.visibilitychange` visible(APP 切回前台)→ `location.reload()`
+2. `<button class="session">` click(launcher 列表点 session)→
+   `switchToSession()` 调 `location.assign("?session=<id>")`
+3. `performAppReload()`(设置页"保存并刷新"按钮 / launcher 两指下拉
+   手势)→ `location.reload()`,跟 layer bug 无关,是用户主动 UX 兜底
+
+**包装层只在 click / visibility / 用户 reload 入口加**,不要把它
+移到 `connectToSession` 里 —— 后者还被 popstate 路由 / scheduleReconnect /
+deep-link boot 调用,这些路径已经在新文档内运行,reload 是浪费。
+
+**switchToSession 必须用 `location.assign` 不能用 `location.replace`**:
+replace 覆盖当前 history entry,Capacitor backButton handler 看到
+`canGoBack=false` 直接退出 APP(用户在 terminal 页按返回 = 退 APP,
+无法回到 launcher)。assign push 新 entry,back → popstate →
+routeFromLocation → leaveTerminalView 正常回 launcher。
+
+### 绝不能走 reload 的入口
+
+- `scheduleReconnect`(socket close → 退避重试):同 session 重连,
+  layer 是稳定的,reload 就 1-2 秒空白
+- `popstate`(系统返回):已经在正确文档,routeFromLocation 内部走
+  connectToSession 或 leaveTerminalView 即可
+- 首次 deep-link 进 session(URL 自带 `?session=<id>`):SPA 刚启动,
+  layer 还没 dirty,直接 connectToSession 即可
+
+### 桌面浏览器路径(不复现 layer bug)
+
+- `visibilitychange` visible: `disposeTerminal()` + `startForcePaintWindow()` +
+  `dropPendingWrites()` + `socket.close(4000)` + `focusTerminal()`
+- session 切换: 走原 `connectToSession` in-place 路径
+- 桌面 reload 是纯倒退(launcher 闪 / vite chunks 重 eval)
+
+### `.terminal-canvas-host` wrapper 自身仍有价值
+
+虽然 wrapper 隔离在 ICL-AL20 上不够(还是要 reload),wrapper 自身
+在桌面 dispose 路径仍然必要:桌面 compositor 对 removeChild 响应及时,
+wrapper 销毁就 release layer。也让 canvas 跟 terminalMount 的
+desktop-pan layer 隔开。
+
+**实现要点**:
 
 - terminalMount 自身**不要**重建 —— 大量 listener
-  (`touchstart/move/end/cancel/click/pointerup`)和 ResizeObserver
-  都直接 attach 在 terminalMount 上;重建会丢这些,需要把它们全部
-  搬进一个 `installMountListeners(mount)` 函数再重新挂,改动面太大,
-  现在 wrapper 方案不需要动这些。
-- canvasHost 必须**继承** terminalMount 的 width/height
-  (`width:100%; height:100%`),否则 desktop-width 容器宽度 / 移动端
-  viewport 适配会跟 canvas 不一致。
-- 别给 canvasHost 加 `position:absolute` —— dist 的 helper textarea
-  是 `position:absolute`,它会从 wrapper 找 positioned ancestor,
-  目前找到 `.terminal-host`(index.html 设 `position:relative`),
-  保持这个就好。
-- canvas 自身**不要**额外 `will-change`/`transform`。再 promote
-  一层 layer 是浪费(canvasHost 已经 promote 了),而且会跟 dist
-  内部 canvas style 写法冲突。
+  (`touchstart/move/end/cancel/click/pointerup`)和 ResizeObserver 都
+  attach 在它身上;重建得搬到 `installMountListeners(mount)` 再挂回去,
+  改动面太大
+- canvasHost 必须继承 terminalMount 的 width/height(`100%`),否则
+  desktop-width 容器 / 移动 viewport 适配会跟 canvas 不一致
+- 别给 canvasHost 加 `position:absolute` —— dist 的 helper textarea 是
+  `position:absolute`,要找 positioned ancestor,目前找 `.terminal-host`
+  (index.html `position:relative`)
+- canvas 自身**不要**额外 `will-change`/`transform` promote layer:
+  canvasHost 已 promote,叠加只增 GPU 内存
 
-**反模式**:
+### 反模式合集
 
-- ❌ 把 `terminal.open(canvasHost)` 换回 `terminal.open(terminalMount)`
-  "省一个 div"。会直接复活"切后台再回来文字重叠"的 bug。
-- ❌ 在 disposeTerminal 加 `canvasHost = null` 或专门变量管理。
-  canvasHost 是 ensureTerminal 局部变量,wrapper 引用走
-  `terminal.element`,terminal.dispose() 已经清干净,GC 处理释放。
-  额外 module-level 引用会阻 GC。
+- ❌ 回退到只 dispose 不 reload。截图实测在 ICL-AL20 上 dispose **不**够
+- ❌ reload 前加"温柔过渡"(scheduleFullPaint / 中间状态 paint)。任何
+  过渡 paint 完全无意义,纯增复杂度。直接 reload
+- ❌ 把 reload 改成 `history.go(0)` / `location.assign(location.href)`:
+  跟 reload 等价但语义模糊,reviewer 困惑
+- ❌ APP reload 时尝试保存 scroll / pendingCtrl modifier / inflight uploads
+  到 sessionStorage:都是临时态,用户切回前台本来期望"全新视图"
+- ❌ 给桌面也走 reload。桌面 compositor 不出 bug,纯倒退
+- ❌ `switchToSession` 用 `location.replace` 替代 `assign`(见上文)
+- ❌ `terminal.open(canvasHost)` 换回 `terminal.open(terminalMount)`:
+  会让 canvas 直接挂 terminalMount(desktop-pan layer),破坏桌面 dispose
+  路径的 layer 隔离
+- ❌ disposeTerminal 加 `canvasHost = null` / 专门变量管理:
+  ensureTerminal 局部变量 + `terminal.element` 引用,GC 自然处理,
+  module-level 反而阻 GC
 - ❌ 给 canvasHost 加更多 promotion hint(`backface-visibility:hidden`
-  / `perspective` 等)"保险一些"。promotion 本身是 boolean,够了就行,
-  叠加只增 GPU 内存不增效果。
+  等)"保险一些":promotion 是 boolean,叠加只增 GPU 内存
 
-## Visibility resync = 立刻 disposeTerminal (不要 paint)
+### 文件选择器 grace window (`filePickerOpenAt` + `FILE_PICKER_VISIBLE_GRACE_MS = 60_000`)
 
-`document.visibilitychange` visible 入口:**立即** `disposeTerminal()` +
-`startForcePaintWindow()` + `dropPendingWrites()` + `socket.close(4000)`。
-**不要**在这里 `scheduleFullPaint()` / `schedulePaint()` 哪怕一次。
+系统文件选择器把 WebView 推到 hidden,用户回 APP 时 visibility=visible
+**默认**会触发 reload,导致 `<input type="file">` 的 change 回调被新 SPA
+启动接不住 → 上传**完全无反应**。
 
-**Why**:HarmonyOS / ICL-AL20 WebView GPU compositor 在 visibility
-transition 期间会**缓存当时 layer texture 的内容**,visibility 回来后
-任何画到旧 canvas 上的像素都被合成在「先前缓存的内容」上面,而不是
-替换它。每次 visibility 来回都累一层 stale frame —— 用户报告"两屏
-甚至更多内容叠在一起,而且旧那层不是离开时的画面、是更早 visibility
-往返时的画面",就是多次累积叠加的结果。即使 `renderer.clear()` 整屏
-fillRect、即使在独立 layer 的 canvasHost 上画都救不回。
-
-唯一能彻底断链的方式:**让 visibility 回来时根本不画**。立刻
-disposeTerminal 销毁 wrapper + canvas → layer 释放(等价 reload 那一
-半作用)。等 reconnect 完成、connectToSession 调 ensureTerminal 建出
-全新 wrapper + canvas,agent 的 snapshot 才落地到这个新 canvas 上。
-
-**Trade-off**: 用户看 1-2 秒终端背景色(reconnect RTT + snapshot
-delivery),期间状态条显示"重连中"。比之前的"两屏叠加"明显改善。
-
-**关于 forcePaintUntil 窗口**:visibility handler 仍然
-`startForcePaintWindow("visibility_visible")`,但**意义跟之前不同** ——
-之前是给"用旧 canvas 强制 forceAll 重画"用,现在是 belt-and-braces
-给 reconnect 之后**新 canvas** 上的 snapshot / backlog 写入升级到
-forceAll。窗口设的是 module-level 时间戳,跨 dispose+ensure 仍有效。
+修复:`openUploadFilePicker()` 在 click 前 set 时间戳,visibility handler
+窗口内 short-circuit 不 reload。窗口内 reload skip 是安全的:picker 期间
+WebView 不 render,compositor 不累积 stale layer。cancel 路径没有 change
+事件,靠 60s 超时兜底。
 
 **反模式**:
 
-- ❌ 看着 1-2 秒空白心疼,加一句 `if (terminal) scheduleFullPaint()`
-  到 visibility handler 顶部"过渡一下"。这就是 bug 的注入点 ——
-  那一帧画进的就是 WebView 缓存进 layer texture 的"stale 旧内容"。
-- ❌ 把 disposeTerminal 改成"只清 canvas 不动 terminal 实例"。dist
-  的 wasmTerm 在 disposeTerminal 之外没有公开方式重建 canvas,而
-  不重建 wrapper layer 也不释放,等于没做。
-- ❌ 把 visibility handler 改成「等 reconnect 完成再 dispose」。dispose
-  必须**早于** WebView 拿到任何新 paint 机会(就是 visibilitychange
-  事件发起的同一 tick),晚一拍 WebView 已经缓存了 stale frame。
-- ❌ 把这个机制推广到桌面浏览器(`shouldUseMobileInput()` 之外也
-  dispose)。桌面 Chrome/Firefox 的 compositor 不复现这个 bug,
-  dispose 会让桌面用户也看到不必要的"切 tab 回来空白一秒",体验
-  下降。目前的实现是无条件 dispose —— 若将来在桌面收到投诉,加
-  `shouldUseMobileInput()` 守卫即可。
+- ❌ 删/缩短 grace window。窗口短复现"上传无反应",窗口长让"切走 APP
+  几分钟"不 reload
+- ❌ `uploadFileInput.change` 同步清零 `filePickerOpenAt`。实测在
+  ICL-AL20 上 change 事件比 visibilitychange=visible 早约 50ms,同步
+  清零让 grace handler 误判 → reload → 中断 in-flight upload init →
+  上传失败。正确做法:`setTimeout(() => filePickerOpenAt = 0, 2000)`
+  延迟 2s 清(覆盖 visibility transition + upload init RTT)
 
 ## Stale canvas backing: forceAll 路径
 
-`schedulePaint(force=true)` / `scheduleFullPaint()` 在三个特殊点使用,
-对抗 "canvas DOM 完好但 GPU texture 内容是 stale/garbage" 这条
-dist 自愈不覆盖的盲区。
+dist 内部 dirty-row 优化默认只画 `wasmTerm.isRowDirty(y)` 为 true 的行,
+其他行保留 canvas 现有像素。「上一帧 = GPU backing」时正确,但下面两种
+情况下 GPU backing 是 stale,必须用 `scheduleFullPaint()` 强制全画:
 
-dist 内部 dirty-row 优化默认只画 `wasmTerm.isRowDirty(y)` 返回 true
-的行,其他行保留 canvas 上现有像素。这在「上一帧画的内容 = 当前 GPU
-backing 内容」时正确, 但在以下场景**不正确**:
+1. **Snapshot 重锚**(`applyScreenSnapshot` 末尾):snapshot 是完整可视
+   区域,即使部分 row 跟 wasmTerm 现状一样,GPU backing 可能 stale
+   (reconnect 后第一波 backlog 落在崭新 canvas)
+2. **install / DPR 切换**(`installOnDemandRender` 末尾 + `applyRendererDpr`
+   末尾):`renderer.resize` 内部 `canvas.width = X` reset ctx state +
+   fillRect 背景,把之前的 render 输出抹掉;后续 dirty-only paint 看到
+   non-dirty rows 不画 → 用户看到纯背景色
 
-1. **Snapshot 重锚**: agent push 的 snapshot 是完整的可视区域内容,
-   即使其中部分 row 跟 wasmTerm 当前状态相同 (静态边框 / 状态栏),
-   也必须全画 — 因为 GPU backing 可能 stale (例如 reconnect 后第一
-   波 backlog 落在崭新的 canvas 上)。
-2. **install / DPR 切换**: `renderer.resize` 调用 `canvas.width = X`
-   会 reset ctx state + fillRect 背景, 把之前 forceAll=true 的 render
-   输出抹掉; 后续 schedulePaint(force=false) 看到 wasmTerm 几乎都
-   non-dirty (snapshot 还没来), 不画 → 用户看到纯背景色。 install
-   末尾 + applyRendererDpr 末尾必须 `scheduleFullPaint()`。
+visibility=visible 不在此列表 —— APP 走 reload,桌面走 dispose,见上面
+"GPU layer texture" 段。
 
-(visibility=visible 不在这个列表里 —— 那条路径现在走 disposeTerminal
-彻底重建,见上面 "Visibility resync = 立刻 disposeTerminal" 段。)
+**调用约定**:`schedulePaint()` 日常用 dirty-only;`scheduleFullPaint()`
+只在上述两点 + hello/appearance/resize 控制帧末尾(belt-and-braces 兜
+"resize → self-heal 之间 half-render" / "setTheme 后 clean row 仍用旧色"
+等盲区)。`scheduledPaintFrame` rAF dedup;force flag upgradeable
+(true 永远覆盖 false,同帧混合调用最终走 force=true)。
 
-**调用约定**:
+### `forcePaintUntil` 滑动窗口
 
-- `schedulePaint()` (force=false 默认): 日常 write / scroll / hover
-  事件用, dirty-only 优化, 廉价
-- `scheduleFullPaint()` (force=true): 上述三个特殊点。开销 = 整屏
-  fillRect + 全部 row 重画, cap DPR 1.5 时整屏成本可接受
+只在固定点 force 不够。reconnect 路径下,server 发完 `hello → backlog
+(~256 frames) → screen snapshot` 序列,snapshot 末尾 forceAll 抹一次,
+但之间的 backlog binary frame 每条走 `terminal.write` → 只画 dirty row,
+dist v0.4.0 dirty tracking 在快速 burst 下偶尔漏标已覆盖的 row → 残留
+前一帧像素 → "文字重叠"(spinner 跟旧 buffer 同行)。
 
-**dedupe 行为**: `schedulePaint(true)` 跟 `(false)` 共享同一个
-`scheduledPaintFrame` rAF; force flag 是 upgradeable - true 永远覆盖
-false。同一帧多次混合调用最终走 force=true 路径。`cancelScheduledPaint`
-同时清 flag。
+**修复**: module-level `forcePaintUntil` 时间戳,`startForcePaintWindow`
+设 `Date.now() + FORCE_PAINT_WINDOW_MS`(**2500 ms**)。`schedulePaint`
+顶部 `if (force || Date.now() < forcePaintUntil) ...force = true`,
+窗口内任意 paint 自动升级 forceAll。启动点:
 
-### `forcePaintUntil` 滑动窗口(reconnect/resume 防文字重叠)
+- `socket.addEventListener("open", ...)` —— 任何 reconnect 后 backlog 序列
+- `visibilitychange` 的桌面分支 visible 入口 —— 跟桌面 dispose 配套。
+  这里**不**调 `scheduleFullPaint` 自身(那一帧会被部分 compositor
+  缓存进 stale layer texture),只设窗口戳。APP 分支走 reload,根本
+  不进这条窗口
 
-只在三个点 force 不够。**实测**:APP 切到其他应用待 1-5 分钟回前台后,
-visibility resync 把 socket close(4000) → reconnect → server 重新发
-`hello → replay_backlog (~256 frames) → screen snapshot` 序列;snapshot
-末尾 `scheduleFullPaint` 抹一次 GPU,但**之间**的 backlog binary frame
-每条都走 `terminal.write` wrap → `schedulePaint(false)` 只画 dirty row,
-dist v0.4.0 内部 dirty tracking 在快速 burst write 下偶尔会漏标已被新
-内容覆盖的 row → canvas 上残留前一帧像素 → 用户看到"文字重叠"
-(spinner 跟旧 buffer 的字符叠在同一行)。
+**为什么 2500 ms**:实测 hello → 256 frame backlog → snapshot 在 3G/4G/
+弱 WiFi 下约 800-1800 ms,2500 ms 留 700-1700 ms 头部裕量。再长就把日常
+拖进 forceAll,DPR cap 的省电收益打折。
 
-**修复**: module-level `forcePaintUntil` 时间戳,`startForcePaintWindow(reason)`
-设 `Date.now() + FORCE_PAINT_WINDOW_MS` (默认 **2500 ms**)。`schedulePaint`
-顶部 `if (force || Date.now() < forcePaintUntil) scheduledPaintForce = true`,
-所以窗口内任意 `schedulePaint()` 都自动升级成 forceAll。窗口启动点:
-
-- `socket.addEventListener("open", ...)` —— 覆盖 reconnect 后 backlog 序列
-- `document.addEventListener("visibilitychange", ...)` 的 `visible` 入口 ——
-  belt-and-braces。注意:这条入口里**不再** scheduleFullPaint(那一帧
-  会被 WebView compositor 缓存进 stale layer texture,见 "Visibility
-  resync = 立刻 disposeTerminal" 段),只设窗口戳;窗口在新 ensureTerminal
-  之后用 —— snapshot 落地的写自然走 forceAll
-
-**为什么 2500 ms**:实测一次 hello → 256 frame backlog → snapshot 在
-3G/4G/弱 WiFi 下大概 800-1800 ms 完成,2500 ms 留 700-1700 ms 头部裕量。
-再长就开始把日常使用拖进 forceAll,DPR cap 的省电收益打折。
-
-**为什么不每帧都 force**:`renderer.render(wasm, true, ...)` 整屏 fillRect
-+ 全 row 重画,DPR=1.5 时一帧 ~3 ms,DPR=2.0+ 起步 6-8 ms。日常
-write throttle 50/80 ms 时还能压在 20 Hz,但若密集 burst (`ls /usr` 这种
-快速吐字符) 每帧都 forceAll 就把电省回去了。
-
-### hello / appearance / resize / screen 控制帧路径都加 scheduleFullPaint
-
-belt-and-braces,即使 force window 没启动也兜得住:
-
-- `case "hello"` 末尾 —— resize → self-heal 之间一帧的 half-render
-- `case "resize"` 末尾
-- `case "appearance"` 即 `applyAppearance` 末尾 —— `renderer.setTheme` 不
-  invalidate dist dirty tracking,不 force 的话 clean row 仍用旧主题色
-- `case "screen"` 即 `applyScreenSnapshot` 末尾(原本就有)
+**为什么不每帧 force**:`renderer.render(wasm, true, ...)` 整屏 fillRect
++ 全 row 重画,DPR=1.5 时 ~3 ms/帧,DPR=2.0+ 起步 6-8 ms。密集 burst
+(`ls /usr`)每帧 forceAll 把电省回去。
 
 ### forceAll 帧再加 `renderer.clear()` + `scrollToBottom`
 
-`schedulePaint` rAF 内,如果 forceAll=true,先 `renderer.clear()`
-做整屏 fillRect,再调 dist `renderer.render`。同时若 `viewportY !== 0`
-顺手 `scrollToBottom()` reanchor 到底。
+forceAll 帧内,先 `renderer.clear()` 做整屏 fillRect 再调 dist render;
+若 `viewportY !== 0` 顺手 `scrollToBottom()` reanchor。
 
 **Why**:
 
-1. **HarmonyOS / ICL-AL20 WebView GPU compositor 缓存**:dist 的
-   `renderLine` 是 per-row fillRect 清的(`ctx.fillRect(0, rowY, cols*w,
-   h)`),这些 rect 写进 2D context backing buffer 没问题,但 HarmonyOS
-   WebView 的 compositor 缓存 canvas layer texture 时,**per-row 的小
-   fillRect 不触发完整 layer invalidation** —— 用户看到 "两个 terminal
-   叠在一起"(pre-suspend 的内容 + reconnect 后的 snapshot 同时可见),
-   连 forceAll 都救不回。一次整屏 fillRect (`renderer.clear()` 就是
-   `fillRect(0, 0, canvas.width, canvas.height)`) 能强制 compositor
-   把整个 layer 标 dirty,per-row 写入才会落地。
-2. **viewportY > 0 时 dist render 混画 scrollback + active**:dist
-   render line 1431-1438 在 `g > 0`(viewportY)时,visible rows 上
-   半截读 `scrollbackProvider.getScrollbackLine(...)`,下半截读
-   `wasmTerm.getLine(t - viewportY)`。如果 visibility resync 期间
-   smoothScrollTo 还在跑/有残留 target,forceAll 也会画出"上面是历史
-   scrollback 下面是新 snapshot 的 active"这种重叠效果。tick 内强
-   reanchor 是最直接的兜底。
+1. dist `renderLine` 是 per-row fillRect,部分桌面 compositor 在 per-row
+   小 fillRect 下不触发完整 layer invalidation,残留 stale 像素。整屏
+   `fillRect(0,0,w,h)` 强制 compositor 标整 layer dirty,per-row 写入
+   才落地。APP 路径走 reload 不依赖,但桌面 dispose 路径需要
+2. `viewportY > 0` 时 dist render 混画 scrollback(上半)+ active(下半)
+   (`renderLine` line 1431-1438),smoothScrollTo 残留 target 时 forceAll
+   也会画出"上面 scrollback / 下面 active" 重叠。tick 内强 reanchor 是
+   最直接的兜底
 
-**成本**:整屏 fillRect 在 cap DPR 1.5 时 ~1-2 ms,只在 forceAll 帧
-触发(force window 期或显式 `scheduleFullPaint`),日常 dirty-only
-write 路径不受影响。
+**成本**:cap DPR 1.5 时 ~1-2 ms,只在 forceAll 帧触发(force window
+或显式 `scheduleFullPaint`),日常 dirty-only 不受影响。
 
-**反模式**:
+### forceAll / forcePaintUntil 反模式
 
-- ❌ 在所有 `schedulePaint` 帧都 `renderer.clear()`。日常 dirty-only
-  paint 本来是 ~50 µs / 帧的开销,前面加个 1-2 ms 整屏 fillRect 直接
-  把电量优势打折。只在 forceAll 帧加。
-- ❌ 把 reanchor 改成 `terminal.scrollToBottom()` 无条件调用(去掉
-  `viewportY !== 0` guard)。dist scrollToBottom 内部已有同款 guard
-  (line 2594),但同时还会 `showScrollbar`,触发 fade-in rAF 链,空跑
-  浪费。
-
-### scheduleFullPaint 反模式
-
-- ❌ 把所有 `schedulePaint()` 改成 `scheduleFullPaint()`。日常 write
-  路径每帧 forceAll 会让 cap DPR 的功耗优势打折; 只在上述三个点
-  force 即可
-- ❌ 在 `terminal.write` wrap 内 force。dist's dirty tracking 在
-  write 路径下**通常**是准确的 (wasmTerm dirty 标记跟 write 的内容
-  一致),GPU backing 是 fresh (上一帧的 render 输出),强 force 是浪费。
-  reconnect/resume race 用 `forcePaintUntil` 窗口处理,不要污染 write
-  wrap 本身
-- ❌ 把 `FORCE_PAINT_WINDOW_MS` 拉到 5s+ "保险一些"。窗口期内 cap DPR
-  失效,长 burst 用户会感到一阵子轻微发热
+- ❌ 所有 `schedulePaint` 帧都 `renderer.clear()`:日常 paint 本是
+  ~50 µs/帧,前加 1-2 ms 整屏 fillRect 把电量优势打折
+- ❌ reanchor 改成无条件 `scrollToBottom()`(去掉 `viewportY !== 0`
+  guard):会触发 `showScrollbar` fade-in rAF 链,空跑浪费
+- ❌ `terminal.write` wrap 内 force:write 路径下 dist dirty tracking
+  通常准确,GPU backing fresh,强 force 是浪费。reconnect/resume race
+  用 `forcePaintUntil` 窗口处理,不要污染 write wrap
+- ❌ `FORCE_PAINT_WINDOW_MS` 拉到 5s+ "保险一些":窗口期 cap DPR 失效,
+  长 burst 用户感到轻微发热
 
 ## Desktop-width pan momentum
 

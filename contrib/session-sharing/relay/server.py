@@ -349,6 +349,30 @@ class Session:
         if opcode not in (0x1, 0x2) or not payload:
             return
 
+        # Dedup essential metadata: agent re-emits hello+appearance every
+        # reconnect, and those reconnects can happen repeatedly without an
+        # intervening screen checkpoint (macOS surface auto-resume, agent
+        # WebSocket flaps, ghostty app restarts). Before this dedup the
+        # backlog would accumulate dozens of stale hello/appearance pairs;
+        # a fresh web client then replayed all of them in a 10ms burst,
+        # triggering 30+ no-op terminal.resize() + scheduleFullPaint()
+        # calls and likely contributing to the HarmonyOS WebView
+        # compositor "text overlap" bug. Only the most recent value of
+        # each essential type is useful — drop earlier ones of the same
+        # type now.
+        new_type = _essential_metadata_type(opcode, payload)
+        if new_type is not None:
+            kept: list[tuple[int, bytes]] = []
+            kept_size = 0
+            for entry_opcode, entry_payload in self.backlog:
+                entry_type = _essential_metadata_type(entry_opcode, entry_payload)
+                if entry_type == new_type:
+                    continue
+                kept.append((entry_opcode, entry_payload))
+                kept_size += len(entry_payload)
+            self.backlog = kept
+            self.backlog_size = kept_size
+
         # The macOS agent emits a `{"type":"screen", ...}` text frame as a
         # checkpoint: it carries the full visible viewport as VT bytes, so
         # any frame strictly before it is redundant for a fresh client and
@@ -404,17 +428,28 @@ def _is_screen_snapshot(payload: bytes) -> bool:
 _ESSENTIAL_BACKLOG_TYPES = frozenset({"hello", "appearance"})
 
 
-def _is_essential_metadata(payload: bytes) -> bool:
-    if not payload:
-        return False
+def _essential_metadata_type(opcode: int, payload: bytes) -> Optional[str]:
+    """Return the essential-metadata type string (`hello` / `appearance`)
+    for a text-opcode payload, or ``None`` if the frame is not one. Used
+    to dedup repeats in the backlog: only the latest value of each type
+    survives.
+    """
+    if opcode != 0x1 or not payload:
+        return None
     try:
         decoded = json.loads(payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return False
-    return (
-        isinstance(decoded, dict)
-        and decoded.get("type") in _ESSENTIAL_BACKLOG_TYPES
-    )
+        return None
+    if not isinstance(decoded, dict):
+        return None
+    type_value = decoded.get("type")
+    if type_value in _ESSENTIAL_BACKLOG_TYPES and isinstance(type_value, str):
+        return type_value
+    return None
+
+
+def _is_essential_metadata(payload: bytes) -> bool:
+    return _essential_metadata_type(0x1, payload) is not None
 
 
 # Upper bound matches the register payload's name length cap.
@@ -1025,6 +1060,13 @@ def resolve_apk_path(static_root: pathlib.Path) -> pathlib.Path:
     return static_root.parent / "apk" / "app-release.apk"
 
 
+def resolve_web_bundle_path(static_root: pathlib.Path) -> pathlib.Path:
+    override = os.environ.get("GHOSTTY_RELAY_WEB_BUNDLE_PATH", "").strip()
+    if override:
+        return pathlib.Path(override)
+    return static_root.parent / "web-bundle" / "dist.zip"
+
+
 async def handle_apk_grant(
     state: RelayState,
     writer: asyncio.StreamWriter,
@@ -1058,6 +1100,206 @@ async def handle_apk_grant(
         writer,
         200,
         json_bytes({"token": grant, "expires_in": int(APK_GRANT_TTL_SECONDS)}),
+    )
+
+
+def _min_apk_version_code() -> int:
+    """Lower bound APK versionCode that clients are allowed to keep
+    running. Web client compares its own BuildConfig.VERSION_CODE
+    against this; below the bound it shows a blocking upgrade modal.
+    Read from env var so ops can bump it without redeploying server.py.
+    0 (default) disables the check (no client is ever forced).
+    """
+    raw = os.environ.get("GHOSTTY_RELAY_MIN_APK_VERSION_CODE", "").strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        log_event("min_apk_version_code_invalid", raw=raw)
+        return 0
+    return max(0, value)
+
+
+async def handle_apk_version(
+    state: RelayState,
+    writer: asyncio.StreamWriter,
+    method: str,
+    headers: dict[str, str],
+) -> None:
+    """Return the latest APK's versionCode / versionName plus a minimum
+    required code so web clients can both (a) prompt for upgrade when a
+    newer APK is available and (b) hard-block usage when the running APK
+    is below ``min_apk_version_code``.
+
+    Public endpoint — no Bearer required. Sidecar (`version.json` in the
+    APK dir, written by ``build-and-deploy-apk.sh``) provides
+    versionCode / versionName / builtAt. ``min_apk_version_code`` comes
+    from the relay's env var ``GHOSTTY_RELAY_MIN_APK_VERSION_CODE`` so
+    ops can bump it without redeploying server.py.
+
+    When the sidecar is missing we still return ``min_apk_version_code``
+    so the hard-block path keeps working even before a real APK has
+    been published.
+    """
+    if method != "GET":
+        await send_response(writer, 405, json_bytes({"error": "method not allowed"}))
+        return
+
+    min_code = _min_apk_version_code()
+    apk_path = resolve_apk_path(state.config.static_root)
+    version_path = apk_path.parent / "version.json"
+    if not version_path.exists() or not version_path.is_file():
+        await send_response(
+            writer,
+            200,
+            json_bytes({
+                "versionCode": 0,
+                "versionName": "unknown",
+                "available": False,
+                "minVersionCode": min_code,
+            }),
+        )
+        return
+
+    try:
+        raw = version_path.read_bytes()
+        decoded = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+        log_event("apk_version_corrupt", path=str(version_path))
+        await send_response(
+            writer,
+            200,
+            json_bytes({
+                "versionCode": 0,
+                "versionName": "unknown",
+                "available": False,
+                "minVersionCode": min_code,
+            }),
+        )
+        return
+
+    # Don't trust the file blindly — coerce to expected types so a
+    # malformed sidecar can't crash the client side parser.
+    version_code = decoded.get("versionCode")
+    version_name = decoded.get("versionName")
+    response = {
+        "versionCode": int(version_code) if isinstance(version_code, (int, float)) else 0,
+        "versionName": str(version_name) if isinstance(version_name, str) else "unknown",
+        "builtAt": str(decoded.get("builtAt", "")) if isinstance(decoded.get("builtAt"), str) else "",
+        "available": True,
+        "minVersionCode": min_code,
+    }
+    await send_response(writer, 200, json_bytes(response))
+
+
+async def handle_web_manifest(
+    state: RelayState,
+    writer: asyncio.StreamWriter,
+    method: str,
+    headers: dict[str, str],
+) -> None:
+    """Web asset bundle manifest. Mirrors handle_apk_version in shape and
+    auth (public, no Bearer). Reads ``dist/manifest.json`` written by
+    ``deploy.sh`` — currently just informational (web version + sha256 +
+    built timestamp). The matching client-side hot-update flow (download
+    zip + serve from cache via WebViewAssetLoader) lives behind a
+    Capacitor plugin and is intentionally out of scope for this commit;
+    surfacing the manifest now lets the settings UI show the running
+    version vs server version, so the OTA loop can be closed
+    incrementally without breaking the public contract.
+    """
+    if method != "GET":
+        await send_response(writer, 405, json_bytes({"error": "method not allowed"}))
+        return
+
+    manifest_path = state.config.static_root / "manifest.json"
+    if not manifest_path.exists() or not manifest_path.is_file():
+        await send_response(
+            writer,
+            200,
+            json_bytes({
+                "webVersion": "unknown",
+                "available": False,
+            }),
+        )
+        return
+
+    try:
+        decoded = json.loads(manifest_path.read_bytes().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+        log_event("web_manifest_corrupt", path=str(manifest_path))
+        await send_response(
+            writer,
+            200,
+            json_bytes({
+                "webVersion": "unknown",
+                "available": False,
+            }),
+        )
+        return
+
+    size_bytes = decoded.get("sizeBytes")
+    response = {
+        "webVersion": str(decoded.get("webVersion", "unknown")),
+        "sha256": str(decoded.get("sha256", "")),
+        "sizeBytes": int(size_bytes) if isinstance(size_bytes, (int, float)) else 0,
+        "builtAt": str(decoded.get("builtAt", "")),
+        "bundleUrl": str(decoded.get("bundleUrl", "")),
+        "available": True,
+    }
+    await send_response(writer, 200, json_bytes(response))
+
+
+async def handle_web_bundle(
+    state: RelayState,
+    writer: asyncio.StreamWriter,
+    method: str,
+    headers: dict[str, str],
+) -> None:
+    """Stream the Web OTA zip bundle. Bearer-only auth — the Android
+    plugin downloads in-process and can attach the user token freely,
+    unlike the APK case where mobile browsers needed a ?dl=grant URL.
+
+    Resolves to ``<static_root>.parent/web-bundle/dist.zip`` by default
+    (sibling of dist/ and apk/), overridable via
+    ``GHOSTTY_RELAY_WEB_BUNDLE_PATH``. The manifest's sha256 is the hash
+    of these bytes, and the plugin will reject the bundle on mismatch.
+    """
+    if method != "GET":
+        await send_response(writer, 405, json_bytes({"error": "method not allowed"}))
+        return
+
+    token = bearer_token(headers)
+    if not token:
+        state.increment_metric("auth_rejected_total")
+        state.increment_metric("web_bundle_rejected_total")
+        await send_response(writer, 401, json_bytes({"error": "missing bearer token"}))
+        return
+    if not state.is_valid_user_token(token):
+        state.increment_metric("auth_rejected_total")
+        state.increment_metric("web_bundle_rejected_total")
+        await send_response(writer, 401, json_bytes({"error": "invalid user token"}))
+        return
+
+    bundle_path = resolve_web_bundle_path(state.config.static_root)
+    if not bundle_path.exists() or not bundle_path.is_file():
+        state.increment_metric("web_bundle_rejected_total")
+        log_event("web_bundle_missing", path=str(bundle_path))
+        await send_response(writer, 503, json_bytes({"error": "bundle_not_available"}))
+        return
+
+    body = bundle_path.read_bytes()
+    state.increment_metric("web_bundle_total")
+    await send_response(
+        writer,
+        200,
+        body,
+        "application/zip",
+        extra_headers={
+            "Content-Disposition": 'attachment; filename="ghostty-web.zip"',
+            "Cache-Control": "no-store",
+        },
     )
 
 
@@ -2442,6 +2684,9 @@ async def handle_connection(
         "/api/upload/init",
         "/api/app/android",
         "/api/app/android/grant",
+        "/api/app/version",
+        "/api/web/manifest.json",
+        "/api/web/bundle",
     }
     if path in rate_limited_paths or is_upload_resource:
         async with state.lock:
@@ -2480,6 +2725,15 @@ async def handle_connection(
         return
     if path == "/api/app/android/grant":
         await handle_apk_grant(state, writer, method, headers)
+        return
+    if path == "/api/app/version":
+        await handle_apk_version(state, writer, method, headers)
+        return
+    if path == "/api/web/manifest.json":
+        await handle_web_manifest(state, writer, method, headers)
+        return
+    if path == "/api/web/bundle":
+        await handle_web_bundle(state, writer, method, headers)
         return
     if is_upload_init:
         await handle_upload_init(state, writer, method, body, headers)
