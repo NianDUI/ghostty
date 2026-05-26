@@ -210,6 +210,30 @@ public class WebUpdatePlugin extends Plugin {
         return destDir;
     }
 
+    /**
+     * Force a full WebView reload, posted on the UI thread.
+     *
+     * <p>Why we need this: on HarmonyOS WebView (ICL-AL20) neither
+     * Capacitor's internal {@code webView.post(loadUrl(appUrl))} fired
+     * by {@code setServerBasePath} nor a JS-side
+     * {@code window.location.replace} actually navigates the page —
+     * the OTA bundle gets unpacked but the page stays frozen. Doing
+     * {@code stopLoading()} + {@code loadUrl} with a cache-buster query
+     * directly from a UI-thread Runnable is the only thing observed to
+     * reliably reload on this device. The cache buster also avoids any
+     * "already loading same URL, dedup" optimisation inside the WebView.
+     */
+    @PluginMethod
+    public void hardReload(PluginCall call) {
+        final android.webkit.WebView wv = bridge.getWebView();
+        final String url = bridge.getLocalUrl();
+        wv.post(() -> {
+            wv.stopLoading();
+            wv.loadUrl(url + "?ota=" + System.currentTimeMillis());
+        });
+        call.resolve();
+    }
+
     @PluginMethod
     public void clearCache(PluginCall call) {
         String keep = call.getString("keepVersion", "");

@@ -144,48 +144,62 @@ function bytesSliceToBase64(bytes, start, end) {
   });
 }
 
-// Switch the WebView to the freshly downloaded bundle. setServerBasePath
-// updates the local server's basePath AND posts a webView.loadUrl on the
-// main thread to refresh the page. persistServerBasePath writes the path
-// to SharedPreferences so Bridge.attachWebView picks it up on next launch.
+// Switch the WebView to the freshly downloaded bundle. Sequence:
+//   1. setServerBasePath — point Capacitor's localServer at new files
+//   2. persistServerBasePath — write to SharedPreferences for next boot
+//   3. hardReload (our plugin) — UI-thread loadUrl with cache-buster
 //
-// We always force a window.location.reload() ourselves afterwards
-// because the Capacitor-internal `webView.post(loadUrl)` doesn't fire
-// reliably on HarmonyOS WebView (observed on ICL-AL20 / Android 12 wv) —
-// the call resolves but the page stays put, leaving the user stuck on a
-// "安装中..." spinner. JS-level reload is belt-and-braces; at worst the
-// page reloads twice in rapid succession, which is harmless.
+// Step 3 exists because on HarmonyOS WebView (ICL-AL20) neither
+// Capacitor's internal `webView.post(loadUrl(appUrl))` nor JS
+// `window.location.replace` reliably navigate the page after
+// setServerBasePath. The page stays frozen on the previous state with
+// the user stuck on an "installing..." spinner. The plugin's hardReload
+// runs the loadUrl on a UI-thread Runnable with a cache-buster query so
+// the WebView can't dedupe it as "already loading same URL". JS-side
+// reload remains as belt-and-braces in case the plugin call fails.
 export async function activateWebBundle(path) {
   const wv = await capWebView();
+  const p = plugin();
   if (!wv) throw new Error("WebView plugin not available");
   await wv.setServerBasePath({ path });
   await wv.persistServerBasePath();
-  try {
-    // location.replace (not assign) so the navigation stack doesn't
-    // accumulate; a back-button after activation should land on whatever
-    // launcher state the new bundle paints, not on an "installing"
-    // intermediate.
-    window.location.replace("https://localhost/");
-  } catch {
-    // Last resort: reload current URL.
-    try { window.location.reload(); } catch { /* give up */ }
-  }
+  await forceReload(p);
 }
 
 // Revert to the APK's bundled assets. Empty path → Capacitor reverts
 // localServer to hostAssets("public") on the next load. Same reload
-// caveat as activateWebBundle — fire our own window.location.replace
-// because the Capacitor internal one doesn't always fire.
+// caveat as activateWebBundle.
 export async function resetToBundled() {
   const wv = await capWebView();
+  const p = plugin();
   if (!wv) throw new Error("WebView plugin not available");
   await wv.setServerBasePath({ path: "" });
   await wv.persistServerBasePath();
-  try {
-    window.location.replace("https://localhost/");
-  } catch {
-    try { window.location.reload(); } catch { /* give up */ }
+  await forceReload(p);
+}
+
+async function forceReload(p) {
+  if (p) {
+    try {
+      await p.hardReload();
+      // hardReload posts the loadUrl on UI thread; that runnable may not
+      // have executed yet when this resolves. Don't return immediately —
+      // a JS-side reload as second wave catches the cases where the post
+      // didn't fire.
+    } catch {
+      // Plugin call failed; fall back to JS.
+    }
   }
+  // Belt-and-braces: schedule a JS reload too. If hardReload's post
+  // already loaded a new page, this never runs (JS context is dead).
+  // If it didn't, we get a second chance.
+  setTimeout(() => {
+    try {
+      window.location.replace("https://localhost/?ota=" + Date.now());
+    } catch {
+      try { window.location.reload(); } catch { /* give up */ }
+    }
+  }, 200);
 }
 
 // Drop all cached bundles except the currently-active one. Safe to call

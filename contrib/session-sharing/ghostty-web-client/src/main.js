@@ -783,11 +783,10 @@ async function installWebUpdate() {
       version: webVersionInfo.serverVersion,
       token,
       onProgress: (info) => {
-        if (info.phase === "install" && info.total) {
-          // Quietly skip log spam — many chunks per install.
-        } else {
-          logEvt(`web update progress phase=${info.phase}${info.total ? ` ${info.received ?? info.sent ?? 0}/${info.total}` : ""}`);
-        }
+        // Log every phase including install chunks — without these we
+        // can't tell hung-chunk vs hung-finalize vs hung-reload on the
+        // device. Volume is ~7 chunks per install, manageable.
+        logEvt(`web update progress phase=${info.phase}${info.total ? ` ${info.received ?? info.sent ?? 0}/${info.total}` : ""}`);
         if (!webUpdateHintEl) return;
         if (info.phase === "download") {
           if (info.total > 0 && info.received >= info.total) {
@@ -804,14 +803,18 @@ async function installWebUpdate() {
       },
     });
     if (webUpdateHintEl) webUpdateHintEl.textContent = "安装中，APP 将自动刷新…";
+    logEvt(`web update install done path=${result.path}`);
     // Drop older bundles BEFORE activate — activate triggers a reload
     // and this JS instance dies, taking any pending cleanup with it.
     try {
       await clearOldBundles(webVersionInfo.serverVersion);
+      logEvt("web update clearOldBundles done");
     } catch (cleanupErr) {
       logEvt(`clearOldBundles failed ${cleanupErr?.message || cleanupErr}`);
     }
+    logEvt("web update activate start");
     await activateWebBundle(result.path);
+    logEvt("web update activate returned (reload pending)");
     // activateWebBundle posts a reload — execution past here is best-
     // effort; the new JS bundle takes over momentarily.
   } catch (err) {
