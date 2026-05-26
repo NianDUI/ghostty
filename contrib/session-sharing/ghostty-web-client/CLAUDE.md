@@ -278,6 +278,51 @@ canvasHost 拿到全新 layer texture,等同 reload 的关键步骤但用户
   / `perspective` 等)"保险一些"。promotion 本身是 boolean,够了就行,
   叠加只增 GPU 内存不增效果。
 
+## Visibility resync = 立刻 disposeTerminal (不要 paint)
+
+`document.visibilitychange` visible 入口:**立即** `disposeTerminal()` +
+`startForcePaintWindow()` + `dropPendingWrites()` + `socket.close(4000)`。
+**不要**在这里 `scheduleFullPaint()` / `schedulePaint()` 哪怕一次。
+
+**Why**:HarmonyOS / ICL-AL20 WebView GPU compositor 在 visibility
+transition 期间会**缓存当时 layer texture 的内容**,visibility 回来后
+任何画到旧 canvas 上的像素都被合成在「先前缓存的内容」上面,而不是
+替换它。每次 visibility 来回都累一层 stale frame —— 用户报告"两屏
+甚至更多内容叠在一起,而且旧那层不是离开时的画面、是更早 visibility
+往返时的画面",就是多次累积叠加的结果。即使 `renderer.clear()` 整屏
+fillRect、即使在独立 layer 的 canvasHost 上画都救不回。
+
+唯一能彻底断链的方式:**让 visibility 回来时根本不画**。立刻
+disposeTerminal 销毁 wrapper + canvas → layer 释放(等价 reload 那一
+半作用)。等 reconnect 完成、connectToSession 调 ensureTerminal 建出
+全新 wrapper + canvas,agent 的 snapshot 才落地到这个新 canvas 上。
+
+**Trade-off**: 用户看 1-2 秒终端背景色(reconnect RTT + snapshot
+delivery),期间状态条显示"重连中"。比之前的"两屏叠加"明显改善。
+
+**关于 forcePaintUntil 窗口**:visibility handler 仍然
+`startForcePaintWindow("visibility_visible")`,但**意义跟之前不同** ——
+之前是给"用旧 canvas 强制 forceAll 重画"用,现在是 belt-and-braces
+给 reconnect 之后**新 canvas** 上的 snapshot / backlog 写入升级到
+forceAll。窗口设的是 module-level 时间戳,跨 dispose+ensure 仍有效。
+
+**反模式**:
+
+- ❌ 看着 1-2 秒空白心疼,加一句 `if (terminal) scheduleFullPaint()`
+  到 visibility handler 顶部"过渡一下"。这就是 bug 的注入点 ——
+  那一帧画进的就是 WebView 缓存进 layer texture 的"stale 旧内容"。
+- ❌ 把 disposeTerminal 改成"只清 canvas 不动 terminal 实例"。dist
+  的 wasmTerm 在 disposeTerminal 之外没有公开方式重建 canvas,而
+  不重建 wrapper layer 也不释放,等于没做。
+- ❌ 把 visibility handler 改成「等 reconnect 完成再 dispose」。dispose
+  必须**早于** WebView 拿到任何新 paint 机会(就是 visibilitychange
+  事件发起的同一 tick),晚一拍 WebView 已经缓存了 stale frame。
+- ❌ 把这个机制推广到桌面浏览器(`shouldUseMobileInput()` 之外也
+  dispose)。桌面 Chrome/Firefox 的 compositor 不复现这个 bug,
+  dispose 会让桌面用户也看到不必要的"切 tab 回来空白一秒",体验
+  下降。目前的实现是无条件 dispose —— 若将来在桌面收到投诉,加
+  `shouldUseMobileInput()` 守卫即可。
+
 ## Stale canvas backing: forceAll 路径
 
 `schedulePaint(force=true)` / `scheduleFullPaint()` 在三个特殊点使用,
@@ -288,20 +333,18 @@ dist 内部 dirty-row 优化默认只画 `wasmTerm.isRowDirty(y)` 返回 true
 的行,其他行保留 canvas 上现有像素。这在「上一帧画的内容 = 当前 GPU
 backing 内容」时正确, 但在以下场景**不正确**:
 
-1. **Android WebView 后台被回收**: APP 切到其他应用 + 待一会, OS 主动
-   evict GPU texture (canvas DOM / 维度都完好, dist self-heal 不触发,
-   因为它只 check canvas.{width,height} 是否 = cols × metric × DPR)。
-   切回来时 visibility handler 必须 `scheduleFullPaint()` 强制把当前
-   wasmTerm 全画一遍, 否则非 dirty rows 显示 GPU 上的随机像素 → 用户
-   看到 "文字重叠"。
-2. **Snapshot 重锚**: agent push 的 snapshot 是完整的可视区域内容,
+1. **Snapshot 重锚**: agent push 的 snapshot 是完整的可视区域内容,
    即使其中部分 row 跟 wasmTerm 当前状态相同 (静态边框 / 状态栏),
-   也必须全画 — 因为 GPU backing 可能 stale。
-3. **install / DPR 切换**: `renderer.resize` 调用 `canvas.width = X`
+   也必须全画 — 因为 GPU backing 可能 stale (例如 reconnect 后第一
+   波 backlog 落在崭新的 canvas 上)。
+2. **install / DPR 切换**: `renderer.resize` 调用 `canvas.width = X`
    会 reset ctx state + fillRect 背景, 把之前 forceAll=true 的 render
    输出抹掉; 后续 schedulePaint(force=false) 看到 wasmTerm 几乎都
    non-dirty (snapshot 还没来), 不画 → 用户看到纯背景色。 install
    末尾 + applyRendererDpr 末尾必须 `scheduleFullPaint()`。
+
+(visibility=visible 不在这个列表里 —— 那条路径现在走 disposeTerminal
+彻底重建,见上面 "Visibility resync = 立刻 disposeTerminal" 段。)
 
 **调用约定**:
 
@@ -333,8 +376,10 @@ dist v0.4.0 内部 dirty tracking 在快速 burst write 下偶尔会漏标已被
 
 - `socket.addEventListener("open", ...)` —— 覆盖 reconnect 后 backlog 序列
 - `document.addEventListener("visibilitychange", ...)` 的 `visible` 入口 ——
-  belt-and-braces:reconnect 路径有 100-200 ms 延迟,这之间的写仍走
-  forceAll
+  belt-and-braces。注意:这条入口里**不再** scheduleFullPaint(那一帧
+  会被 WebView compositor 缓存进 stale layer texture,见 "Visibility
+  resync = 立刻 disposeTerminal" 段),只设窗口戳;窗口在新 ensureTerminal
+  之后用 —— snapshot 落地的写自然走 forceAll
 
 **为什么 2500 ms**:实测一次 hello → 256 frame backlog → snapshot 在
 3G/4G/弱 WiFi 下大概 800-1800 ms 完成,2500 ms 留 700-1700 ms 头部裕量。

@@ -3173,37 +3173,42 @@ terminalView.addEventListener("pointerdown", (event) => {
 window.addEventListener("focus", focusTerminal);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
-    // First: force a full repaint immediately. Between background and
-    // foreground the Android WebView may have lost the canvas's GPU
-    // texture (OS evicts under memory pressure for backgrounded apps).
-    // canvas.width/height are unchanged so dist's self-heal in render()
-    // won't trigger; only an explicit forceAll overwrites the garbage
-    // page contents. We paint the CURRENT wasmTerm state — it's the
-    // pre-suspend snapshot, possibly stale relative to the host, but
-    // it's at least a complete coherent frame instead of half-garbage.
-    // The fresh snapshot from the reconnect below overwrites it once
-    // it lands.
-    scheduleFullPaint();
-    // Belt-and-braces: socket onopen also opens this window, but the
-    // reconnect path can take a beat to fire and we want every write
-    // in between (including any stragglers from before we close the
-    // socket) to go through forceAll too.
+    // Tear down the terminal *immediately* on resume — do not paint
+    // even one extra frame on the pre-suspend canvas. HarmonyOS /
+    // ICL-AL20 WebView caches the GPU compositor layer texture across
+    // visibility transitions and merges every paint we issue here on
+    // top of the previously-cached frame. Each visibility round-trip
+    // therefore stacks another layer of stale pixels, producing the
+    // "two (or more) terminals overlapping, with content from even
+    // earlier sessions visible underneath" symptom users hit after
+    // 2-5 minutes in the background.
+    //
+    // Only a full DOM rebuild releases the layer (which is why
+    // `location.reload()` looks clean). disposeTerminal wipes the
+    // layer-promoted `.terminal-canvas-host` wrapper now, so the
+    // cached texture is dropped before the compositor can fold in
+    // another stale frame. The reconnect path below routes through
+    // scheduleReconnect → connectToSession → ensureTerminal, which
+    // rebuilds the wrapper + canvas + xterm instance from scratch
+    // and lets the agent's fresh snapshot paint into a clean layer.
+    //
+    // Trade-off: user sees the terminal background colour for ~1-2 s
+    // (reconnect RTT + snapshot delivery) before content reappears.
+    // We treat that as strictly better than "older session's pixels
+    // bleeding through the live frame".
+    if (terminal) disposeTerminal();
+    setTerminalStatus("重连中", "reconnecting");
+    // Open the force-paint window for the post-reconnect render path
+    // (snapshot + backlog frames land into the fresh canvas and we
+    // still want every visible row redrawn). socket.open re-opens it
+    // too, this is just belt-and-braces against the reconnect-delay
+    // gap. The window outliving the dispose is harmless: it's a bare
+    // timestamp the next ensureTerminal's schedulePaint will read.
     startForcePaintWindow("visibility_visible");
     // While the tab was hidden scheduleTermWrite kept appending to
-    // pendingWriteChunks but skipped the flush (see the
-    // `if (document.hidden) return;` guard there). The ring buffer
-    // FIFO-drops once it crosses PENDING_WRITE_CAP_BYTES, so the
-    // tail may now contain a stale screen snapshot followed by
-    // partial bytes that are no longer self-consistent — writing
-    // them straight into the terminal paints "the picture as it was
-    // mid-hide", which on Android looks like the canvas suddenly
-    // reverting to an older frame as soon as the user taps to
-    // unblank. Instead: drop the queued bytes (no replay of stale
-    // content) and bounce the WebSocket so the relay re-emits a
-    // client_connected event — the macOS agent reacts by pushing a
-    // fresh screen snapshot, which is the only source-of-truth way
-    // to reach the current host state. scheduleReconnect (already
-    // wired via socket.onclose) handles the backoff + status UI.
+    // pendingWriteChunks but skipped the flush. After dispose those
+    // bytes are also meaningless (the new terminal will re-receive
+    // its world view via the snapshot), so drop them.
     dropPendingWrites();
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.close(4000, "visibility_resync");
