@@ -60,21 +60,27 @@ export async function getLocalWebVersion() {
 // Download + verify + unpack into filesDir/web/<version>/. Returns the
 // unpacked path so the caller can hand it to setServerBasePath.
 //
-// The HTTP fetch deliberately runs in JS (via the WebView's network
-// stack) rather than inside the Capacitor plugin. The plugin's previous
-// HttpURLConnection implementation hung indefinitely on HarmonyOS
-// WebView (ICL-AL20 / Android 12 wv) — likely because Capacitor +
-// HarmonyOS use divergent TLS stacks for the WebView vs the OS network
-// API, and the self-signed cert NSC pin only consistently applied to
-// the WebView side. Doing the HTTP in JS means there's exactly one
-// network code path to worry about. The bytes get base64-encoded and
-// handed to the plugin for sha verification + extract.
+// Two architectural reasons the heavy lifting is in JS:
+//
+// 1. HTTP fetch lives in JS (WebView network stack) because the plugin's
+//    earlier HttpURLConnection hung indefinitely on HarmonyOS WebView
+//    (ICL-AL20 / Android 12 wv) — likely divergent TLS stacks where the
+//    self-signed cert NSC pin only consistently applied to the WebView
+//    side. With JS fetch there's exactly one network path to worry about.
+//
+// 2. The bundle is handed to the plugin chunked rather than as one big
+//    base64 string because passing ~290 KB through Capacitor's
+//    WebMessageListener hangs the install call on the same WebView. We
+//    suspect HarmonyOS drops messages beyond ~64 KB. CHUNK_BYTES=32_768
+//    decoded (~43 KB base64) is comfortably under that cliff.
 //
 // Caller-supplied `onProgress` is called with {phase, ...} so the UI
 // can show download / verify / install transitions; phases:
-//   "download"  bytes received  -> {received, total}
-//   "verify"    base64 + sha     -> {}
-//   "install"   plugin unpack    -> {}
+//   "download"  bytes received   -> {received, total}
+//   "verify"    base64 produced  -> {}
+//   "install"   chunked transfer -> {sent, total}
+const CHUNK_BYTES = 32_768;
+
 export async function downloadWebBundle({ url, sha256, version, token, onProgress }) {
   const p = plugin();
   if (!p) throw new Error("web update not supported on this platform");
@@ -91,22 +97,38 @@ export async function downloadWebBundle({ url, sha256, version, token, onProgres
     throw new Error(`HTTP ${response.status}`);
   }
   const buffer = await response.arrayBuffer();
-  onProgress?.({ phase: "download", received: buffer.byteLength, total: buffer.byteLength });
+  const total = buffer.byteLength;
+  onProgress?.({ phase: "download", received: total, total });
 
   onProgress?.({ phase: "verify" });
-  const base64 = await arrayBufferToBase64(buffer);
+  // Per-chunk base64-encode keeps peak memory bounded and avoids
+  // building a single ~290 KB string only to slice it back into chunks.
+  const bytes = new Uint8Array(buffer);
 
-  onProgress?.({ phase: "install" });
-  return p.installFromBase64({ data: base64, sha256, version });
+  await p.installBegin({ version });
+  try {
+    let sent = 0;
+    for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
+      const end = Math.min(offset + CHUNK_BYTES, bytes.length);
+      const chunkBase64 = await bytesSliceToBase64(bytes, offset, end);
+      await p.installChunk({ version, chunk: chunkBase64 });
+      sent = end;
+      onProgress?.({ phase: "install", sent, total });
+    }
+    return await p.installFinalize({ version, sha256 });
+  } catch (err) {
+    try { await p.installAbort({ version }); } catch { /* best effort */ }
+    throw err;
+  }
 }
 
-// Convert ArrayBuffer to base64 string. Uses FileReader.readAsDataURL
-// because the browser's native base64 encoder is faster than a JS loop
-// of fromCharCode + btoa for buffers > a few KB, and avoids the
-// argument-count limit of String.fromCharCode.apply.
-function arrayBufferToBase64(buffer) {
+// Convert a slice of Uint8Array to base64 string via FileReader. Used
+// per-chunk because btoa(String.fromCharCode(...arr)) blows the call
+// stack on large slices and a plain for-loop is slower than the
+// browser's native data-URL encoder.
+function bytesSliceToBase64(bytes, start, end) {
   return new Promise((resolve, reject) => {
-    const blob = new Blob([buffer]);
+    const blob = new Blob([bytes.subarray(start, end)]);
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result;

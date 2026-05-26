@@ -783,7 +783,11 @@ async function installWebUpdate() {
       version: webVersionInfo.serverVersion,
       token,
       onProgress: (info) => {
-        logEvt(`web update progress phase=${info.phase}${info.total ? ` ${info.received}/${info.total}` : ""}`);
+        if (info.phase === "install" && info.total) {
+          // Quietly skip log spam — many chunks per install.
+        } else {
+          logEvt(`web update progress phase=${info.phase}${info.total ? ` ${info.received ?? info.sent ?? 0}/${info.total}` : ""}`);
+        }
         if (!webUpdateHintEl) return;
         if (info.phase === "download") {
           if (info.total > 0 && info.received >= info.total) {
@@ -794,7 +798,8 @@ async function installWebUpdate() {
         } else if (info.phase === "verify") {
           webUpdateHintEl.textContent = "校验中…";
         } else if (info.phase === "install") {
-          webUpdateHintEl.textContent = "解压安装中…";
+          const pct = info.total > 0 ? Math.floor((info.sent / info.total) * 100) : 0;
+          webUpdateHintEl.textContent = `安装中… ${pct}%`;
         }
       },
     });

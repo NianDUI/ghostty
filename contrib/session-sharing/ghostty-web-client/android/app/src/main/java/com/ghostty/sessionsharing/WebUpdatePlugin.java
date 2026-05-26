@@ -38,34 +38,176 @@ public class WebUpdatePlugin extends Plugin {
     private static final String SUBDIR = "web";
     private static final int BUFFER_SIZE = 64 * 1024;
 
+    // Chunked install: passing the full ~290 KB base64 bundle in one
+    // installFromBase64 call hangs on HarmonyOS WebView (ICL-AL20).
+    // Suspect: Capacitor 8 routes plugin calls through WebMessageListener
+    // on Chrome 114+, and the HarmonyOS WebView quietly drops messages
+    // beyond ~64 KB. Chunked transfer keeps each call comfortably under
+    // that ceiling. State (FileOutputStream + MessageDigest) lives in
+    // module-level mutable fields keyed by version — one in-flight
+    // install per APP run is the only supported case.
+    private final java.util.HashMap<String, java.io.OutputStream> stageStreams = new java.util.HashMap<>();
+    private final java.util.HashMap<String, MessageDigest> stageDigests = new java.util.HashMap<>();
+    private final java.util.HashMap<String, File> stageDirs = new java.util.HashMap<>();
+    private final java.util.HashMap<String, File> stageZips = new java.util.HashMap<>();
+
     @PluginMethod
-    public void installFromBase64(PluginCall call) {
-        final String data = call.getString("data");
-        final String expectedSha = call.getString("sha256");
+    public void installBegin(PluginCall call) {
         final String version = call.getString("version");
-        if (data == null || expectedSha == null || version == null) {
-            call.reject("data, sha256, version are required");
+        if (version == null) {
+            call.reject("version required");
             return;
         }
         if (!isValidVersion(version)) {
             call.reject("invalid version label");
             return;
         }
-        // Background thread keeps base64 decode + unzip off the UI
-        // thread — neither is huge for a 200 KB dist, but blocking the
-        // bridge thread blocks every other plugin call too.
         new Thread(() -> {
             try {
-                File destDir = doInstall(data, expectedSha, version);
+                synchronized (this) {
+                    closeStage(version);
+                    File webRoot = new File(getContext().getFilesDir(), SUBDIR);
+                    if (!webRoot.exists() && !webRoot.mkdirs()) {
+                        throw new IOException("could not create " + webRoot);
+                    }
+                    File stageDir = new File(webRoot, version + ".partial");
+                    deleteRecursive(stageDir);
+                    if (!stageDir.mkdirs()) {
+                        throw new IOException("could not create stage dir " + stageDir);
+                    }
+                    File zipFile = new File(stageDir, "bundle.zip");
+                    stageDirs.put(version, stageDir);
+                    stageZips.put(version, zipFile);
+                    stageStreams.put(version, new FileOutputStream(zipFile));
+                    stageDigests.put(version, MessageDigest.getInstance("SHA-256"));
+                }
+                call.resolve();
+            } catch (Exception e) {
+                String msg = e.getMessage();
+                call.reject(msg == null ? "install_begin_failed" : msg, e);
+            }
+        }, "GhosttyWebUpdate-Begin").start();
+    }
+
+    @PluginMethod
+    public void installChunk(PluginCall call) {
+        final String version = call.getString("version");
+        final String chunk = call.getString("chunk");
+        if (version == null || chunk == null) {
+            call.reject("version and chunk required");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                byte[] bytes = Base64.decode(chunk, Base64.DEFAULT);
+                if (bytes == null) {
+                    throw new IOException("base64 decode returned null");
+                }
+                synchronized (this) {
+                    java.io.OutputStream out = stageStreams.get(version);
+                    MessageDigest sha = stageDigests.get(version);
+                    if (out == null || sha == null) {
+                        throw new IOException("install not begun for version " + version);
+                    }
+                    out.write(bytes);
+                    sha.update(bytes);
+                }
+                JSObject ret = new JSObject();
+                ret.put("written", bytes.length);
+                call.resolve(ret);
+            } catch (Exception e) {
+                String msg = e.getMessage();
+                call.reject(msg == null ? "install_chunk_failed" : msg, e);
+            }
+        }, "GhosttyWebUpdate-Chunk").start();
+    }
+
+    @PluginMethod
+    public void installFinalize(PluginCall call) {
+        final String version = call.getString("version");
+        final String expectedSha = call.getString("sha256");
+        if (version == null || expectedSha == null) {
+            call.reject("version and sha256 required");
+            return;
+        }
+        new Thread(() -> {
+            try {
+                File destDir;
+                synchronized (this) {
+                    java.io.OutputStream out = stageStreams.remove(version);
+                    MessageDigest sha = stageDigests.remove(version);
+                    File stageDir = stageDirs.remove(version);
+                    File zipFile = stageZips.remove(version);
+                    if (out == null || sha == null || stageDir == null || zipFile == null) {
+                        throw new IOException("install not begun for version " + version);
+                    }
+                    try {
+                        out.close();
+                        String actual = toHex(sha.digest());
+                        if (!actual.equalsIgnoreCase(expectedSha)) {
+                            throw new IOException(
+                                "sha256 mismatch (expected=" + expectedSha + " actual=" + actual + ")");
+                        }
+                        destDir = promoteFromZip(version, stageDir, zipFile, expectedSha);
+                    } finally {
+                        deleteRecursive(stageDir);
+                    }
+                }
                 JSObject ret = new JSObject();
                 ret.put("path", destDir.getAbsolutePath());
                 ret.put("version", version);
                 call.resolve(ret);
             } catch (Exception e) {
                 String msg = e.getMessage();
-                call.reject(msg == null ? "install_failed" : msg, e);
+                call.reject(msg == null ? "install_finalize_failed" : msg, e);
             }
-        }, "GhosttyWebUpdate-Install").start();
+        }, "GhosttyWebUpdate-Finalize").start();
+    }
+
+    @PluginMethod
+    public void installAbort(PluginCall call) {
+        final String version = call.getString("version");
+        if (version == null) {
+            call.reject("version required");
+            return;
+        }
+        synchronized (this) {
+            closeStage(version);
+        }
+        call.resolve();
+    }
+
+    private synchronized void closeStage(String version) {
+        java.io.OutputStream out = stageStreams.remove(version);
+        if (out != null) {
+            try { out.close(); } catch (IOException ignored) {}
+        }
+        stageDigests.remove(version);
+        File stageDir = stageDirs.remove(version);
+        stageZips.remove(version);
+        if (stageDir != null) {
+            deleteRecursive(stageDir);
+        }
+    }
+
+    private File promoteFromZip(String version, File stageDir, File zipFile, String expectedSha)
+            throws IOException {
+        File unpackDir = new File(stageDir, "_unpack");
+        if (!unpackDir.mkdirs()) {
+            throw new IOException("could not create unpack dir");
+        }
+        unzipSafely(zipFile, unpackDir);
+        zipFile.delete();
+        File webRoot = new File(getContext().getFilesDir(), SUBDIR);
+        File destDir = new File(webRoot, version);
+        deleteRecursive(destDir);
+        if (!unpackDir.renameTo(destDir)) {
+            throw new IOException("could not promote stage to dest " + destDir);
+        }
+        try (FileOutputStream fos = new FileOutputStream(new File(destDir, ".version"))) {
+            fos.write((version + "\n" + expectedSha + "\n").getBytes(StandardCharsets.UTF_8));
+        }
+        return destDir;
     }
 
     @PluginMethod
@@ -130,71 +272,6 @@ public class WebUpdatePlugin extends Plugin {
         ret.put("sha256", sha);
         ret.put("path", basePath == null ? "" : basePath);
         call.resolve(ret);
-    }
-
-    private File doInstall(String base64Data, String expectedSha, String version)
-            throws IOException, NoSuchAlgorithmException {
-        File webRoot = new File(getContext().getFilesDir(), SUBDIR);
-        if (!webRoot.exists() && !webRoot.mkdirs()) {
-            throw new IOException("could not create " + webRoot);
-        }
-        File stageDir = new File(webRoot, version + ".partial");
-        deleteRecursive(stageDir);
-        if (!stageDir.mkdirs()) {
-            throw new IOException("could not create stage dir " + stageDir);
-        }
-        try {
-            File zipFile = new File(stageDir, "bundle.zip");
-            decodeAndVerify(base64Data, expectedSha, zipFile);
-
-            File unpackDir = new File(stageDir, "_unpack");
-            if (!unpackDir.mkdirs()) {
-                throw new IOException("could not create unpack dir");
-            }
-            unzipSafely(zipFile, unpackDir);
-            // Drop the zip — already exploded on disk.
-            zipFile.delete();
-
-            File destDir = new File(webRoot, version);
-            deleteRecursive(destDir);
-            if (!unpackDir.renameTo(destDir)) {
-                throw new IOException("could not promote stage to dest " + destDir);
-            }
-            // Write the version marker last so getLocalWebVersion treats
-            // partially-promoted dirs as invalid (caller can re-install).
-            // Two lines: version label, sha256. The sha is the same one
-            // we just verified the bytes against, so JS-side hasUpdate
-            // can detect re-deploys that share a version label (dirty
-            // builds, ad-hoc re-pushes) by comparing sha256.
-            try (FileOutputStream fos = new FileOutputStream(new File(destDir, ".version"))) {
-                fos.write((version + "\n" + expectedSha + "\n").getBytes(StandardCharsets.UTF_8));
-            }
-            return destDir;
-        } finally {
-            deleteRecursive(stageDir);
-        }
-    }
-
-    private void decodeAndVerify(String base64Data, String expectedSha, File dest)
-            throws IOException, NoSuchAlgorithmException {
-        // Base64 decode in one shot — Android's Base64.decode handles
-        // strings up to a few MB comfortably, and dist bundles are
-        // ~200 KB so this is fine. URL_SAFE | DEFAULT flags accept both
-        // standard and url-safe alphabets, no padding requirements.
-        byte[] bytes = Base64.decode(base64Data, Base64.DEFAULT);
-        if (bytes == null || bytes.length == 0) {
-            throw new IOException("empty bundle after base64 decode");
-        }
-        MessageDigest sha = MessageDigest.getInstance("SHA-256");
-        sha.update(bytes);
-        String actual = toHex(sha.digest());
-        if (!actual.equalsIgnoreCase(expectedSha)) {
-            throw new IOException(
-                "sha256 mismatch (expected=" + expectedSha + " actual=" + actual + ")");
-        }
-        try (FileOutputStream fos = new FileOutputStream(dest)) {
-            fos.write(bytes);
-        }
     }
 
     private void unzipSafely(File zipFile, File unpackDir) throws IOException {
