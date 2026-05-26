@@ -20,16 +20,11 @@ function plugin() {
   return _plugin;
 }
 
-let _capWebView = null;
-async function capWebView() {
-  // Capacitor's built-in WebView plugin lives in @capacitor/core; older
-  // versions exposed it via a separate import. registerPlugin works for
-  // both because the bridge routes by name.
-  if (!NATIVE) return null;
-  if (_capWebView) return _capWebView;
-  _capWebView = registerPlugin("WebView");
-  return _capWebView;
-}
+// Note: we used to also depend on Capacitor's built-in WebView plugin
+// (setServerBasePath + persistServerBasePath), but on HarmonyOS WebView
+// chaining those three plugin calls hung the JS bridge. Our own
+// GhosttyWebUpdate.activate folds persist + setServerBasePath + reload
+// into a single UI-thread Runnable so JS only awaits one call.
 
 export function isWebUpdateSupported() {
   return NATIVE;
@@ -144,62 +139,25 @@ function bytesSliceToBase64(bytes, start, end) {
   });
 }
 
-// Switch the WebView to the freshly downloaded bundle. Sequence:
-//   1. setServerBasePath — point Capacitor's localServer at new files
-//   2. persistServerBasePath — write to SharedPreferences for next boot
-//   3. hardReload (our plugin) — UI-thread loadUrl with cache-buster
-//
-// Step 3 exists because on HarmonyOS WebView (ICL-AL20) neither
-// Capacitor's internal `webView.post(loadUrl(appUrl))` nor JS
-// `window.location.replace` reliably navigate the page after
-// setServerBasePath. The page stays frozen on the previous state with
-// the user stuck on an "installing..." spinner. The plugin's hardReload
-// runs the loadUrl on a UI-thread Runnable with a cache-buster query so
-// the WebView can't dedupe it as "already loading same URL". JS-side
-// reload remains as belt-and-braces in case the plugin call fails.
+// Switch the WebView to the freshly downloaded bundle. Single plugin
+// call by design (see plugin's activate() doc for the HarmonyOS
+// rationale). The plugin resolves immediately and then triggers
+// reload from a UI-thread Runnable, so this await returns *before*
+// the page actually navigates — caller should treat the return as
+// "reload pending" rather than "reload done".
 export async function activateWebBundle(path) {
-  const wv = await capWebView();
   const p = plugin();
-  if (!wv) throw new Error("WebView plugin not available");
-  await wv.setServerBasePath({ path });
-  await wv.persistServerBasePath();
-  await forceReload(p);
+  if (!p) throw new Error("web update not supported on this platform");
+  await p.activate({ path });
 }
 
-// Revert to the APK's bundled assets. Empty path → Capacitor reverts
-// localServer to hostAssets("public") on the next load. Same reload
-// caveat as activateWebBundle.
+// Revert to the APK's bundled assets — empty path tells the plugin to
+// clear the persisted basePath, which makes Capacitor fall back to
+// hostAssets("public") on the next attach.
 export async function resetToBundled() {
-  const wv = await capWebView();
   const p = plugin();
-  if (!wv) throw new Error("WebView plugin not available");
-  await wv.setServerBasePath({ path: "" });
-  await wv.persistServerBasePath();
-  await forceReload(p);
-}
-
-async function forceReload(p) {
-  if (p) {
-    try {
-      await p.hardReload();
-      // hardReload posts the loadUrl on UI thread; that runnable may not
-      // have executed yet when this resolves. Don't return immediately —
-      // a JS-side reload as second wave catches the cases where the post
-      // didn't fire.
-    } catch {
-      // Plugin call failed; fall back to JS.
-    }
-  }
-  // Belt-and-braces: schedule a JS reload too. If hardReload's post
-  // already loaded a new page, this never runs (JS context is dead).
-  // If it didn't, we get a second chance.
-  setTimeout(() => {
-    try {
-      window.location.replace("https://localhost/?ota=" + Date.now());
-    } catch {
-      try { window.location.reload(); } catch { /* give up */ }
-    }
-  }, 200);
+  if (!p) throw new Error("web update not supported on this platform");
+  await p.activate({ path: "" });
 }
 
 // Drop all cached bundles except the currently-active one. Safe to call

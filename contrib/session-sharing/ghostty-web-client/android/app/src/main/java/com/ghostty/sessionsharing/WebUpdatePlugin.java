@@ -211,27 +211,49 @@ public class WebUpdatePlugin extends Plugin {
     }
 
     /**
-     * Force a full WebView reload, posted on the UI thread.
+     * One-shot activate: persist the basePath, swap Capacitor's server,
+     * and reload the WebView in a single plugin call.
      *
-     * <p>Why we need this: on HarmonyOS WebView (ICL-AL20) neither
-     * Capacitor's internal {@code webView.post(loadUrl(appUrl))} fired
-     * by {@code setServerBasePath} nor a JS-side
-     * {@code window.location.replace} actually navigates the page —
-     * the OTA bundle gets unpacked but the page stays frozen. Doing
-     * {@code stopLoading()} + {@code loadUrl} with a cache-buster query
-     * directly from a UI-thread Runnable is the only thing observed to
-     * reliably reload on this device. The cache buster also avoids any
-     * "already loading same URL, dedup" optimisation inside the WebView.
+     * <p>Why one shot: doing this as three separate JS-to-plugin calls
+     * (setServerBasePath / persistServerBasePath / reload) hangs on
+     * HarmonyOS WebView (ICL-AL20). The first call's
+     * {@code webView.post(loadUrl)} occupies the UI thread, which then
+     * cannot deliver the plugin response back to JS, leaving the JS
+     * await on call #1 unresolved forever. Folding everything into a
+     * single UI-thread Runnable resolves the call before any
+     * UI-blocking work begins, so JS isn't waiting on a thread that's
+     * about to navigate away anyway.
+     *
+     * <p>Pass {@code path=""} to revert to the APK-bundled assets
+     * (matches Capacitor's own "empty path = host assets" semantics).
      */
     @PluginMethod
-    public void hardReload(PluginCall call) {
+    public void activate(PluginCall call) {
+        final String path = call.getString("path", "");
+        // Resolve before any UI work — the WebView is about to navigate,
+        // and on HarmonyOS the message-listener reply path needs the UI
+        // thread free to flush; queuing the reload first deadlocks it.
+        call.resolve();
+        // Persist outside UI thread (SharedPreferences.apply is async).
+        android.content.SharedPreferences prefs = getContext().getSharedPreferences(
+            com.getcapacitor.plugin.WebView.WEBVIEW_PREFS_NAME,
+            android.content.Context.MODE_PRIVATE);
+        prefs.edit()
+            .putString(com.getcapacitor.plugin.WebView.CAP_SERVER_PATH, path)
+            .apply();
         final android.webkit.WebView wv = bridge.getWebView();
         final String url = bridge.getLocalUrl();
         wv.post(() -> {
+            // setServerBasePath() updates localServer routing AND posts
+            // a loadUrl of its own. Our stopLoading + cache-buster
+            // loadUrl after that overrides the queued one — the
+            // cache-buster query also avoids HarmonyOS WebView's
+            // "already navigating to same URL, drop" dedupe that was
+            // swallowing reloads in the previous attempt.
+            bridge.setServerBasePath(path);
             wv.stopLoading();
             wv.loadUrl(url + "?ota=" + System.currentTimeMillis());
         });
-        call.resolve();
     }
 
     @PluginMethod

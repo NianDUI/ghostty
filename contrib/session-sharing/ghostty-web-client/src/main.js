@@ -815,6 +815,17 @@ async function installWebUpdate() {
     logEvt("web update activate start");
     await activateWebBundle(result.path);
     logEvt("web update activate returned (reload pending)");
+    // The plugin's activate() resolves immediately then schedules the
+    // reload on the UI thread. Give it ~500ms to fire. If for some
+    // reason the WebView still hasn't navigated, fall back to a JS
+    // reload — at this point JS state (busy, hint) is stale anyway.
+    setTimeout(() => {
+      try {
+        window.location.replace("https://localhost/?ota=" + Date.now());
+      } catch {
+        try { window.location.reload(); } catch { /* give up */ }
+      }
+    }, 500);
     // activateWebBundle posts a reload — execution past here is best-
     // effort; the new JS bundle takes over momentarily.
   } catch (err) {
