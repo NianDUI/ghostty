@@ -163,7 +163,23 @@ const LOW_RES_LEVELS = {
   balanced: 1.5,
   strong: 1.0,
 };
-const LOW_RES_DEFAULT_LEVEL = "off";
+// Platform-aware default: APP / mobile browser get "light" (省电省发热,
+// 几乎无糊感), PC 浏览器原生 DPR 文字最清晰所以 "off"。prefersMobileDefaults
+// 同时也决定下面三个 checkbox 的默认值,保证"环境 → 默认偏好"一致。
+const LOW_RES_DEFAULT_LEVEL = prefersMobileDefaults() ? "light" : "off";
+
+// True when we should ship the mobile-friendly preset on by default.
+// Capacitor 8 with androidScheme:"https" makes location.hostname ===
+// "localhost" inside the APK shell; outside the APK we fall back to a
+// UA hint. Picks up tablets too (iPad/Android tablets get the mobile
+// preset, which matches the touch-input ergonomics they share with phones).
+function prefersMobileDefaults() {
+  if (typeof location !== "undefined" && location.hostname === "localhost") {
+    return true;
+  }
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent ?? "" : "";
+  return /Android|iPhone|iPad|iPod|IEMobile|Mobile|Phone/i.test(ua);
+}
 // Live-mirror mode: when on, we skip the replayBuffer accumulation and
 // the lazy `fetch_scrollback` path entirely. The terminal only renders
 // the host's current viewport plus live deltas. Default off so existing
@@ -182,10 +198,22 @@ const DEBUG_MODE_KEY = "ghostty-sharing-debug";
 backendBaseInput.value =
   localStorage.getItem("ghostty-sharing-backend-base") ?? location.origin;
 tokenInput.value = localStorage.getItem("ghostty-sharing-token") ?? "";
-lockHostSizeInput.checked = localStorage.getItem(LOCK_HOST_SIZE_KEY) === "1";
-desktopWidthInput.checked = localStorage.getItem(DESKTOP_WIDTH_KEY) === "1";
+// Defaults: APP / mobile browser ship the mobile-friendly preset on
+// (lock host size + desktop-width + live-mirror all checked); PC web
+// ships all three off so desktop users keep PTY-follows-viewport and
+// lazy-history scrollback. An explicit "0" stored by a prior toggle
+// still wins, so a user who opted out stays opted out across reloads.
+const defaultsOn = prefersMobileDefaults();
+lockHostSizeInput.checked = readBoolPref(LOCK_HOST_SIZE_KEY, defaultsOn);
+desktopWidthInput.checked = readBoolPref(DESKTOP_WIDTH_KEY, defaultsOn);
 lowResRenderSelect.value = getInitialLowResLevel();
-liveMirrorModeInput.checked = localStorage.getItem(LIVE_MIRROR_KEY) === "1";
+liveMirrorModeInput.checked = readBoolPref(LIVE_MIRROR_KEY, defaultsOn);
+
+function readBoolPref(key, fallback) {
+  const raw = localStorage.getItem(key);
+  if (raw === null) return fallback;
+  return raw === "1";
+}
 
 // Resolve the stored low-res level on boot, applying the legacy
 // migration: the old single-checkbox UI stored "1" (= on, balanced
