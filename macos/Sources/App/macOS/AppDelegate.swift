@@ -1414,9 +1414,9 @@ extension AppDelegate {
         if controllersNeedConfirmation.count == 1 {
             Task {
                 let response = await controllersNeedConfirmation[0].confirmCloseAsync(
-                    messageText: "Quit Ghostty?",
-                    informativeText: "The terminal still has a running process. If you quit, the process will be killed.",
-                    confirmButtonTitle: "Terminate",
+                    messageText: LocalizedString.text("Quit Ghostty?"),
+                    informativeText: LocalizedString.text("The terminal still has a running process. If you quit, the process will be killed."),
+                    confirmButtonTitle: LocalizedString.text("Terminate"),
                 )
 
                 if [.OK, .alertFirstButtonReturn].contains(response) {
@@ -1429,11 +1429,14 @@ extension AppDelegate {
             return .terminateLater
         } else {
             let alert = NSAlert()
-            alert.messageText = "You have \(controllersNeedConfirmation.count) windows with running processes. Do you want to review these windows before quitting?"
-            alert.informativeText = "If you don't review your windows, any running processes will be terminated"
-            alert.addButton(withTitle: "Review Windows...")
-            alert.addButton(withTitle: "Terminate Processes")
-            alert.addButton(withTitle: "Cancel")
+            alert.messageText = LocalizedString.format(
+                "You have %d windows with running processes. Do you want to review these windows before quitting?",
+                controllersNeedConfirmation.count,
+            )
+            alert.informativeText = LocalizedString.text("If you don't review your windows, any running processes will be terminated")
+            alert.addButton(withTitle: LocalizedString.text("Review Windows..."))
+            alert.addButton(withTitle: LocalizedString.text("Terminate Processes"))
+            alert.addButton(withTitle: LocalizedString.text("Cancel"))
             alert.alertStyle = .warning
 
             switch alert.runModal() {
@@ -1452,9 +1455,9 @@ extension AppDelegate {
         Task {
             for controller in controllers {
                 let response = await controller.confirmCloseAsync(
-                    messageText: "Quit Ghostty?",
-                    informativeText: "The terminal still has a running process. If you quit, the process will be killed.",
-                    confirmButtonTitle: "Terminate",
+                    messageText: LocalizedString.text("Quit Ghostty?"),
+                    informativeText: LocalizedString.text("The terminal still has a running process. If you quit, the process will be killed."),
+                    confirmButtonTitle: LocalizedString.text("Terminate"),
                 )
 
                 if [.OK, .alertFirstButtonReturn].contains(response) {

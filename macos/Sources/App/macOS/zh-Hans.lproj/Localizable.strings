@@ -83,6 +83,12 @@
 "All terminal sessions will be terminated." = "所有终端会话将被终止。";
 "Close Ghostty" = "退出 Ghostty";
 "Cancel" = "取消";
+"Terminate" = "终止";
+"The terminal still has a running process. If you quit, the process will be killed." = "终端中仍有进程在运行。如果退出，该进程将被终止。";
+"You have %d windows with running processes. Do you want to review these windows before quitting?" = "您有 %d 个窗口中有进程在运行。退出前是否要逐个查看这些窗口？";
+"If you don't review your windows, any running processes will be terminated" = "如果不查看这些窗口，所有正在运行的进程都将被终止";
+"Review Windows..." = "查看窗口…";
+"Terminate Processes" = "终止进程";
 "OK" = "好";
 "Allow" = "允许";
 "Don't Allow" = "不允许";

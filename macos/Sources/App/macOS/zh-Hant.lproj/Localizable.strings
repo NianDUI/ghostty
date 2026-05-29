@@ -83,6 +83,12 @@
 "All terminal sessions will be terminated." = "所有終端機作業階段將被終止。";
 "Close Ghostty" = "離開 Ghostty";
 "Cancel" = "取消";
+"Terminate" = "終止";
+"The terminal still has a running process. If you quit, the process will be killed." = "終端機仍有執行中的程序。如果離開，該程序將被終止。";
+"You have %d windows with running processes. Do you want to review these windows before quitting?" = "您有 %d 個視窗中有執行中的程序。離開前是否要逐個檢視這些視窗？";
+"If you don't review your windows, any running processes will be terminated" = "如果不檢視這些視窗，所有執行中的程序都將被終止";
+"Review Windows..." = "檢視視窗…";
+"Terminate Processes" = "終止程序";
 "OK" = "好";
 "Allow" = "允許";
 "Don't Allow" = "不允許";
