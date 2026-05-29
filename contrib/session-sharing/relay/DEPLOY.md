@@ -266,6 +266,31 @@ The reverse proxy must forward:
 - `/ws/client`
 - static browser assets if you serve them from the relay
 
+### TLS: letsencrypt vs self-signed + trust anchor pin
+
+`nginx.conf.example` ships **layout (B), self-signed + trust anchor pin**
+by default because that is what the upstream maintainer deploys. Two
+layouts are supported and you should pick one before deploying:
+
+- **Layout (A) — letsencrypt.** Use when the host has a public domain
+  and port 80 is reachable from the public internet so HTTP-01
+  challenges succeed. Set `server_name` to the real domain, point the
+  `ssl_certificate*` directives at the live cert. This is the most
+  common choice for typical cloud deployments.
+- **Layout (B) — self-signed + trust anchor pin.** Use when HTTP-01 is
+  not reachable. The Android APK already pins the upstream maintainer's
+  self-signed CA via Network Security Config; desktop browsers can add
+  the CA as a trust anchor to skip the "unknown issuer" warning. Cert
+  validity is 10 years, SAN must list both the domain and the server IP.
+  See `contrib/session-sharing/ghostty-web-client/CLAUDE.md` ("TLS"
+  section) for the full decision rationale, the openssl generation
+  recipe, and the per-OS trust-anchor install commands.
+
+The default `nginx.conf.example` listens on **port 28443** (matches the
+upstream deployment, which uses a non-standard HTTPS port to bypass an
+upstream SNI inspector). If you control your network and prefer 443,
+change both `listen` lines.
+
 ## Notes
 
 - Do not expose the Python process directly on the public Internet if you can avoid it.

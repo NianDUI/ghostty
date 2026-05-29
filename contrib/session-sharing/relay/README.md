@@ -48,7 +48,8 @@ Recommended production path:
 - terminate TLS at Nginx or Caddy
 - expose only `https://` and `wss://` publicly
 
-See [DEPLOY.md](DEPLOY.md) for the full Linux deployment flow.
+See [DEPLOY.md](DEPLOY.md) for the full Linux deployment flow, including
+the TLS layout choice (letsencrypt vs self-signed + trust anchor pin).
 
 ## Notes
 
