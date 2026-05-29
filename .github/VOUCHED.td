@@ -46,6 +46,7 @@ anmitalidev
 anthonyzhoon
 athaapa
 atomk
+b0uks
 b1nar10
 balazs-szucs
 barutsrb
@@ -68,6 +69,7 @@ cmwetherell
 crayxt
 craziestowl
 curtismoncoq
+-cznorth Automated advertising + likely AI communication
 d-dudas
 -daedaevibin
 daiimus
@@ -94,6 +96,7 @@ elias8
 -enkr1
 enzowilliam
 ephemera
+-eric-assetpass Try talking, not botting
 eriksremess
 erral
 -f1813483-netizen
@@ -155,6 +158,7 @@ kristofersoler
 kylesower
 laxystem
 lebdron
+lepips
 liby
 linustalacko
 lonsagisawa
@@ -175,10 +179,12 @@ michielvk
 miguelelgallo
 mihi314
 mikailmm
+minorcell
 misairuzame
 mischief
 mitchellh
 miupa
+mjbommar
 mohshami
 molechowski
 moonmao42
@@ -192,6 +198,7 @@ neo773
 neurosnap
 nicholas-ochoa
 nicosuave
+nikicat
 nmggithub
 noib3
 nolinmcfarland
@@ -218,6 +225,7 @@ puzza007
 qwerasd205
 raphamorim
 reo101
+rewdy
 rgehan
 rhodes-b
 rightaditya
