@@ -20,7 +20,16 @@
 - `index.html` 不带 hash，CDN / 浏览器易缓存 → `Cmd+Shift+R` 强刷或
   CDN 给 `index.html` 加 `Cache-Control: no-cache`。
 
-## Relay 部署 (`relay/deploy.sh`)
+## Relay 部署 (`relay/deploy.sh` — Python；Go 见下)
+
+> **生产现状（2026-06 起）**：生产机 `47.94.215.160` 已从 Python 版切到 **Go 版**
+> （`relay-go/`，一比一复刻）。下面这些 Python 版（`relay/`）的运维要点**仍然适用**
+> ——env 文件、PrivateTmp、健康检查端口、反代 body size 都一样，Go 复用同一份
+> `/etc/ghostty-relay.env`——但**部署 / 回滚走 `relay-go/`**：见
+> [`relay-go/DEPLOY.md`](relay-go/DEPLOY.md)「从 Python 版切换 / 回滚」。关键差异：
+> `relay-go/deploy.sh` 推的是**交叉编译的二进制**（不是 .py），且**不改 unit 的
+> `ExecStart`**，切换/回滚要手动改那一行。Python 版保留作回滚目标，旧 unit 备份在
+> `/etc/systemd/system/ghostty-relay.service.bak-python`。
 
 - 默认只推 `server.py` + `systemctl restart`；推全目录用 `--all`。
 - restart < 1 秒；已有 session 走 4408 / 网络错误 reconnect 自愈，

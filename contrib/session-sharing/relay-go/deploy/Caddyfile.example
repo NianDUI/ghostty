@@ -1,0 +1,15 @@
+# Identical to the Python relay's Caddyfile.example — the Go relay listens on
+# the same 127.0.0.1:18080 upstream, so the reverse-proxy config is unchanged.
+relay.example.com {
+    # Caddy's reverse_proxy already appends the client IP to X-Forwarded-For.
+    # The relay must be started with GHOSTTY_RELAY_TRUSTED_PROXIES=127.0.0.1
+    # so that header is honored — otherwise the rate limiter only ever sees
+    # this Caddy instance's loopback address.
+    #
+    # Caddy has no Nginx-style client_max_body_size cap, so PUT and PATCH
+    # uploads (default per-chunk 16 MiB, single-shot up to 100 MiB) pass
+    # through unchanged. The relay does its own size enforcement.
+    reverse_proxy /ws/agent 127.0.0.1:18080
+    reverse_proxy /ws/client 127.0.0.1:18080
+    reverse_proxy 127.0.0.1:18080
+}

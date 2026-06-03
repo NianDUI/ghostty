@@ -1,0 +1,26 @@
+[Unit]
+Description=Ghostty Session Sharing Relay (Go)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ghostty-relay
+Group=ghostty-relay
+WorkingDirectory=/opt/ghostty-session-sharing
+EnvironmentFile=/etc/ghostty-relay.env
+# The Go relay is a single self-contained binary — no python3 interpreter.
+# ExecStart points at the deployed `ghostty-relay` binary (built/rsynced by
+# deploy.sh). Make sure the binary matches the host's CPU architecture
+# (usually linux/amd64); see DEPLOY.md "交叉编译".
+ExecStart=/opt/ghostty-session-sharing/contrib/session-sharing/relay-go/ghostty-relay
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ghostty-relay
+
+[Install]
+WantedBy=multi-user.target

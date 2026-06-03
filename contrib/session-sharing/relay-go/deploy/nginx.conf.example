@@ -1,0 +1,105 @@
+# Two TLS layouts are supported. Pick one before deploying:
+#
+# (A) letsencrypt (default for hosts with a public domain + reachable port
+#     80 for HTTP-01 challenges). Set `server_name` to your real domain,
+#     point `ssl_certificate` / `ssl_certificate_key` at the live cert.
+#
+# (B) self-signed + client trust anchor pin (used when HTTP-01 is not
+#     reachable — e.g. ICP-unregistered hosts whose access layer drops or
+#     403s port 80, leaving certbot with no working challenge). Generate
+#     a 10-year cert whose SAN lists both your domain and your server IP,
+#     pin it in the Android APK via NSC and have desktop users add a
+#     trust anchor. See contrib/session-sharing/ghostty-web-client/CLAUDE.md
+#     ("TLS" section) for the full decision, generation recipe, and
+#     trust-anchor install commands.
+#
+# The block below ships layout (B) as the default because it matches the
+# upstream maintainer's deployment. To switch to (A), set `server_name`
+# to your domain and swap the two `ssl_certificate*` lines below for the
+# letsencrypt paths shown in the comments.
+#
+# The default port is 28443 (matches the upstream deployment, which uses
+# a non-standard HTTPS port to bypass an upstream SNI inspector). If you
+# control your network and prefer 443, change both `listen` lines.
+#
+# NOTE: This is identical to the Python relay's nginx.conf.example. The Go
+# relay listens on the same 127.0.0.1:18080 upstream and serves the same
+# routes, so the reverse-proxy config does not change between the two.
+
+server {
+    listen 28443 ssl http2 default_server;
+    listen [::]:28443 ssl http2 default_server;
+    # `server_name _` + `default_server` lets both domain access and raw
+    # IP access land on the same vhost and the same cert (the self-signed
+    # cert's SAN carries both DNS:<domain> and IP:<address>). For a
+    # letsencrypt deployment, set this to your specific domain.
+    server_name _;
+
+    # Layout (B), self-signed:
+    ssl_certificate     /etc/nginx/ghostty-selfsigned.crt;
+    ssl_certificate_key /etc/nginx/ghostty-selfsigned.key;
+    # Layout (A), letsencrypt — uncomment instead of the two lines above:
+    #ssl_certificate     /etc/letsencrypt/live/relay.example.com/fullchain.pem;
+    #ssl_certificate_key /etc/letsencrypt/live/relay.example.com/privkey.pem;
+
+    # Each location below sets X-Forwarded-For. For that header to actually
+    # drive per-client rate limits and access logs, the relay must be started
+    # with GHOSTTY_RELAY_TRUSTED_PROXIES=127.0.0.1 (the address Nginx connects
+    # from). Without that, the relay treats every request as coming from this
+    # Nginx instance and the rate limit collapses into one global bucket.
+
+    # Admin endpoints are served on a separate loopback listener
+    # (GHOSTTY_RELAY_ADMIN_PORT). Belt-and-suspenders: refuse them here too,
+    # so operator state never leaks even if the relay is later started without
+    # the dedicated admin listener.
+    location ~ ^/(healthz|readyz|metrics)$ {
+        return 404;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:18080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # File upload endpoints. The default Nginx client_max_body_size of 1 MiB
+    # would cap PUT (single-shot) and PATCH (per-chunk) bodies, so override
+    # it to fit GHOSTTY_RELAY_UPLOAD_MAX_BYTES (PUT) and
+    # DEFAULT_UPLOAD_PATCH_MAX_BYTES (PATCH, 16 MiB). The longer
+    # read/send timeouts give large chunks time to traverse the wire on
+    # high-latency links without Nginx terminating an otherwise-healthy
+    # upload mid-stream.
+    location ~ ^/api/upload/ {
+        proxy_pass http://127.0.0.1:18080;
+        proxy_http_version 1.1;
+        proxy_request_buffering off;
+        client_max_body_size 128m;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /ws/agent {
+        proxy_pass http://127.0.0.1:18080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /ws/client {
+        proxy_pass http://127.0.0.1:18080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
