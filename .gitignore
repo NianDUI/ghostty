@@ -32,3 +32,6 @@ vgcore.*
 # LLVM/Clang code-coverage profile dumps emitted into the working tree
 *.profraw
 
+# Playwright MCP session artifacts (fork-local tooling)
+.playwright-mcp/
+
