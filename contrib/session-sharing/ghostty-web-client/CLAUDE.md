@@ -476,7 +476,10 @@ dist v0.4.0 dirty tracking 在快速 burst 下偶尔漏标已覆盖的 row → �
 ### forceAll 帧再加 `renderer.clear()` + `scrollToBottom`
 
 forceAll 帧内,先 `renderer.clear()` 做整屏 fillRect 再调 dist render;
-若 `viewportY !== 0` 顺手 `scrollToBottom()` reanchor。
+若 `userFollowBottom && viewportY !== 0` 顺手 `scrollToBottom()` reanchor。
+follow gate 是后加的:用户滚进历史时 `viewportY > 0` 是有意状态,混画
+scrollback+active 正是 scrolled-up 视图的正确画面,无条件 reanchor 会让
+每次 snapshot/hello/appearance 触发的 forceAll 把读历史的用户拽回底部。
 
 **Why**:
 
@@ -503,6 +506,40 @@ forceAll 帧内,先 `renderer.clear()` 做整屏 fillRect 再调 dist render;
   用 `forcePaintUntil` 窗口处理,不要污染 write wrap
 - ❌ `FORCE_PAINT_WINDOW_MS` 拉到 5s+ "保险一些":窗口期 cap DPR 失效,
   长 burst 用户感到轻微发热
+
+## Follow-mode（`userFollowBottom`)与 dist buffer stub 坑
+
+「向上滚看历史后,新内容不把用户拽回底部」靠模块级 `userFollowBottom`
+状态机:touch 滚动 / scrollbar lane 拖动后 `userFollowBottom = isAtBottom()`;
+write wrap 在 `!userFollowBottom` 时补偿 dist 内部的无条件
+`viewportY !== 0 && scrollToBottom()`(dist 行 2390)并按 baseY 增量
+restore viewportY。恢复 follow 的入口只有用户意图:sendInput(打字)、
+工具栏按键、mobileInput focus、connectToSession(新会话)。
+
+**dist stub 坑(本节存在的原因)**:ghostty-web v0.4.0 的
+`terminal.buffer.active` 是 stub —— `viewportY` 和 `baseY` getter 都
+写死 `return 0`。任何用 `buf.viewportY === buf.baseY` 判断"在底部"的
+代码恒得 true。曾让 `isAtBottom()` 在「host 网格比 viewport 矮(pan 轴
+无行程)」时恒判在底部 → follow 永远不解除 → 每个 binary frame 把读
+历史的用户拽回底部。**判断 wasm 轴滚动位置一律用
+`terminal.getViewportY()`(0 = live,>0 = 滚进历史,平滑滚动中可为小数),
+不要读 buffer.active**。升包时确认 stub 是否仍是 stub。
+
+**snapshot 不再无条件 re-anchor**:agent 在重连(nginx idle timeout 在
+host 安静时掐 WS,agent 下次发送才察觉 —— 即「恰好有新输出时」)和任意
+client join 时都会重发 screen snapshot 并被 relay 广播给所有客户端。
+`applyScreenSnapshot` 只在 `userFollowBottom` 时滚底(经由
+`scrollTerminalToBottom` 内部 guard),读历史的用户位置由 write wrap 保住。
+
+**反模式**:
+
+- ❌ snapshot 路径恢复 `userFollowBottom = true`(旧行为)。重连伪装成
+  "新内容到达",用户体感是"一有变更就被拽回",scrollback 不可用。
+- ❌ 在 `terminal.onScroll` 订阅里重算 follow。dist 内部 write →
+  scrollToBottom 也 fire scrollEmitter,程序性滚动会把 follow 误置回
+  true,恰好抵消 write wrap 的 restore。
+- ❌ 新加滚动入口(手势/按钮/快捷键)后忘记 `userFollowBottom =
+  isAtBottom()`。scrollbar lane 曾漏过这个,症状同 stub 坑。
 
 ## Desktop-width pan momentum
 

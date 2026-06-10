@@ -1562,7 +1562,13 @@ function schedulePaint(force = false) {
         // smooth-scroll target can't leave the renderer drawing
         // scrollback + active mixed (dist render line 1431 splits
         // the visible rows between buffers when viewportY > 0).
-        if (terminal.viewportY !== 0) terminal.scrollToBottom?.();
+        // Followers only: when the user scrolled into history,
+        // viewportY > 0 is intentional and the mixed render IS the
+        // correct scrolled-up view — reanchoring here would yank
+        // them on every forceAll (snapshot / hello / appearance).
+        if (userFollowBottom && terminal.viewportY !== 0) {
+          terminal.scrollToBottom?.();
+        }
         renderer.clear();
       }
       renderer.render(
@@ -2803,16 +2809,23 @@ function applyScreenSnapshot(frame) {
   // could be stale (Android backgrounded WebView, driver page reuse,
   // ctx state from a recent renderer.resize).
   scheduleFullPaint();
-  // Snapshot is a re-anchor checkpoint — restore follow-mode even if
-  // the user had scrolled into history before. The accompanying scroll
-  // below then runs without being short-circuited by !userFollowBottom.
-  userFollowBottom = true;
-  // When the locked host grid is taller than the mobile viewport
-  // (e.g. host 46 rows in a 33-row visible window), the snapshot
-  // lands but xterm's viewport stays at the top → the user sees the
-  // top portion of the grid, cursor is clipped below. Re-anchor to
-  // the bottom so the live area (where new content lands) is in
-  // view.
+  // Snapshot is a re-anchor checkpoint for FOLLOWERS only. Snapshots
+  // are not just a connect-time event: the agent re-emits one on every
+  // reconnect (nginx's idle timeout drops the agent WS while the host
+  // is quiet, and the agent only notices when it next tries to send —
+  // i.e. exactly when new output appears) and the relay broadcasts it
+  // to every online client when anyone joins. Yanking a user who is
+  // reading history on each of those made scrollback unusable, so
+  // preserve their position — the terminal.write above already
+  // restored viewportY via the write wrap when !userFollowBottom.
+  //
+  // When the user IS following and the locked host grid is taller
+  // than the mobile viewport (e.g. host 46 rows in a 33-row visible
+  // window), the snapshot lands but xterm's viewport stays at the
+  // top → the user sees the top portion of the grid, cursor is
+  // clipped below. Re-anchor to the bottom so the live area (where
+  // new content lands) is in view. scrollTerminalToBottom is a no-op
+  // for !userFollowBottom, so the call is naturally scoped.
   if (shouldUseMobileInput()) {
     requestMobileBottomScroll();
   }
@@ -3173,8 +3186,18 @@ let userFollowBottom = true;
 
 function isAtBottom() {
   if (!terminal) return true;
-  const buf = terminal.buffer?.active;
-  const wasmAtBottom = !buf || buf.viewportY === buf.baseY;
+  // ghostty-web v0.4.0's buffer.active getters are stubs — viewportY
+  // and baseY are both hardcoded `return 0`, so comparing them always
+  // reported "at bottom". Whenever the pan axis had no range either
+  // (host grid shorter than the viewport), follow-mode could never
+  // disengage and every binary frame yanked the user out of history.
+  // Read the terminal's real scroll offset instead: 0 = live screen,
+  // >0 = rows into history (fractional mid smooth-scroll).
+  const viewportY =
+    typeof terminal.getViewportY === "function"
+      ? terminal.getViewportY()
+      : (terminal.viewportY ?? 0);
+  const wasmAtBottom = viewportY <= 0;
   const panMax = maxDesktopPanY();
   const panAtBottom = panMax <= 0 || desktopPanY === panMax;
   return wasmAtBottom && panAtBottom;
@@ -3708,6 +3731,10 @@ terminalMount.addEventListener(
             touch.clientY,
           ),
         );
+        // The jump moved the wasm viewport — recompute follow-mode so
+        // the next binary frame doesn't yank the user back to the
+        // bottom (same policy as the swipe-scroll paths).
+        userFollowBottom = isAtBottom();
       }
       return;
     }
@@ -3759,6 +3786,10 @@ terminalMount.addEventListener(
             touch.clientY,
           ),
         );
+        // Same as the swipe paths: the drag moved the wasm viewport,
+        // recompute follow-mode (dragging back to the bottom of the
+        // lane restores follow automatically).
+        userFollowBottom = isAtBottom();
       }
       if (event.cancelable) event.preventDefault();
       return;
