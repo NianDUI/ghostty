@@ -1622,23 +1622,29 @@ function installOnDemandRender(t) {
     // inside — every write yanks the user back to the live area, even
     // if they're actively reading scrollback. Compensate when the
     // user has opted into history (userFollowBottom === false):
-    //   1. snapshot viewportY (rows above bottom) + baseY (live row)
+    //   1. snapshot viewportY (rows above bottom) + scrollback length
     //   2. let dist write; it will reset viewportY to 0
-    //   3. baseY just grew by N; restore viewportY to oldViewportY+N
-    //      so the visible window stays anchored to the same buffer
-    //      lines (cap to scrollbackLength so we don't overshoot the
-    //      buffer if rows fell off the top).
+    //   3. the write pushed N rows off the live screen into history
+    //      (scrollback grew by N), so the lines the user was reading
+    //      sit N rows further from the bottom; restore viewportY to
+    //      oldViewportY+N to keep the visible window anchored.
+    // buffer.active.baseY is NOT usable for the delta — it's a stub
+    // hardcoded to 0 in ghostty-web v0.4.0 (same trap as isAtBottom),
+    // which made delta always 0 and the view drift up one row per new
+    // host line. A saturated scrollback ring under-reports the delta
+    // (oldest rows fall off as new ones enter), drifting the anchor at
+    // worst — the Math.min cap below bounds it the same way the old
+    // baseY math intended.
     // userFollowBottom = true → original behaviour (dist's scroll
     // wins, snapshot of new content visible immediately).
     if (!userFollowBottom) {
       const oldViewportY = t.viewportY ?? 0;
-      const oldBaseY = t.buffer?.active?.baseY ?? 0;
+      const oldScrollback = t.getScrollbackLength?.() ?? 0;
       const ret = origWrite(data, callback);
-      const newBaseY = t.buffer?.active?.baseY ?? 0;
-      const delta = newBaseY - oldBaseY;
+      const newScrollback = t.getScrollbackLength?.() ?? 0;
+      const delta = newScrollback - oldScrollback;
       const desired = oldViewportY + Math.max(0, delta);
-      const maxOffset = t.getScrollbackLength?.() ?? desired;
-      const restored = Math.min(desired, maxOffset);
+      const restored = Math.min(desired, newScrollback);
       if (restored !== t.viewportY) {
         t.viewportY = restored;
       }

@@ -512,9 +512,12 @@ scrollback+active 正是 scrolled-up 视图的正确画面,无条件 reanchor �
 「向上滚看历史后,新内容不把用户拽回底部」靠模块级 `userFollowBottom`
 状态机:touch 滚动 / scrollbar lane 拖动后 `userFollowBottom = isAtBottom()`;
 write wrap 在 `!userFollowBottom` 时补偿 dist 内部的无条件
-`viewportY !== 0 && scrollToBottom()`(dist 行 2390)并按 baseY 增量
-restore viewportY。恢复 follow 的入口只有用户意图:sendInput(打字)、
-工具栏按键、mobileInput focus、connectToSession(新会话)。
+`viewportY !== 0 && scrollToBottom()`(dist 行 2390)并按
+**`getScrollbackLength()` 增量** restore viewportY(新行推 N 行进
+scrollback → viewportY+N 才停在原内容上;**不能**用 baseY 差值,见下面
+stub 坑——曾因此"每来一行新输出画面上移一行")。恢复 follow 的入口只有
+用户意图:sendInput(打字)、工具栏按键、mobileInput focus、
+connectToSession(新会话)。
 
 **dist stub 坑(本节存在的原因)**:ghostty-web v0.4.0 的
 `terminal.buffer.active` 是 stub —— `viewportY` 和 `baseY` getter 都
