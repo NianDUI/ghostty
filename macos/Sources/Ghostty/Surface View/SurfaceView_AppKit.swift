@@ -380,6 +380,19 @@ extension Ghostty {
 
             // The UTTypes that can be dragged onto this view.
             registerForDraggedTypes(Array(Self.dropTypes))
+
+            // A sharing session may have just asked the host to create
+            // this surface (create_session control frame). The window
+            // and tab creation paths hand the new view to AppKit via
+            // notification plumbing with no return value to capture, so
+            // the requester arms a one-shot instead and the next surface
+            // to initialize consumes it (and starts sharing itself).
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let handler = SessionSharingPendingAutoShare.consume()
+                else { return }
+                handler(self)
+            }
         }
 
         required init?(coder: NSCoder) {
@@ -429,6 +442,21 @@ extension Ghostty {
         @discardableResult
         func resumeSessionSharingIfPossible() -> Bool {
             return sessionSharing.resumeFromPersistedConfig()
+        }
+
+        /// Start sharing on behalf of a remote create_session request,
+        /// using the requesting session's live relay/token. Returns the
+        /// new session id, nil when this surface is already sharing.
+        func startSessionSharingFromRemoteCreate(
+            relay: String,
+            userToken: String,
+            uploadEnabled: Bool
+        ) -> String? {
+            sessionSharing.startForRemoteCreate(
+                relay: relay,
+                userToken: userToken,
+                uploadEnabled: uploadEnabled
+            )
         }
 
         /// Disable upload acceptance for the current share session.
@@ -1980,6 +2008,33 @@ private func sessionSharingOutputCallback(
     controller.enqueueOutgoing(data)
 }
 
+/// One-shot bridge for "create a surface and immediately share it"
+/// (the create_session control frame). The requesting session's
+/// controller arms it right before triggering a new_window/new_tab/
+/// split binding action; the next SurfaceView to initialize consumes
+/// it on the main thread. The TTL bounds the blast radius when surface
+/// creation fails: a surface the user creates by hand seconds later
+/// won't accidentally start sharing. Main thread only.
+enum SessionSharingPendingAutoShare {
+    private static var armedAt: Date?
+    private static var handler: ((Ghostty.SurfaceView) -> Void)?
+    private static let ttl: TimeInterval = 5
+
+    static func arm(_ callback: @escaping (Ghostty.SurfaceView) -> Void) {
+        armedAt = Date()
+        handler = callback
+    }
+
+    static func consume() -> ((Ghostty.SurfaceView) -> Void)? {
+        defer {
+            armedAt = nil
+            handler = nil
+        }
+        guard let armedAt, Date().timeIntervalSince(armedAt) < ttl else { return nil }
+        return handler
+    }
+}
+
 private final class SessionSharingController {
     private struct SharedResizeCheckpoint: Equatable {
         let cols: Int
@@ -2072,6 +2127,109 @@ private final class SessionSharingController {
             uploadEnabled: persisted.webUploadEnabled
         )
         return true
+    }
+
+    /// Start sharing a surface that was just created on behalf of a
+    /// remote client (create_session). Mirrors the resume path but uses
+    /// the live relay/token of the requesting session, so it works even
+    /// when the user never persisted a config. Returns the new session
+    /// id, nil when this surface is already sharing.
+    func startForRemoteCreate(
+        relay: String,
+        userToken: String,
+        uploadEnabled: Bool
+    ) -> String? {
+        guard let surfaceView else { return nil }
+        if surfaceView.sharingState.isActive { return nil }
+        startSharing(
+            relay: relay,
+            userToken: userToken,
+            sessionName: "",
+            persistConfig: true,
+            uploadEnabled: uploadEnabled
+        )
+        return sessionID
+    }
+
+    /// Remote "create_session": open a new surface anchored to this one
+    /// and share it with this session's live relay/token. The one-shot
+    /// must be armed before triggering the action because the window and
+    /// tab paths build the new SurfaceView through notification plumbing
+    /// — there is no return value to capture. Main thread only.
+    private func createSessionOnHost(mode: SessionSharingCreateSessionMode) {
+        guard let surface = surfaceView?.surface else { return }
+        let relay = relayAddress
+        let token = userToken
+        guard !relay.isEmpty, !token.isEmpty else { return }
+        let uploadEnabled = uploadPolicy.enabled
+        SessionSharingPendingAutoShare.arm { [weak self] newView in
+            guard let self,
+                  let newSessionID = newView.startSessionSharingFromRemoteCreate(
+                      relay: relay,
+                      userToken: token,
+                      uploadEnabled: uploadEnabled
+                  )
+            else { return }
+            self.sendSessionCreatedIfPossible(newSessionID: newSessionID)
+        }
+        switch mode {
+        case .window:
+            performBindingAction("new_window", on: surface)
+        case .tab:
+            performBindingAction("new_tab", on: surface)
+        case .splitRight:
+            ghostty_surface_split(surface, GHOSTTY_SPLIT_DIRECTION_RIGHT)
+        case .splitDown:
+            ghostty_surface_split(surface, GHOSTTY_SPLIT_DIRECTION_DOWN)
+        }
+    }
+
+    private func performBindingAction(_ action: String, on surface: ghostty_surface_t) {
+        _ = ghostty_surface_binding_action(
+            surface,
+            action,
+            UInt(action.lengthOfBytes(using: .utf8))
+        )
+    }
+
+    /// Tell this (anchor) session's clients that the surface they asked
+    /// for is up, carrying the new session id so the web client can jump
+    /// straight to it. The frame can sit in the relay backlog until the
+    /// next screen checkpoint prunes it, so the web side must dedupe by
+    /// the new session id.
+    private func sendSessionCreatedIfPossible(newSessionID: String) {
+        guard let webSocket else { return }
+        struct Frame: Codable {
+            let type: String
+            let sessionId: String
+            let newSessionId: String
+
+            enum CodingKeys: String, CodingKey {
+                case type
+                case sessionId = "session_id"
+                case newSessionId = "new_session_id"
+            }
+        }
+        let frame = Frame(
+            type: "session_created",
+            sessionId: sessionID,
+            newSessionId: newSessionID
+        )
+        guard let data = try? JSONEncoder().encode(frame),
+              let text = String(data: data, encoding: .utf8) else { return }
+        webSocket.send(.string(text)) { _ in }
+    }
+
+    /// Remote "close_session": the app-side user already confirmed, so
+    /// close the mac surface without the local "process is running"
+    /// alert. Stop sharing first so the relay drops the session right
+    /// away instead of waiting out the agent-offline grace. Main thread
+    /// only.
+    private func closeHostSurface() {
+        guard let view = surfaceView else { return }
+        let controller = view.window?.windowController as? BaseTerminalController
+        stopSharing(userInitiated: true)
+        controller?.closeSurface(view, withConfirmation: false)
     }
 
     func stopSharing(userInitiated: Bool) {
@@ -2512,6 +2670,18 @@ private final class SessionSharingController {
             sendScrollbackResponseIfPossible(before: before, count: count)
             return true
 
+        case .createSession(let mode):
+            DispatchQueue.main.async { [weak self] in
+                self?.createSessionOnHost(mode: mode)
+            }
+            return true
+
+        case .closeSession:
+            DispatchQueue.main.async { [weak self] in
+                self?.closeHostSurface()
+            }
+            return true
+
         case .handleUploadReady(let envelope):
             // The relay has staged a browser-side upload and is asking us
             // to pull it. Hand off to the upload manager; it owns policy,
@@ -2664,6 +2834,8 @@ enum SessionSharingInboundFrameAction: Equatable {
     case clientConnected
     case fetchScrollback(before: Int, count: Int)
     case handleUploadReady(SessionSharingUploadReadyEnvelope)
+    case createSession(mode: SessionSharingCreateSessionMode)
+    case closeSession
 
     static func parse(text: String, sessionID: String) -> Self {
         guard let data = text.data(using: .utf8),
@@ -2701,12 +2873,33 @@ enum SessionSharingInboundFrameAction: Equatable {
                 return .handleUploadReady(envelope)
             }
             return .ignore
+        case "create_session":
+            // mode is validated against the enum so a malformed frame
+            // can't trigger surface creation; consume (.ignore) rather
+            // than letting the JSON leak into the terminal.
+            if let raw = frame.mode,
+               let mode = SessionSharingCreateSessionMode(rawValue: raw) {
+                return .createSession(mode: mode)
+            }
+            return .ignore
+        case "close_session":
+            return .closeSession
         case "hello", "pong", "scrollback":
             return .ignore
         default:
             return .forwardToTerminal
         }
     }
+}
+
+/// How a remotely requested surface opens relative to the surface that
+/// received the create_session frame: tab joins its window, splits
+/// divide the surface itself.
+enum SessionSharingCreateSessionMode: String, Equatable {
+    case window
+    case tab
+    case splitRight = "split_right"
+    case splitDown = "split_down"
 }
 
 enum SessionSharingRelayURLBuilder {
@@ -3563,6 +3756,7 @@ private struct SessionSharingInboundControlFrame: Codable {
     let rows: Int?
     let before: Int?
     let count: Int?
+    let mode: String?
 }
 
 /// Relay → agent: a browser-uploaded file is staged on the relay and the

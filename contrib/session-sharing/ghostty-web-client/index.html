@@ -201,7 +201,6 @@
         color: #a39e95;
       }
 
-
       label {
         display: block;
         font-size: 12px;
@@ -400,8 +399,12 @@
       }
 
       @keyframes icon-spin {
-        from { transform: rotate(0deg); }
-        to   { transform: rotate(360deg); }
+        from {
+          transform: rotate(0deg);
+        }
+        to {
+          transform: rotate(360deg);
+        }
       }
 
       .hidden {
@@ -482,6 +485,77 @@
       .mobile-upload-launcher .upload-launcher-glyph {
         font-size: 14px;
         line-height: 1;
+      }
+
+      /* Session actions (create / close host surface): bottom sheet
+         opened by long-pressing (or right-clicking) an online session
+         in the launcher list. */
+      .session-actions-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 9000;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.5);
+      }
+
+      .session-actions-modal.hidden {
+        display: none;
+      }
+
+      .session-actions-sheet {
+        width: min(100%, 480px);
+        margin: 0 12px calc(env(safe-area-inset-bottom, 0px) + 12px);
+        padding: 16px;
+        border-radius: 16px;
+        background: rgba(30, 26, 22, 0.97);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.4);
+        color: #f5f0e8;
+      }
+
+      .session-actions-sheet h3 {
+        margin: 0 0 8px;
+        font-size: 15px;
+      }
+
+      .session-actions-hint {
+        margin: 0 0 10px;
+        font-size: 12px;
+        color: rgba(245, 240, 232, 0.65);
+      }
+
+      .session-actions-hint.danger {
+        color: #ff9b8a;
+      }
+
+      .session-actions-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .session-actions-sheet button {
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(60, 54, 46, 0.9);
+        color: #f5f0e8;
+        font-size: 13px;
+      }
+
+      .session-actions-sheet .session-actions-danger {
+        width: 100%;
+        margin-bottom: 8px;
+        background: rgba(122, 40, 32, 0.9);
+        border-color: rgba(255, 120, 100, 0.35);
+      }
+
+      .session-actions-sheet .session-actions-cancel {
+        width: 100%;
+        background: transparent;
       }
 
       .upload-toast-stack {
@@ -790,7 +864,6 @@
              idle. */
         }
       }
-
     </style>
   </head>
   <body>
@@ -901,7 +974,11 @@
                 <span class="apk-version-label">服务器最新：</span>
                 <span id="apkServerVersion">检查中…</span>
               </div>
-              <button id="checkApkVersionBtn" type="button" class="apk-check-btn">
+              <button
+                id="checkApkVersionBtn"
+                type="button"
+                class="apk-check-btn"
+              >
                 立即检查更新
               </button>
             </div>
@@ -915,10 +992,20 @@
                 <span id="webServerVersion">检查中…</span>
               </div>
               <div class="web-update-actions">
-                <button id="installWebUpdateBtn" type="button" class="apk-check-btn" disabled>
+                <button
+                  id="installWebUpdateBtn"
+                  type="button"
+                  class="apk-check-btn"
+                  disabled
+                >
                   下载并安装 Web 更新
                 </button>
-                <button id="resetWebBundleBtn" type="button" class="apk-check-btn secondary" disabled>
+                <button
+                  id="resetWebBundleBtn"
+                  type="button"
+                  class="apk-check-btn secondary"
+                  disabled
+                >
                   恢复内置 Web
                 </button>
               </div>
@@ -1014,14 +1101,59 @@
         </div>
       </div>
     </div>
-    <div id="apkForceModal" class="apk-force-modal hidden" role="dialog" aria-modal="true">
+    <div
+      id="sessionActionsModal"
+      class="session-actions-modal hidden"
+      role="dialog"
+      aria-modal="true"
+      aria-label="会话操作"
+    >
+      <div class="session-actions-sheet">
+        <h3>会话操作</h3>
+        <p id="sessionActionsTarget" class="session-actions-hint"></p>
+        <p class="session-actions-hint">在 Mac 上以该会话为锚点新建终端：</p>
+        <div class="session-actions-grid">
+          <button type="button" data-create-mode="window">新窗口</button>
+          <button type="button" data-create-mode="tab">新标签页</button>
+          <button type="button" data-create-mode="split_right">右分屏</button>
+          <button type="button" data-create-mode="split_down">下分屏</button>
+        </div>
+        <button
+          id="sessionCloseBtn"
+          class="session-actions-danger"
+          type="button"
+        >
+          关闭此会话（关闭 Mac 终端窗口）
+        </button>
+        <p
+          id="sessionCloseConfirmHint"
+          class="session-actions-hint danger hidden"
+        >
+          将关闭 Mac 上的终端窗口，正在运行的进程会被终止。再点一次确认。
+        </p>
+        <button
+          id="sessionActionsCancelBtn"
+          class="session-actions-cancel"
+          type="button"
+        >
+          取消
+        </button>
+      </div>
+    </div>
+    <div
+      id="apkForceModal"
+      class="apk-force-modal hidden"
+      role="dialog"
+      aria-modal="true"
+    >
       <h2>APP 版本过低</h2>
       <p id="apkForceModalText">
         当前 APP 版本不再支持，请下载并安装最新版本继续使用。
       </p>
       <button id="apkForceModalBtn" type="button">下载最新 APK</button>
       <div class="meta">
-        当前 build <span id="apkForceModalLocal">-</span> · 最低要求 <span id="apkForceModalMin">-</span>
+        当前 build <span id="apkForceModalLocal">-</span> · 最低要求
+        <span id="apkForceModalMin">-</span>
       </div>
     </div>
     <script type="module" src="./src/main.js"></script>

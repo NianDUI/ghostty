@@ -507,6 +507,63 @@ scrollback+active 正是 scrolled-up 视图的正确画面,无条件 reanchor �
 - ❌ `FORCE_PAINT_WINDOW_MS` 拉到 5s+ "保险一些":窗口期 cap DPR 失效,
   长 burst 用户感到轻微发热
 
+## 远程会话管理（create_session / close_session）
+
+入口在 **launcher 会话列表**:长按（touch 500ms,移动 >12px 取消）或
+右键（contextmenu,顺带覆盖桌面 + 部分 Android WebView 长按合成的
+contextmenu）一个**在线**会话弹 bottom sheet。离线会话按钮本来就
+disabled,不响应。操作走**临时 WS**（`openEphemeralSessionSocket`:
+连目标会话 `/ws/client` → 发帧 → 收回执/超时 → 关闭;join 会触发
+backlog 重放 + agent 的 client_connected 重发,二进制帧全忽略,成本
+是一次 snapshot 大小的突发流量）。**relay 零改动**（client→agent
+文本帧透明转发）,只有 mac agent 解析:
+
+- `{"type":"create_session","mode":"window|tab|split_right|split_down"}`
+  — 以**当前会话的 surface 为锚点**在 Mac 上开新终端并自动用同一
+  relay/token 开启共享。Swift 侧用一次性 `SessionSharingPendingAutoShare`
+  桥（5s TTL）接住新 SurfaceView——window/tab 路径走 AppKit 通知异步
+  创建,拿不到返回值,这是唯一统一的 hook 点。
+- `{"type":"close_session"}` — 关闭该会话所在的 **Mac 终端窗口**
+  （`closeSurface(view, withConfirmation: false)`,进程会被终止）。
+  web 端 sheet 内两段式确认;mac 端不再弹确认（app 已确认过）。
+
+回帧 `{"type":"session_created","new_session_id":...}` 在 anchor 会话
+WS 上广播。**注意三点**:
+
+1. **agent 必须先升级**。老 agent 收到未知 JSON 帧会 fall through 漏进
+   PTY（父层 CLAUDE.md 升级顺序的具体案例）。
+2. `session_created` 可能滞留 relay backlog 到下一个 screen checkpoint,
+   reconnect 的客户端会重放它 → web 端用 localStorage seen-set
+   （`ghostty-sharing-created-seen`,cap 50）按 id 去重,否则每次重连
+   都会被自动切走。
+3. agent 发 `session_created` 时新会话**尚未完成 relay 注册**
+   （register/connect 是异步 Task）→ web 端轮询 `/api/sessions`
+   （1s × 10 次）等它上线再 `switchToSession`。
+4. **主 socket 收到 `session_created` 一律只消费不动作**（backlog 重放 /
+   其他 client 的 create 不该把本端拽去切会话）;只有发起 create 的那条
+   临时 WS 等待它。
+5. close 的「成功」信号不可靠:agent stopSharing 后 relay 可能有
+   agent-offline grace,临时 WS 不一定立刻被关 → 8s 兜底 toast 用软文案
+   「已请求关闭,列表稍后更新」+ `refreshSessions()`。
+6. 长按后部分浏览器会在松手时合成 click → 用**时间戳**
+   （`lastSessionLongPressAt`,800ms 窗口）吞掉它,不能用 sticky boolean
+   （有的浏览器长按后根本不发 click,布尔会吞掉下一次真点击）。
+
+权限边界:user token 本来就能向终端打任意输入（等于 shell）,这两个
+指令不扩大攻击面。
+
+**mac 端 ⌘W 关闭 ≠ 停止共享（undo-close 幽灵会话坑）**:Ghostty 的
+关闭走 undo-close,SurfaceView（连同进程）被 undo 闭包强持有以支持
+⌘Z 恢复,共享控制器只在 SurfaceView **deinit** 时才 stopSharing——
+实测释放链可能远超 `undo-timeout`(默认 5s)不触发,幽灵会话在 APP
+上持续显示在线且可交互。修复:`BaseTerminalController.closeSurface` +
+`TerminalController.closeTabImmediately/closeWindowImmediately` 在
+surfaces 进 undo 栈**之前**显式 `stopSessionSharing(in:)`(带
+`sharingState.isActive` guard,幂等)。语义:⌘Z 撤销恢复的终端**不再
+处于共享状态**,需手动重新分享。**不要**把这个钩子挪进
+`removeSurfaceNode`——它还被「拖拽 surface 到别的窗口」调用
+(`BaseTerminalController.swift:984` 一带),在那里停共享会破坏拖拽。
+
 ## Follow-mode（`userFollowBottom`)与 dist buffer stub 坑
 
 「向上滚看历史后,新内容不把用户拽回底部」靠模块级 `userFollowBottom`

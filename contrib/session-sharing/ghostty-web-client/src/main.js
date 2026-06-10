@@ -43,6 +43,15 @@ const lowResRenderSelect = document.querySelector("#lowResRender");
 const liveMirrorModeInput = document.querySelector("#liveMirrorMode");
 const debugModeInput = document.querySelector("#debugMode");
 const mobileUploadLauncher = document.querySelector("#mobileUploadLauncher");
+const sessionActionsModal = document.querySelector("#sessionActionsModal");
+const sessionActionsTargetEl = document.querySelector("#sessionActionsTarget");
+const sessionCloseBtn = document.querySelector("#sessionCloseBtn");
+const sessionCloseConfirmHint = document.querySelector(
+  "#sessionCloseConfirmHint",
+);
+const sessionActionsCancelBtn = document.querySelector(
+  "#sessionActionsCancelBtn",
+);
 const uploadFileInput = document.querySelector("#uploadFileInput");
 const uploadToastStack = document.querySelector("#uploadToastStack");
 const apkLocalVersionEl = document.querySelector("#apkLocalVersion");
@@ -177,7 +186,8 @@ function prefersMobileDefaults() {
   if (typeof location !== "undefined" && location.hostname === "localhost") {
     return true;
   }
-  const ua = typeof navigator !== "undefined" ? navigator.userAgent ?? "" : "";
+  const ua =
+    typeof navigator !== "undefined" ? (navigator.userAgent ?? "") : "";
   return /Android|iPhone|iPad|iPod|IEMobile|Mobile|Phone/i.test(ua);
 }
 // Live-mirror mode: when on, we skip the replayBuffer accumulation and
@@ -384,8 +394,7 @@ launcherHomeView.addEventListener(
       twoFingerTriggered = false;
       return;
     }
-    const currentY =
-      (event.touches[0].clientY + event.touches[1].clientY) / 2;
+    const currentY = (event.touches[0].clientY + event.touches[1].clientY) / 2;
     if (
       currentY - twoFingerStartY >= TWO_FINGER_RELOAD_THRESHOLD_PX &&
       !twoFingerTriggered
@@ -474,7 +483,10 @@ async function downloadApk() {
     // in case the browser stays on the page (Content-Disposition typically
     // keeps the current page alive).
     downloadApkHint.textContent = "已请求下载，浏览器应该开始保存文件。";
-    setTimeout(() => resetDownloadApkUI("如果未弹出下载，请检查浏览器下载管理。"), 3000);
+    setTimeout(
+      () => resetDownloadApkUI("如果未弹出下载，请检查浏览器下载管理。"),
+      3000,
+    );
     window.location.href = downloadURL.toString();
   } catch (err) {
     resetDownloadApkUI(`下载失败：${err?.message ?? err}`);
@@ -611,19 +623,19 @@ function refreshVersionUI() {
   }
   if (apkUpgradeBanner) {
     // Force-modal supersedes the soft banner — no point showing both.
-    const showBanner =
-      apkVersionInfo.hasUpdate && !apkVersionInfo.forceUpgrade;
+    const showBanner = apkVersionInfo.hasUpdate && !apkVersionInfo.forceUpgrade;
     apkUpgradeBanner.classList.toggle("hidden", !showBanner);
     if (apkUpgradeBannerText && showBanner) {
-      apkUpgradeBannerText.textContent =
-        `有新版本 APP 可用：${apkVersionInfo.serverVersionName} (build ${apkVersionInfo.serverVersionCode})`;
+      apkUpgradeBannerText.textContent = `有新版本 APP 可用：${apkVersionInfo.serverVersionName} (build ${apkVersionInfo.serverVersionCode})`;
     }
   }
   if (apkForceModal) {
     apkForceModal.classList.toggle("hidden", !apkVersionInfo.forceUpgrade);
     if (apkVersionInfo.forceUpgrade) {
       if (apkForceModalLocal) {
-        apkForceModalLocal.textContent = String(apkVersionInfo.localVersionCode);
+        apkForceModalLocal.textContent = String(
+          apkVersionInfo.localVersionCode,
+        );
       }
       if (apkForceModalMin) {
         // Show the effective floor (max of env-var + repo-pinned) so
@@ -729,7 +741,8 @@ async function checkWebManifest() {
     webVersionInfo.serverBuiltAt =
       typeof data.builtAt === "string" ? data.builtAt : "";
     webVersionInfo.serverAvailable = !!data.available;
-    webVersionInfo.requiredApkVersionCode = Number(data.requiredApkVersionCode) || 0;
+    webVersionInfo.requiredApkVersionCode =
+      Number(data.requiredApkVersionCode) || 0;
     // sha256 is the source of truth — a dirty rebuild keeps the same
     // version label ("...-dirty") but ships different bytes, and we
     // want the user to be able to re-install. Version label is just
@@ -774,7 +787,8 @@ function refreshWebVersionUI() {
     } else if (!webVersionInfo.serverAvailable) {
       webServerVersionEl.textContent = "(服务器未发布)";
     } else {
-      webServerVersionEl.textContent = webVersionInfo.serverVersion || "(unknown)";
+      webServerVersionEl.textContent =
+        webVersionInfo.serverVersion || "(unknown)";
     }
     const line = webServerVersionEl.closest(".apk-version-line");
     if (line) line.classList.toggle("upgrade", webVersionInfo.hasUpdate);
@@ -796,8 +810,7 @@ function refreshWebVersionUI() {
     } else if (webVersionInfo.busy) {
       webUpdateHintEl.textContent = "处理中，请勿离开页面…";
     } else if (webVersionInfo.hasUpdate) {
-      webUpdateHintEl.textContent =
-        "下载并安装后 APP 会自动重新加载新版本。";
+      webUpdateHintEl.textContent = "下载并安装后 APP 会自动重新加载新版本。";
     } else if (webVersionInfo.localVersion) {
       webUpdateHintEl.textContent = "正在运行下载安装的 Web 资源。";
     } else {
@@ -854,7 +867,9 @@ async function installWebUpdate() {
         // Log every phase including install chunks — without these we
         // can't tell hung-chunk vs hung-finalize vs hung-reload on the
         // device. Volume is ~7 chunks per install, manageable.
-        logEvt(`web update progress phase=${info.phase}${info.total ? ` ${info.received ?? info.sent ?? 0}/${info.total}` : ""}`);
+        logEvt(
+          `web update progress phase=${info.phase}${info.total ? ` ${info.received ?? info.sent ?? 0}/${info.total}` : ""}`,
+        );
         if (!webUpdateHintEl) return;
         if (info.phase === "download") {
           if (info.total > 0 && info.received >= info.total) {
@@ -865,12 +880,14 @@ async function installWebUpdate() {
         } else if (info.phase === "verify") {
           webUpdateHintEl.textContent = "校验中…";
         } else if (info.phase === "install") {
-          const pct = info.total > 0 ? Math.floor((info.sent / info.total) * 100) : 0;
+          const pct =
+            info.total > 0 ? Math.floor((info.sent / info.total) * 100) : 0;
           webUpdateHintEl.textContent = `安装中… ${pct}%`;
         }
       },
     });
-    if (webUpdateHintEl) webUpdateHintEl.textContent = "安装中，APP 将自动刷新…";
+    if (webUpdateHintEl)
+      webUpdateHintEl.textContent = "安装中，APP 将自动刷新…";
     logEvt(`web update install done path=${result.path}`);
     // Drop older bundles BEFORE activate — activate triggers a reload
     // and this JS instance dies, taking any pending cleanup with it.
@@ -891,7 +908,11 @@ async function installWebUpdate() {
       try {
         window.location.replace("https://localhost/?ota=" + Date.now());
       } catch {
-        try { window.location.reload(); } catch { /* give up */ }
+        try {
+          window.location.reload();
+        } catch {
+          /* give up */
+        }
       }
     }, 500);
     // activateWebBundle posts a reload — execution past here is best-
@@ -2085,7 +2106,14 @@ function renderSession(session) {
     <div class="status ${session.online ? "online" : "offline"}">${session.online ? "在线" : "离线"}</div>
   `;
   if (session.online) {
-    item.addEventListener("click", () => switchToSession(session));
+    item.addEventListener("click", () => {
+      // A long-press that opened the actions sheet can also synthesize
+      // a trailing click on release — swallow it so we don't ALSO enter
+      // the session underneath the sheet.
+      if (sessionLongPressJustFired()) return;
+      switchToSession(session);
+    });
+    attachSessionLongPress(item, session);
   } else {
     item.disabled = true;
   }
@@ -2365,6 +2393,12 @@ function handleControlFrame(data) {
     case "upload_ack":
       uploadManager.handleAckFrame(frame);
       return;
+    case "session_created":
+      // Consumed by the launcher's ephemeral create flow. On the main
+      // socket it's either a backlog replay or another client's create —
+      // never auto-switch this viewer, just keep the JSON out of the
+      // terminal.
+      return;
     default:
       if (terminal) terminal.write(data);
   }
@@ -2400,8 +2434,7 @@ function renderUploadToast(payload) {
   node.classList.add(payload.kind ?? "pending");
   node.querySelector(".upload-toast-title").textContent = payload.title ?? "";
   node.querySelector(".upload-toast-body").textContent = payload.message ?? "";
-  const progressBar = node
-    .querySelector(".upload-toast-progress > span");
+  const progressBar = node.querySelector(".upload-toast-progress > span");
   if (typeof payload.progress === "number") {
     const pct = Math.min(100, Math.max(0, Math.round(payload.progress * 100)));
     progressBar.style.width = `${pct}%`;
@@ -2413,12 +2446,15 @@ function renderUploadToast(payload) {
   // tidy. Pending toasts persist indefinitely — they will be replaced
   // by a terminal-state toast under the same id.
   if (payload.kind === "success" || payload.kind === "error") {
-    setTimeout(() => {
-      if (uploadToastNodes.get(id) === node) {
-        node.remove();
-        uploadToastNodes.delete(id);
-      }
-    }, payload.kind === "success" ? 6000 : 9000);
+    setTimeout(
+      () => {
+        if (uploadToastNodes.get(id) === node) {
+          node.remove();
+          uploadToastNodes.delete(id);
+        }
+      },
+      payload.kind === "success" ? 6000 : 9000,
+    );
   }
 }
 
@@ -2488,6 +2524,309 @@ mobileUploadLauncher.addEventListener("click", () => {
   openUploadFilePicker();
 });
 
+// ---- Session actions (create / close host surface) ---------------------
+// Entry point: long-press (touch) or right-click (contextmenu) an ONLINE
+// session in the launcher list. The frames ride a short-lived ephemeral
+// client WS to the TARGET session — the launcher holds no persistent
+// connection, and create_session anchors to the long-pressed session's
+// surface on the mac (tab joins its window, splits divide it) while
+// close_session closes that surface outright. The relay forwards client
+// text frames verbatim — only the agent parses them, so agents must be
+// upgraded before this UI ships (old agents leak unknown JSON into the
+// PTY).
+
+// Dedupe set for session_created frames. The agent's reply can sit in
+// the relay backlog until the next screen checkpoint prunes it, so a
+// reconnecting client may replay it — without the seen-set we'd
+// auto-switch again on every reconnect.
+const SESSION_CREATED_SEEN_KEY = "ghostty-sharing-created-seen";
+const SESSION_CREATED_SEEN_MAX = 50;
+
+function seenCreatedSessions() {
+  try {
+    const raw = localStorage.getItem(SESSION_CREATED_SEEN_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+function markCreatedSessionSeen(id) {
+  const list = seenCreatedSessions();
+  list.push(id);
+  localStorage.setItem(
+    SESSION_CREATED_SEEN_KEY,
+    JSON.stringify(list.slice(-SESSION_CREATED_SEEN_MAX)),
+  );
+}
+
+// Simple transient toast, same look as the exit-confirm one. The upload
+// toast stack is upload-specific (progress morphing, manager-owned ids),
+// reusing it here would tangle the two lifecycles.
+function showSessionActionToast(text, { durationMs = 4000 } = {}) {
+  const existing = document.querySelector("#session-action-toast");
+  if (existing) existing.remove();
+  const toast = document.createElement("div");
+  toast.id = "session-action-toast";
+  toast.textContent = text;
+  Object.assign(toast.style, {
+    position: "fixed",
+    bottom: "calc(env(safe-area-inset-bottom, 0px) + 64px)",
+    left: "50%",
+    transform: "translateX(-50%)",
+    background: "rgba(0, 0, 0, 0.78)",
+    color: "#fff",
+    padding: "10px 18px",
+    borderRadius: "20px",
+    fontSize: "14px",
+    lineHeight: "1.4",
+    zIndex: "9999",
+    maxWidth: "85vw",
+    pointerEvents: "none",
+    boxShadow: "0 2px 10px rgba(0,0,0,0.3)",
+  });
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), durationMs);
+}
+
+// Two-step in-sheet confirm for the destructive close. First tap arms,
+// second tap within the same sheet sends; closing the sheet disarms.
+let sessionCloseArmed = false;
+// The session the open sheet operates on (set by long-press /右键).
+let sessionActionsTargetSession = null;
+
+function openSessionActionsModal(session) {
+  sessionActionsTargetSession = session;
+  sessionCloseArmed = false;
+  sessionCloseConfirmHint?.classList.add("hidden");
+  if (sessionActionsTargetEl) {
+    sessionActionsTargetEl.textContent = `目标会话：${displaySessionName(session)}`;
+  }
+  sessionActionsModal?.classList.remove("hidden");
+}
+
+function closeSessionActionsModal() {
+  sessionActionsTargetSession = null;
+  sessionCloseArmed = false;
+  sessionCloseConfirmHint?.classList.add("hidden");
+  sessionActionsModal?.classList.add("hidden");
+}
+
+sessionActionsCancelBtn?.addEventListener("click", () => {
+  closeSessionActionsModal();
+});
+
+sessionActionsModal?.addEventListener("click", (event) => {
+  // Backdrop tap dismisses; taps inside the sheet bubble up with a
+  // different target.
+  if (event.target === sessionActionsModal) closeSessionActionsModal();
+});
+
+for (const btn of sessionActionsModal?.querySelectorAll("[data-create-mode]") ??
+  []) {
+  btn.addEventListener("click", () => {
+    const mode = btn.dataset.createMode;
+    const target = sessionActionsTargetSession;
+    closeSessionActionsModal();
+    if (!target) return;
+    requestCreateSession(target, mode);
+  });
+}
+
+sessionCloseBtn?.addEventListener("click", () => {
+  if (!sessionCloseArmed) {
+    sessionCloseArmed = true;
+    sessionCloseConfirmHint?.classList.remove("hidden");
+    return;
+  }
+  const target = sessionActionsTargetSession;
+  closeSessionActionsModal();
+  if (!target) return;
+  requestCloseSession(target);
+});
+
+// ---- Long-press → actions sheet ----------------------------------------
+const SESSION_LONG_PRESS_MS = 500;
+const SESSION_LONG_PRESS_MOVE_TOLERANCE_PX = 12;
+// Timestamp instead of a boolean: some browsers don't synthesize the
+// trailing click after a long-press, and a sticky boolean would swallow
+// the NEXT genuine tap on a session.
+let lastSessionLongPressAt = 0;
+
+function sessionLongPressJustFired() {
+  return Date.now() - lastSessionLongPressAt < 800;
+}
+
+function attachSessionLongPress(item, session) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+  const cancel = () => {
+    if (timer !== null) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+  };
+  item.addEventListener(
+    "touchstart",
+    (event) => {
+      cancel();
+      if (event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      startX = touch.clientX;
+      startY = touch.clientY;
+      timer = window.setTimeout(() => {
+        timer = null;
+        lastSessionLongPressAt = Date.now();
+        openSessionActionsModal(session);
+      }, SESSION_LONG_PRESS_MS);
+    },
+    { passive: true },
+  );
+  item.addEventListener(
+    "touchmove",
+    (event) => {
+      const touch = event.touches[0];
+      if (
+        !touch ||
+        Math.abs(touch.clientX - startX) >
+          SESSION_LONG_PRESS_MOVE_TOLERANCE_PX ||
+        Math.abs(touch.clientY - startY) > SESSION_LONG_PRESS_MOVE_TOLERANCE_PX
+      ) {
+        cancel();
+      }
+    },
+    { passive: true },
+  );
+  item.addEventListener("touchend", cancel, { passive: true });
+  item.addEventListener("touchcancel", cancel, { passive: true });
+  // Desktop right-click, plus the contextmenu some Android WebViews
+  // synthesize on long-press (covers devices where it races our timer;
+  // preventDefault also suppresses the system text-selection menu).
+  item.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    cancel();
+    lastSessionLongPressAt = Date.now();
+    openSessionActionsModal(session);
+  });
+}
+
+// ---- Ephemeral target-session sockets -----------------------------------
+// Joining a session triggers the relay backlog replay plus the agent's
+// client_connected re-emit (hello/appearance/snapshot) — we ignore all
+// binary frames, so the cost is one snapshot-sized burst per action.
+function openEphemeralSessionSocket(session) {
+  const url = wsBaseURL("/ws/client");
+  url.searchParams.set("id", session.id);
+  url.searchParams.set("token", session.client_token);
+  const ws = new WebSocket(url);
+  ws.binaryType = "arraybuffer";
+  return ws;
+}
+
+const CREATE_SESSION_REPLY_TIMEOUT_MS = 15_000;
+
+function requestCreateSession(session, mode) {
+  showSessionActionToast("已请求在 Mac 上新建会话…");
+  const ws = openEphemeralSessionSocket(session);
+  let settled = false;
+  const settle = (toastText, followUp) => {
+    if (settled) return;
+    settled = true;
+    window.clearTimeout(timer);
+    try {
+      ws.close();
+    } catch {
+      /* already closed */
+    }
+    if (toastText) showSessionActionToast(toastText);
+    followUp?.();
+  };
+  const timer = window.setTimeout(
+    () => settle("未收到新会话回执，请稍后刷新列表"),
+    CREATE_SESSION_REPLY_TIMEOUT_MS,
+  );
+  ws.addEventListener("open", () => {
+    ws.send(JSON.stringify({ type: "create_session", mode }));
+  });
+  ws.addEventListener("message", (event) => {
+    if (typeof event.data !== "string") return;
+    let frame;
+    try {
+      frame = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+    if (frame.type !== "session_created") return;
+    const newId = frame.new_session_id;
+    if (typeof newId !== "string" || !newId) return;
+    // The backlog can replay session_created frames from earlier
+    // creates; the seen-set latches us onto a FRESH reply only.
+    if (seenCreatedSessions().includes(newId)) return;
+    markCreatedSessionSeen(newId);
+    settle("新会话已创建，正在切换…", () => resolveAndSwitchToSession(newId));
+  });
+  ws.addEventListener("error", () => settle("连接失败，无法新建会话"));
+}
+
+function requestCloseSession(session) {
+  showSessionActionToast("已请求关闭 Mac 终端…");
+  const ws = openEphemeralSessionSocket(session);
+  let settled = false;
+  const settle = (toastText) => {
+    if (settled) return;
+    settled = true;
+    window.clearTimeout(timer);
+    try {
+      ws.close();
+    } catch {
+      /* already closed */
+    }
+    if (toastText) showSessionActionToast(toastText);
+    refreshSessions();
+  };
+  // The relay may hold the session through an agent-offline grace window
+  // after the agent stops sharing, so a fast socket close is the lucky
+  // path, not a guarantee — hence the soft fallback wording.
+  const timer = window.setTimeout(
+    () => settle("已请求关闭，列表稍后更新"),
+    8000,
+  );
+  ws.addEventListener("open", () => {
+    ws.send(JSON.stringify({ type: "close_session" }));
+  });
+  ws.addEventListener("close", () => settle("会话已关闭"));
+  ws.addEventListener("error", () => settle("连接失败，无法关闭会话"));
+}
+
+async function resolveAndSwitchToSession(id, attempt = 0) {
+  const MAX_ATTEMPTS = 10;
+  const token = tokenInput.value.trim();
+  if (!token) return;
+  try {
+    const response = await fetch(apiURL("/api/sessions"), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (response.ok) {
+      const sessions = await response.json();
+      cachedSessions = sessions;
+      const session = sessions.find((candidate) => candidate.id === id);
+      if (session?.online) {
+        switchToSession(session);
+        return;
+      }
+    }
+  } catch (error) {
+    console.error(redactErrorMessage(error));
+  }
+  if (attempt + 1 >= MAX_ATTEMPTS) {
+    showSessionActionToast("新会话尚未上线，请稍后在会话列表查看");
+    return;
+  }
+  window.setTimeout(() => resolveAndSwitchToSession(id, attempt + 1), 1000);
+}
+
 uploadFileInput.addEventListener("change", () => {
   const files = Array.from(uploadFileInput.files ?? []);
   logEvt(`uploadFileInput change files=${files.length}`);
@@ -2528,9 +2867,9 @@ let pendingUploadSweepTimer = null;
 
 function isUploadReady() {
   return (
-    activeSession != null
-    && socket != null
-    && socket.readyState === WebSocket.OPEN
+    activeSession != null &&
+    socket != null &&
+    socket.readyState === WebSocket.OPEN
   );
 }
 
@@ -2545,7 +2884,9 @@ function queueUpload(file, { toastId = null, attempt = 0 } = {}) {
   // Always render *something* immediately: when the user drops or
   // pastes a file with the socket down, the silence before the actual
   // upload starts otherwise feels like the action vanished.
-  const id = toastId ?? `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const id =
+    toastId ??
+    `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   if (isUploadReady()) {
     startSingleUpload(file, id, attempt);
     return;
@@ -2743,10 +3084,10 @@ window.addEventListener("paste", (event) => {
   // settings page uses real <input>s and the user expects normal paste.
   const target = event.target;
   if (
-    target instanceof HTMLElement
-    && (target.tagName === "INPUT"
-        || target.tagName === "TEXTAREA"
-        || target.isContentEditable)
+    target instanceof HTMLElement &&
+    (target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.isContentEditable)
   ) {
     return;
   }
@@ -4100,10 +4441,7 @@ document.addEventListener("visibilitychange", () => {
     // no new stale frames accumulate during the grace window — this
     // is the one resume path where skipping the layer reset is safe.
     // See openUploadFilePicker for the timestamp + grace constant.
-    if (
-      filePickerOpenAt > 0 &&
-      sincePicker < FILE_PICKER_VISIBLE_GRACE_MS
-    ) {
+    if (filePickerOpenAt > 0 && sincePicker < FILE_PICKER_VISIBLE_GRACE_MS) {
       logEvt(`grace HIT, skip reload (dt=${sincePicker}ms)`);
       return;
     }
