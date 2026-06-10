@@ -407,6 +407,21 @@ class BaseTerminalController: NSWindowController,
         closeSurface(node, withConfirmation: withConfirmation)
     }
 
+    /// Stop session sharing for every actively sharing surface in the
+    /// given collection.
+    ///
+    /// Close paths must call this before the surfaces go into the undo
+    /// stack: undo-close keeps the SurfaceView (and its process) alive
+    /// until the undo expires so ⌘Z can restore it, and without an
+    /// explicit stop the agent's relay connection survives the close —
+    /// the session keeps showing online (and stays interactive) on
+    /// remote clients long after the window is gone.
+    func stopSessionSharing(in views: some Sequence<Ghostty.SurfaceView>) {
+        for view in views where view.sharingState.isActive {
+            view.stopSessionSharing()
+        }
+    }
+
     /// Close a surface node (which may contain splits), requesting confirmation if necessary.
     ///
     /// This will also insert the proper undo stack information in.
@@ -419,6 +434,7 @@ class BaseTerminalController: NSWindowController,
 
         // If the child process is not alive, then we exit immediately
         guard withConfirmation else {
+            stopSessionSharing(in: node)
             removeSurfaceNode(node)
             return
         }
@@ -433,6 +449,7 @@ class BaseTerminalController: NSWindowController,
             informativeText: LocalizedString.text("The terminal still has a running process. If you close the terminal the process will be killed.")
         ) { [weak self] in
             if let self {
+                self.stopSessionSharing(in: node)
                 self.removeSurfaceNode(node)
             }
         }

@@ -690,6 +690,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         cancelPendingInitialPresentation()
 
+        // The undo state below keeps these surfaces (and their
+        // processes) alive until it expires — stop sharing now so the
+        // relay session ends with the visible close instead of
+        // lingering online and interactive on remote clients.
+        stopSessionSharing(in: surfaceTree)
+
         // Undo
         if let undoManager, let undoState {
             // Register undo action to restore the tab
@@ -810,6 +816,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         cancelPendingInitialPresentation()
 
+        // Same rationale as closeTabImmediately: the close-window undo
+        // state retains every surface in this window (and, below, the
+        // whole tab group) — stop sharing before any of them get parked
+        // in the undo stack.
+        stopSessionSharing(in: surfaceTree)
+
         registerUndoForCloseWindow()
 
         if let tabGroup = window.tabGroup, tabGroup.windows.count > 1 {
@@ -819,6 +831,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 // process them on later ticks so we can't just disable undo registration.
                 if let controller = window.windowController as? TerminalController {
                     controller.cancelPendingInitialPresentation()
+                    controller.stopSessionSharing(in: controller.surfaceTree)
                     controller.surfaceTree = .init()
                 }
 
