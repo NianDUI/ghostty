@@ -391,11 +391,17 @@ class AppDelegate: NSObject,
             // is possible to have other windows in a few scenarios:
             //   - if we're opening a URL since `application(_:openFile:)` is called before this.
             //   - if we're restoring from persisted state
+#if XGHOSTTY
+            // XGhostty：始终进座舱；关掉被 saved-state 恢复的普通终端窗口，避免残留。
+            TerminalController.all.forEach { $0.window?.close() }
+            XGhosttyConsoleController.presentInitial(ghostty: ghostty)
+#else
             if TerminalController.all.isEmpty && derivedConfig.initialWindow {
                 undoManager.disableUndoRegistration()
                 _ = TerminalController.newWindow(ghostty)
                 undoManager.enableUndoRegistration()
             }
+#endif
         }
     }
 
@@ -462,20 +468,26 @@ class AppDelegate: NSObject,
         // of focusing one of them.
         guard !flag else { return true }
 
+        // If the application isn't active yet then we don't want to process
+        // this because we're not ready. This happens sometimes in Xcode runs
+        // but I haven't seen it happen in releases. I'm unsure why.
+        guard applicationHasBecomeActive else { return true }
+
+#if XGHOSTTY
+        // XGhostty：点 Dock 图标（无可见窗口时）重新拉起座舱，而非原始 Ghostty 终端窗口。
+        XGhosttyConsoleController.presentInitial(ghostty: ghostty)
+        return false
+#else
         // If we have any windows in our terminal manager we don't do anything.
         // This is possible with flag set to false if there a race where the
         // window is still initializing and is not visible but the user clicked
         // the dock icon.
         guard TerminalController.all.isEmpty else { return true }
 
-        // If the application isn't active yet then we don't want to process
-        // this because we're not ready. This happens sometimes in Xcode runs
-        // but I haven't seen it happen in releases. I'm unsure why.
-        guard applicationHasBecomeActive else { return true }
-
         // No visible windows, open a new one.
         _ = TerminalController.newWindow(ghostty)
         return false
+#endif
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {

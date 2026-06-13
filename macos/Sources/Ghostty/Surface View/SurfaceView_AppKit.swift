@@ -476,6 +476,17 @@ extension Ghostty {
             }
         }
 
+#if XGHOSTTY
+        /// XGhostty spike：对外开放的 send_bytes（座舱广播用，绕过 bracketed-paste 直写 pty）。
+        func xghosttySendBytes(_ data: Data) {
+            guard let surface else { return }
+            data.withUnsafeBytes { rawBuffer in
+                guard let ptr = rawBuffer.bindMemory(to: CChar.self).baseAddress else { return }
+                ghostty_surface_send_bytes(surface, ptr, UInt(rawBuffer.count))
+            }
+        }
+#endif
+
         fileprivate func applySharedResize(cols: Int, rows: Int) {
             guard let surface, cols > 0, rows > 0 else { return }
             sessionSharing.captureOriginalSharedResizeIfNeeded(cols: Int(ghostty_surface_size(surface).columns), rows: Int(ghostty_surface_size(surface).rows))
@@ -2066,6 +2077,7 @@ private final class SessionSharingController {
     private var lastSentTitleUpdate: String?
     private var uploadManager: SessionSharingUploadManager?
     private var uploadPolicy: SessionSharingUploadPolicy = .defaultEnabled
+    private var settingsSheet: NSWindow?   // 共享设置 SwiftUI sheet
 
     init(
         surfaceView: Ghostty.SurfaceView,
@@ -2304,78 +2316,89 @@ private final class SessionSharingController {
             uploadsAutoCleanDays: persisted.uploadsAutoCleanDays
         )
 
-        let alert = NSAlert()
-        alert.messageText = "共享设置"
-        alert.informativeText = "将当前终端会话共享到中转服务器。"
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "启动共享")
-        alert.addButton(withTitle: "取消")
+        let view = SessionSharingSheetView(
+            name: defaults.name,
+            relay: defaults.relay,
+            token: defaults.token,
+            saveConfig: true,
+            uploadEnabled: defaults.webUploadEnabled,
+            autoCleanEnabled: defaults.uploadsAutoCleanEnabled,
+            autoCleanDays: defaults.uploadsAutoCleanDays,
+            relayHistory: defaults.relayHistory,
+            allowedDays: SessionSharingUploadAutoCleanInstaller.allowedDays,
+            validate: { name, relay, token in
+                SessionSharingSheetValidation.message(name: name, relay: relay, token: token)
+            },
+            onStart: { [weak self] result in
+                guard let self else { return }
+                self.dismissSettingsSheet(on: parentWindow)
+                let relay = result.relay.trimmingCharacters(in: .whitespacesAndNewlines)
+                let token = result.token.trimmingCharacters(in: .whitespacesAndNewlines)
+                let name = result.name.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let content = SessionSharingSheetContentView(defaults: defaults)
-        alert.accessoryView = content.container
-        let startButton = alert.buttons.first
-        content.validationDidChange = { message in
-            startButton?.isEnabled = message == nil
-        }
-        content.refreshValidation()
+                if let validationMessage = SessionSharingSheetValidation.message(
+                    name: name, relay: relay, token: token) {
+                    self.presentError(validationMessage, on: parentWindow)
+                    return
+                }
 
-        let completion: (NSApplication.ModalResponse) -> Void = { [weak self] response in
-            guard let self, response == .alertFirstButtonReturn else { return }
-            let relay = content.relayField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            let token = content.tokenField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            let name = content.nameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            let saveConfig = content.saveCheckbox.state == .on
-            let uploadEnabled = content.uploadCheckbox.state == .on
-            let autoCleanEnabled = content.autoCleanCheckbox.state == .on
-            let autoCleanDays = content.selectedAutoCleanDays
+                // Reconcile the LaunchAgent every time the sheet is OK'd — even when
+                // "保存配置" is off — so a one-off share still gives the user the cleaner
+                // they ticked. The installer is idempotent so calling it on every OK is cheap.
+                SessionSharingUploadAutoCleanInstaller.reconcile(
+                    enabled: result.autoCleanEnabled, days: result.autoCleanDays)
 
-            if let validationMessage = SessionSharingSheetValidation.message(
-                name: name,
-                relay: relay,
-                token: token
-            ) {
-                self.presentError(validationMessage, on: parentWindow)
-                return
-            }
+                if result.saveConfig {
+                    self.store.save(.init(
+                        relay: relay,
+                        token: token,
+                        relayHistory: self.store.updatedHistory(relay, existing: defaults.relayHistory),
+                        lastSessionName: nil,
+                        webUploadEnabled: result.uploadEnabled,
+                        uploadsAutoCleanEnabled: result.autoCleanEnabled,
+                        uploadsAutoCleanDays: result.autoCleanDays
+                    ))
+                }
 
-            // Reconcile the LaunchAgent every time the sheet is OK'd —
-            // even when "保存配置" is off — so a one-off share still
-            // gives the user the cleaner they ticked. The installer is
-            // idempotent so calling it on every OK is cheap.
-            SessionSharingUploadAutoCleanInstaller.reconcile(
-                enabled: autoCleanEnabled, days: autoCleanDays)
-
-            if saveConfig {
-                self.store.save(.init(
+                self.startSharing(
                     relay: relay,
-                    token: token,
-                    relayHistory: self.store.updatedHistory(relay, existing: defaults.relayHistory),
-                    lastSessionName: nil,
-                    webUploadEnabled: uploadEnabled,
-                    uploadsAutoCleanEnabled: autoCleanEnabled,
-                    uploadsAutoCleanDays: autoCleanDays
-                ))
+                    userToken: token,
+                    sessionName: name,
+                    persistConfig: result.saveConfig,
+                    uploadEnabled: result.uploadEnabled
+                )
+            },
+            onCancel: { [weak self] in
+                self?.dismissSettingsSheet(on: parentWindow)
             }
+        )
 
-            self.startSharing(
-                relay: relay,
-                userToken: token,
-                sessionName: name,
-                persistConfig: saveConfig,
-                uploadEnabled: uploadEnabled
-            )
-        }
+        // 主题：sheet 背景铺当前终端背景色（与命令面板 / XGhostty 风格统一）；
+        // 单设 window.backgroundColor 会被 NSHostingController 内容盖住，故 SwiftUI 内容也铺一层。
+        let bg = surfaceView.map { NSColor($0.derivedConfig.backgroundColor) } ?? .windowBackgroundColor
+        let host = NSHostingController(rootView: AnyView(view.background(Color(nsColor: bg))))
+        host.view.wantsLayer = true
+        host.view.layer?.backgroundColor = bg.cgColor
+        let sheet = NSWindow(contentViewController: host)
+        sheet.appearance = NSAppearance(named: bg.isLightColor ? .aqua : .darkAqua)
+        sheet.backgroundColor = bg
+        settingsSheet = sheet
 
         if let parentWindow {
-            alert.beginSheetModal(for: parentWindow, completionHandler: completion)
-            // Move initial focus to the relay field so common operations like
-            // pasting an authentication token work without first clicking.
-            DispatchQueue.main.async {
-                alert.window.makeFirstResponder(content.relayField)
-            }
+            parentWindow.beginSheet(sheet)
         } else {
-            completion(alert.runModal())
+            sheet.makeKeyAndOrderFront(nil)
         }
+    }
+
+    private func dismissSettingsSheet(on parentWindow: NSWindow?) {
+        guard let sheet = settingsSheet else { return }
+        if let parentWindow {
+            parentWindow.endSheet(sheet)
+        } else {
+            sheet.close()
+        }
+        settingsSheet = nil
     }
 
     private func startSharing(
@@ -3416,153 +3439,6 @@ enum SessionSharingSheetValidation {
         } catch {
             return "共享配置不完整"
         }
-    }
-}
-
-private final class SessionSharingSheetContentView: NSObject, NSControlTextEditingDelegate, NSTextFieldDelegate, NSComboBoxDelegate {
-    let container: NSView
-    let nameField: NSTextField
-    let relayField: NSComboBox
-    let tokenField: NSSecureTextField
-    let saveCheckbox: NSButton
-    let uploadCheckbox: NSButton
-    let autoCleanCheckbox: NSButton
-    let autoCleanDaysPopUp: NSPopUpButton
-    let validationLabel: NSTextField
-    var validationDidChange: ((String?) -> Void)?
-
-    init(defaults: SessionSharingSheetDefaults) {
-        nameField = NSTextField(string: defaults.name)
-        relayField = NSComboBox()
-        tokenField = NSSecureTextField(string: defaults.token)
-        saveCheckbox = NSButton(checkboxWithTitle: "保存配置", target: nil, action: nil)
-        uploadCheckbox = NSButton(
-            checkboxWithTitle: "允许 Web 客户端上传文件",
-            target: nil, action: nil)
-        autoCleanCheckbox = NSButton(
-            checkboxWithTitle: "自动清理",
-            target: nil, action: nil)
-        autoCleanDaysPopUp = NSPopUpButton(
-            frame: NSRect(x: 0, y: 0, width: 64, height: 22), pullsDown: false)
-        validationLabel = NSTextField(labelWithString: "")
-        // Bumped from 198 → 226 to fit the new "auto-clean" row.
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 380, height: 226))
-        self.container = container
-        saveCheckbox.state = .on
-        uploadCheckbox.state = defaults.webUploadEnabled ? .on : .off
-        uploadCheckbox.toolTip = "Web 客户端上传完成后会在终端光标处注入文件路径。"
-        autoCleanCheckbox.state = defaults.uploadsAutoCleanEnabled ? .on : .off
-        autoCleanCheckbox.toolTip = "每天 03:15 通过 launchd 清理早于设定天数的上传文件。"
-        for days in SessionSharingUploadAutoCleanInstaller.allowedDays {
-            autoCleanDaysPopUp.addItem(withTitle: "\(days) 天前")
-            autoCleanDaysPopUp.item(at: autoCleanDaysPopUp.numberOfItems - 1)?
-                .representedObject = days
-        }
-        Self.selectDays(
-            defaults.uploadsAutoCleanDays, in: autoCleanDaysPopUp)
-        // Wire enable/disable so the popup tracks the checkbox visually
-        // and the user can't pick a retention while auto-clean is off.
-        autoCleanDaysPopUp.isEnabled = autoCleanCheckbox.state == .on
-
-        super.init()
-
-        // target = self must wait for super.init().
-        autoCleanCheckbox.target = self
-        autoCleanCheckbox.action = #selector(autoCleanCheckboxToggled(_:))
-
-        relayField.isEditable = true
-        relayField.addItems(withObjectValues: defaults.relayHistory)
-        relayField.stringValue = defaults.relay
-        nameField.placeholderString = "Ghostty-时间戳"
-        relayField.placeholderString = "relay.example.com:443"
-        tokenField.placeholderString = "认证令牌"
-        nameField.delegate = self
-        relayField.delegate = self
-        tokenField.delegate = self
-        validationLabel.textColor = .systemRed
-        validationLabel.lineBreakMode = .byWordWrapping
-        validationLabel.maximumNumberOfLines = 0
-        validationLabel.isHidden = true
-
-        let autoCleanRow = NSStackView(views: [
-            autoCleanCheckbox, autoCleanDaysPopUp,
-            NSTextField(labelWithString: "的上传文件"),
-        ])
-        autoCleanRow.orientation = .horizontal
-        autoCleanRow.spacing = 6
-        autoCleanRow.alignment = .firstBaseline
-
-        let grid = NSGridView(views: [
-            [Self.label("会话名称"), nameField],
-            [Self.label("中转服务器"), relayField],
-            [Self.label("认证令牌"), tokenField],
-            [NSView(), saveCheckbox],
-            [NSView(), uploadCheckbox],
-            [NSView(), autoCleanRow],
-            [NSView(), validationLabel],
-        ])
-        grid.rowSpacing = 10
-        grid.columnSpacing = 12
-        grid.translatesAutoresizingMaskIntoConstraints = false
-
-        container.addSubview(grid)
-        NSLayoutConstraint.activate([
-            grid.topAnchor.constraint(equalTo: container.topAnchor),
-            grid.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            grid.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            grid.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            relayField.widthAnchor.constraint(equalToConstant: 260),
-        ])
-    }
-
-    func controlTextDidChange(_ notification: Notification) {
-        refreshValidation()
-    }
-
-    func refreshValidation() {
-        let message = SessionSharingSheetValidation.message(
-            name: nameField.stringValue,
-            relay: relayField.stringValue,
-            token: tokenField.stringValue
-        )
-        validationLabel.stringValue = message ?? ""
-        validationLabel.isHidden = message == nil
-        validationDidChange?(message)
-    }
-
-    private static func label(_ text: String) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.alignment = .right
-        return label
-    }
-
-    /// Locate (and select) the menu item whose representedObject matches
-    /// the desired retention. Falls back to the installer's default if
-    /// the value is missing — the persisted-config decoder already
-    /// clamps to allowedDays, so this is belt-and-braces.
-    fileprivate static func selectDays(
-        _ days: Int, in popUp: NSPopUpButton
-    ) {
-        let target = SessionSharingUploadAutoCleanInstaller.allowedDays
-            .contains(days)
-            ? days
-            : SessionSharingUploadAutoCleanInstaller.defaultDays
-        for index in 0..<popUp.numberOfItems {
-            let value = popUp.item(at: index)?.representedObject as? Int
-            if value == target {
-                popUp.selectItem(at: index)
-                return
-            }
-        }
-    }
-
-    fileprivate var selectedAutoCleanDays: Int {
-        (autoCleanDaysPopUp.selectedItem?.representedObject as? Int)
-            ?? SessionSharingUploadAutoCleanInstaller.defaultDays
-    }
-
-    @objc private func autoCleanCheckboxToggled(_ sender: NSButton) {
-        autoCleanDaysPopUp.isEnabled = sender.state == .on
     }
 }
 
