@@ -105,7 +105,7 @@
 
 /* Begin PBXFileReference section */
 		04775E4C2FDBB45000D5518B /* Ghostty copy.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "XGhostty.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		04775E4D2FDBB45000D5518B /* Ghostty copy-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = "Ghostty copy-Info.plist"; path = "/Users/lyd/WorkSpace/MyProjects/ghostty/macos/Ghostty copy-Info.plist"; sourceTree = "<absolute>"; };
+		04775E4D2FDBB45000D5518B /* Ghostty copy-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Ghostty copy-Info.plist"; sourceTree = "<group>"; };
 		29C15B1C2CDC3B2000520DD4 /* bat */ = {isa = PBXFileReference; lastKnownFileType = folder; name = bat; path = "../zig-out/share/bat"; sourceTree = "<group>"; };
 		3B39CAA42B33949B00DABEB8 /* GhosttyReleaseLocal.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GhosttyReleaseLocal.entitlements; sourceTree = "<group>"; };
 		55154BDF2B33911F001622DC /* ghostty */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ghostty; path = "../zig-out/share/ghostty"; sourceTree = "<group>"; };
