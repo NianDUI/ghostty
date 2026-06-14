@@ -419,7 +419,19 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 - [x] **`SessionLogViewerView`**（新 sheet）：选日志文件（Menu）+「原始/纯文本」切换 + 滚动查看 + 在 Finder 显示/删除。**raw 保真落盘不变**，纯文本是查看时按需剥离（不改磁盘）。座舱设置「查看会话日志…」入口（先 `dismissEditor` 关设置再 `presentSessionLogViewer`，避免嵌套 sheet）。
 - **局限**：纯文本简单剥离对普通命令输出（ls/df/cat）效果好；交互式 TUI（vim/top）布局剥离后仍可能不完美（已在 UI 注明）。
 
-> **M3 剩余**：SFTP tab / trzsz(rz/sz) 文件传输（较大的新交互模型，按需再开）。（工作区、会话恢复、会话日志增强 已完成。）
+### M3 —— 第二十四批（2026-06-14，作用范围/分组广播下拉改自绘 submenu 弹层，已构建启动）
+
+把「作用范围」（快捷命令）和「分组广播」两个下拉从系统 `Menu` 换成**自绘弹层**——因为**系统 NSMenu 的下拉背景 macOS 不让改成座舱终端色**（所有 app 一致的系统材质），要统一座舱样式只能自绘。多轮迭代定稿：
+
+- [x] **`ScopePopup.swift`（新）**：`ScopeValue`（global/current/all/group）+ `ScopeRow`（树）+ `ScopePopupList`。
+- [x] **复刻系统 submenu 的右侧子浮层（flyout）**：父组行右侧 ▸，hover 停 **~0.05s** 后在**右侧**弹出子页（递归同组件、`.popover(arrowEdge:.trailing)`）；移到子浮层时本层无行被 hover、`openSub` 不变 → 子页保持；hover 到另一个父组才切换。延时用 `DispatchWorkItem` 可取消，挡极快划过的误触发。（**坑**：一开始误做成「下方 inline 展开」，用户要的是系统 submenu 那种**右侧** flyout。）
+- [x] **命令面板同款视觉**（仿 `CommandPalette.swift`）：背景 `.ultraThinMaterial` 毛玻璃 + `bg.blendMode(.color)` 终端色调（`presentationBackground`，13.3+ availability gate）；整行高亮——选中 = `accentColor` 蓝条、hover = `secondary` 灰条（替代系统 ✓）；`colorScheme` 按 `bg.isLightColor`。
+- [x] **打开时定位上次选择**：`onAppear` 沿 `selected` 祖先链设 `openSub` → 逐层 popover onAppear 接力展开到选中项（深层子组也能一打开就高亮可见）；选顶层项则停主层。
+- [x] **接线**：`ScopeGroup` + `scopeGroupTree()`（分组树）；`QuickCommandEditView`/`BroadcastTargetPicker` 从 `Menu` 改 `Button + .popover(ScopePopupList)`，**触发器框样式一字未改**（仍 `consoleFieldBox`/自绘背景）；controller 传 `consoleBgColor`（`ghostty.config.backgroundColor`）+ `selected`（`broadcastScopeValue` / `groupId`）。
+
+**关键坑/取舍**：① **系统下拉（NSMenu）背景无法自定义**——要座舱统一样式必须放弃系统 Menu、自绘弹层。② 自绘 flyout 用 **SwiftUI 嵌套 `.popover`** 递归实现；hover 切换靠「只在 hover 本层某行时更新 `openSub`、离开不清」保证移到子浮层不收。③ `presentationBackground` 需 macOS 13.3+，用 `#available` gate（低版本 fallback `.background`）。④ 迭代历程（缩进扁平→系统 submenu→自绘纯色→自绘缩进直选→自绘 flyout+命令面板视觉）记录了"系统好用 vs 座舱样式"的反复权衡，最终自绘 flyout 两者兼得。
+
+> **M3 剩余**：SFTP tab / trzsz(rz/sz) 文件传输（较大的新交互模型，按需再开）。（工作区、会话恢复、会话日志增强、下拉自绘 submenu 已完成。）
 
 > 拖拽（1、2）在扁平 `ScrollView + LazyVStack`（已替换原 List / DisclosureGroup）上做 `onDrag`/`onDrop` + drop 落点高亮；落地前先 spike 验证拖拽手势与现有单击选中/⌘⇧多选/双击不打架。
 

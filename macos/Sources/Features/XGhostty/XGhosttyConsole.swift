@@ -31,6 +31,13 @@ extension Ghostty.SurfaceView {
 
 
 /// 左树交互回调集合（穿过递归 view 一路传到 controller）。
+/// 作用范围 / 分组广播下拉的树形分组项（可折叠 submenu 用：有子组的渲染成子菜单）。
+struct ScopeGroup: Identifiable {
+    let id: UUID
+    let name: String
+    let children: [ScopeGroup]
+}
+
 private struct SessionTreeActions {
     var onOpen: (SessionNode) -> Void
     var onClose: (SessionNode) -> Void
@@ -564,21 +571,23 @@ private enum BroadcastTarget: Equatable {
 
 private struct BroadcastTargetPicker: View {
     let label: String                              // 当前选中显示文案
-    let groups: [(id: UUID, name: String)]         // 树里所有分组（供选「分组广播」）
+    let groups: [ScopeGroup]                       // 分组树（可折叠，供选「分组广播」）
+    let bg: Color                                  // 座舱终端背景色（自绘弹层用）
+    let selected: ScopeValue                       // 当前选中（弹层打 ✓）
     var onCurrent: () -> Void
     var onAll: () -> Void
     var onGroup: (UUID) -> Void
+
+    @State private var popupOpen = false
+
+    /// 弹出列表行：当前会话 / 全部已开 + 分组树。
+    private var rows: [ScopeRow] {
+        [ScopeRow(title: "当前会话", value: .current),
+         ScopeRow(title: "全部已开", value: .all)] + ScopeRow.from(groups)
+    }
+
     var body: some View {
-        Menu {
-            Button("当前会话") { onCurrent() }
-            Button("全部已开") { onAll() }
-            if !groups.isEmpty {
-                Divider()
-                ForEach(groups, id: \.id) { g in
-                    Button("分组：\(g.name)") { onGroup(g.id) }
-                }
-            }
-        } label: {
+        Button { popupOpen = true } label: {
             HStack(spacing: 4) {
                 Text(label)
                     .font(.system(size: 12)).lineLimit(1)
@@ -593,8 +602,18 @@ private struct BroadcastTargetPicker: View {
             .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.18)))
             .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .popover(isPresented: $popupOpen, arrowEdge: .bottom) {
+            ScopePopupList(rows: rows, bg: bg, selected: selected) { value in
+                switch value {
+                case .current: onCurrent()
+                case .all: onAll()
+                case .group(let id): onGroup(id)
+                case .global: break
+                }
+                popupOpen = false
+            }
+        }
     }
 }
 
@@ -1093,7 +1112,9 @@ class XGhosttyConsoleController: NSWindowController {
     private func makeTargetPicker() -> BroadcastTargetPicker {
         BroadcastTargetPicker(
             label: broadcastTargetLabel,
-            groups: allGroups(),
+            groups: scopeGroupTree(),
+            bg: consoleBgColor,
+            selected: broadcastScopeValue,
             onCurrent: { [weak self] in self?.setBroadcastTarget(.current) },
             onAll: { [weak self] in self?.setBroadcastTarget(.all) },
             onGroup: { [weak self] id in self?.setBroadcastTarget(.group(id)) })
@@ -1114,17 +1135,29 @@ class XGhosttyConsoleController: NSWindowController {
         }
     }
 
-    /// 树里所有分组（深度优先，供「分组广播」下拉）。
-    private func allGroups() -> [(id: UUID, name: String)] {
-        var out: [(UUID, String)] = []
-        func walk(_ nodes: [SessionNode]) {
-            for n in nodes where n.children != nil {
-                out.append((n.id, n.name))
-                walk(n.children!)
+    /// 分组树（只含分组节点，保留父子层级），供「作用范围」/「分组广播」可折叠 submenu 下拉。
+    private func scopeGroupTree() -> [ScopeGroup] {
+        func build(_ nodes: [SessionNode]) -> [ScopeGroup] {
+            nodes.compactMap { n in
+                guard let c = n.children else { return nil }      // 只要分组节点
+                return ScopeGroup(id: n.id, name: n.name, children: build(c))
             }
         }
-        walk(store.roots)
-        return out
+        return build(store.roots)
+    }
+
+    /// 座舱终端背景色（自绘下拉弹层背景 = 此色，与主窗口一致）。
+    private var consoleBgColor: Color {
+        Color(nsColor: OSColor(ghostty.config.backgroundColor))
+    }
+
+    /// 当前广播目标 → 弹层选中值（打 ✓ 用）。
+    private var broadcastScopeValue: ScopeValue {
+        switch broadcastTarget {
+        case .current: return .current
+        case .all: return .all
+        case .group(let id): return .group(id)
+        }
     }
 
     /// 座舱左侧/底部与终端用同一主题（背景取终端背景色，明暗选 appearance）。
@@ -1841,7 +1874,8 @@ class XGhosttyConsoleController: NSWindowController {
     private func presentQuickCommandEditor(editing existing: QuickCommand?) {
         let view = QuickCommandEditView(
             command: existing,
-            groups: allGroups(),
+            groups: scopeGroupTree(),
+            bg: consoleBgColor,
             defaultGroupId: currentSessionDirectParentGroupId(),
             onSave: { [weak self] cmd in
                 guard let self else { return }
