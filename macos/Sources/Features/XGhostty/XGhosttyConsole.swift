@@ -682,6 +682,7 @@ class XGhosttyConsoleController: NSWindowController {
     private let zmodemOverlay = NSView()             // ZMODEM 传输期遮挡终端乱码的不透明浮层
     private let zmodemLabel = NSTextField(labelWithString: "")
     private var zmodemHeader = ""                     // 当前传输的"接收/发送 + 文件名"抬头(进度行附其后)
+    private weak var activeZmodemBridge: ZmodemBridge?  // 进行中传输的桥接器(供 Esc 取消定位)
     private let inputField = NSTextField()
     private let inputBg = NSView()              // 批量发送框的圆角背景容器（仿座舱输入框样式）
     private var targetMenuHosting: NSHostingView<BroadcastTargetPicker>!
@@ -1577,6 +1578,7 @@ class XGhosttyConsoleController: NSWindowController {
             var cfg = Ghostty.SurfaceConfiguration()
             let title: String
             var expectPassword: String?   // 供 expect 兜底武装（仅密码会话、开关开时用）
+            var trzszWrapped = false      // 本会话是否用 trzsz 包裹（包裹则不再单独武装 ZmodemBridge）
             if let node {
                 // 解析有效认证（会话级密钥 > 引用凭据[密钥/密码] > 内联密码）。
                 // 密钥凭据的私钥路径并入 effective.identityFile，让命令构造器走 `ssh -i`。
@@ -1612,13 +1614,16 @@ class XGhosttyConsoleController: NSWindowController {
                     ? try SessionCommandBuilder.buildSFTP(for: effective, policy: policy, jump: jump)
                     : try SessionCommandBuilder.build(for: effective, policy: policy, jump: jump)
                 if let cmd = built.command {
-                    // trzsz 透明包裹（仅 ssh 会话、开关开、本机装了 trzsz）：`trzsz ssh …` 让本机
-                    // trzsz 坐在 pty 与 ssh 之间，自动拦截远端 trz/tsz 协议（XGhostty 端无乱码、
-                    // 自带进度条）。未装 trzsz 则静默退回普通 ssh。下载落点靠下方把 cwd 设到 ~/Downloads。
+                    // trzsz 透明包裹（仅 ssh 会话、文件传输开关开、本机装了 trzsz-go）：`trzsz -z -d ssh …`
+                    // 让本机 trzsz 坐在 pty 与 ssh 之间，**原生处理** trz/tsz **和** rz/sz（`-z` 开 lrzsz，
+                    // `-d` 开拖文件上传）——进度条/总大小/无乱码全由 trzsz 负责，比自绘桥接可靠。任一文件传输
+                    // 开关开即启用；未装 trzsz-go 则不包裹（lrzsz 退回 ZmodemBridge 兜底）。下载落点见下方 cwd。
                     var runCmd = cmd
-                    if transport == .ssh, layoutStore.layout.trzszEnabled == true,
+                    if transport == .ssh,
+                       (layoutStore.layout.trzszEnabled == true || layoutStore.layout.zmodemEnabled == true),
                        let trzsz = Self.trzszPath() {
-                        runCmd = Self.shellQuote(trzsz) + " " + cmd
+                        runCmd = Self.shellQuote(trzsz) + " -z -d " + cmd
+                        trzszWrapped = true
                     }
                     // 终端首行打印连接信息（本地 printf，暗灰色；不发给远端、不影响登录）。
                     // Ghostty 对 command 是 `exec -l <argv0>`，不能用 `;` 串联（否则只 exec 到
@@ -1655,9 +1660,8 @@ class XGhosttyConsoleController: NSWindowController {
             }
             if let workingDirectory, !workingDirectory.isEmpty {
                 cfg.workingDirectory = workingDirectory
-            } else if transport == .ssh, layoutStore.layout.trzszEnabled == true,
-                      let node, !node.isLocalShell, Self.trzszPath() != nil {
-                // trzsz 默认把 tsz 下载落到本机进程 cwd → 设成 ~/Downloads，兑现「下载到 ~/Downloads」。
+            } else if trzszWrapped {
+                // trzsz 默认把 tsz/sz 下载落到本机进程 cwd → 设成 ~/Downloads，兑现「下载到 ~/Downloads」。
                 let dl = FileManager.default.homeDirectoryForCurrentUser
                     .appendingPathComponent("Downloads", isDirectory: true)
                 try? FileManager.default.createDirectory(at: dl, withIntermediateDirectories: true)
@@ -1738,9 +1742,10 @@ class XGhosttyConsoleController: NSWindowController {
             // ZMODEM(rz/sz)文件传输（opt-in，默认关）：仅 ssh 远端会话武装；侦测到触发头桥接本机 lrzsz。
             // 与日志/共享/expect 经分发器并存（不互斥）。
             if let node, !node.isLocalShell, transport == .ssh,
-               layoutStore.layout.zmodemEnabled == true {
-                let bridge = ZmodemBridge(surface: sv) { [weak self] activity in
-                    self?.handleZmodemActivity(activity)
+               layoutStore.layout.zmodemEnabled == true, !trzszWrapped {
+                let bridge = ZmodemBridge(surface: sv)
+                bridge.onActivity = { [weak self, weak bridge] activity in
+                    self?.handleZmodemActivity(activity, bridge: bridge)
                 }
                 sv.xghosttyAddOutputSink(key: bridge) { [weak bridge] data in bridge?.feed(data) }
                 tab.zmodem = bridge
@@ -1925,20 +1930,24 @@ class XGhosttyConsoleController: NSWindowController {
         ])
     }
 
-    /// 桥接器活动（主线程）：开始传输 → 显浮层遮乱码；结束 → 隐浮层（短延时等远端 Ctrl-L 重绘落地）。
-    private func handleZmodemActivity(_ activity: ZmodemBridge.Activity) {
+    /// 桥接器活动（主线程）：开始传输 → 显浮层（屏幕已被 divert 冻结干净）；进度 → 刷字节数；
+    /// 结束 → 隐浮层。`bridge` 用于 Esc 取消时定位当前传输。
+    private func handleZmodemActivity(_ activity: ZmodemBridge.Activity, bridge: ZmodemBridge?) {
         switch activity {
         case .started(let dir, let label):
             let verb = dir == .download ? "接收" : "发送"
+            activeZmodemBridge = bridge
             zmodemHeader = "ZMODEM \(verb)中：\(label)"
-            zmodemLabel.stringValue = zmodemHeader + "\n（传输期间请勿操作终端）"
+            zmodemLabel.stringValue = zmodemHeader + "\n按 Esc 取消"
             zmodemOverlay.isHidden = false
             surfaceContainer.addSubview(zmodemOverlay)   // 提到最上层（防新 tab 的 scroll 后插盖住）
         case .progress(let line):
-            // lrzsz stderr 解析出的进度行（如 "Bytes Sent: 1024/4096 BPS:512"），接在抬头之后。
-            zmodemLabel.stringValue = (zmodemHeader.isEmpty ? "ZMODEM 传输中" : zmodemHeader) + "\n" + line
+            // 字节计数进度（如 "已接收 2.3 MB"），接在抬头之后；底下保留 Esc 提示。
+            zmodemLabel.stringValue = (zmodemHeader.isEmpty ? "ZMODEM 传输中" : zmodemHeader)
+                + "\n" + line + "　·　按 Esc 取消"
         case .finished(let message):
-            // 此时 ZmodemBridge 已撤截流 + 回车（成功路径），等远端新提示符落地再撤浮层，避免露出旧帧。
+            // 此时 ZmodemBridge 已撤截流 + 回车（成功/取消路径），等远端新提示符落地再撤浮层。
+            activeZmodemBridge = nil
             zmodemHeader = ""
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                 self?.zmodemOverlay.isHidden = true
@@ -2432,6 +2441,10 @@ class XGhosttyConsoleController: NSWindowController {
             if event.modifierFlags.contains(.control), event.modifierFlags.contains(.shift),
                !cmd, ch == "s" {        // ⌃⇧S 共享此会话（主 app 同款；座舱主菜单项走不到响应链）
                 self.currentSurface?.toggleSessionSharing(from: self.window)
+                return nil
+            }
+            if event.keyCode == 53, let bridge = self.activeZmodemBridge {  // Esc 取消进行中的 ZMODEM 传输
+                bridge.cancel()
                 return nil
             }
             if event.keyCode == 53, self.searchOverlayHosting != nil {   // Esc 关搜索

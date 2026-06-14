@@ -139,17 +139,17 @@ struct ConsoleSettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Toggle("ZMODEM 文件传输（rz/sz）", isOn: $zmodemEnabled)
-                    .onChange(of: zmodemEnabled) { onToggleZmodem($0) }
-                Text("开启后，在 ssh 会话里跑远端的 sz（下载到 ~/Downloads）/ rz（上传，弹框选文件）会自动桥接本机 lrzsz 完成传输。需先 brew install lrzsz。传输时屏幕会被「传输中」浮层遮住、底层冻结干净（不再刷乱码）。仅对新打开的 ssh 会话生效。")
+                Toggle("文件传输（trz/tsz/rz/sz · 推荐）", isOn: $trzszEnabled)
+                    .onChange(of: trzszEnabled) { onToggleTrzsz($0) }
+                Text("开启后新打开的 ssh 会话用 trzsz-go 透明包裹（trzsz -z -d ssh …）：远端跑 trz/tsz **和** rz/sz 都由本机 trzsz 原生处理——进度条、总大小、无乱码、拖文件上传全都有，最可靠。需先 brew install trzsz-go。下载落到 ~/Downloads。**这一个就够了**，强烈推荐只用它。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Toggle("trzsz 文件传输（trz/tsz）", isOn: $trzszEnabled)
-                    .onChange(of: trzszEnabled) { onToggleTrzsz($0) }
-                Text("开启后，新打开的 ssh 会话会用 trzsz 透明包裹（trzsz ssh …）：远端跑 trz（上传，把文件拖进终端）/ tsz（下载到 ~/Downloads）时由本机 trzsz 自动完成，屏幕无乱码、自带进度条。需先 brew install trzsz（未装则自动退回普通 ssh）。与上面的 lrzsz 互不影响、可同时开。")
+                Toggle("ZMODEM 兜底（仅未装 trzsz-go 时）", isOn: $zmodemEnabled)
+                    .onChange(of: zmodemEnabled) { onToggleZmodem($0) }
+                Text("仅当本机**没装 trzsz-go**、又想要 rz/sz 时才开：用内置伪终端桥接本机 lrzsz（需 brew install lrzsz）。可靠性不如上面的 trzsz，传输中可按 Esc 取消。装了 trzsz-go 的话开上面那个即可，本项无需开。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
