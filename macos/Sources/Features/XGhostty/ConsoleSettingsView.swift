@@ -150,7 +150,7 @@ struct ConsoleSettingsView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Button("修复钥匙串授权") { repairKeychain() }
-                Text("若每次启动都弹「XGhostty 想访问你的钥匙串」框：点这里在当前签名下重建密码保险库的授权（删项重建），之后同一证书签名的构建读取保险库不再弹框。会先读一次现有密码（旧授权仍脏时可能弹最后一次，点「始终允许」放行）。")
+                Text("把密码保险库的钥匙串授权重置到当前构建（清理 ad-hoc 时代遗留的旧授权）。注意：自签证书下每次「重新构建」二进制哈希都会变，仍会重新弹一次授权框——这是固有限制，重建后点一次「始终允许」即可；单纯重开同一版不弹。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
