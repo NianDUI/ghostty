@@ -485,6 +485,20 @@ extension Ghostty {
                 ghostty_surface_send_bytes(surface, ptr, UInt(rawBuffer.count))
             }
         }
+
+        /// XGhostty 会话日志：复用 session-sharing 在 Zig 侧建好的 output_callback C 机制，把本
+        /// surface 的 pty 原始输出 tee 给 `SessionLogger`(context)。**单 callback 槽**——同一会话
+        /// 再开 ⌃⇧S 共享会互相覆盖（已知取舍）。`context` = `passUnretained(logger)`，logger 由
+        /// `SessionLogStore` 强持有到 detach。
+        func xghosttyAttachOutputLog(_ context: UnsafeMutableRawPointer) {
+            guard let surface else { return }
+            ghostty_surface_set_output_callback(surface, xghosttyOutputLogCallback, context)
+        }
+
+        func xghosttyDetachOutputLog() {
+            guard let surface else { return }
+            ghostty_surface_set_output_callback(surface, nil, nil)
+        }
 #endif
 
         fileprivate func applySharedResize(cols: Int, rows: Int) {
@@ -2018,6 +2032,20 @@ private func sessionSharingOutputCallback(
     let data = Data(bytes: bytes, count: Int(length))
     controller.enqueueOutgoing(data)
 }
+
+#if XGHOSTTY
+/// XGhostty 会话日志回调：termio 线程每批 pty 输出触发，转交 `SessionLogger` 异步落盘。
+/// 顶层无捕获函数 → 可直接桥接为 C 函数指针（同 `sessionSharingOutputCallback` 范式）。
+private func xghosttyOutputLogCallback(
+    _ context: UnsafeMutableRawPointer?,
+    _ bytes: UnsafePointer<CChar>?,
+    _ length: UInt
+) {
+    guard let context, let bytes, length > 0 else { return }
+    let logger = Unmanaged<SessionLogger>.fromOpaque(context).takeUnretainedValue()
+    logger.ingest(Data(bytes: bytes, count: Int(length)))
+}
+#endif
 
 /// One-shot bridge for "create a surface and immediately share it"
 /// (the create_session control frame). The requesting session's

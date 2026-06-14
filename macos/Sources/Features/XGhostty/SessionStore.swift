@@ -59,10 +59,14 @@ struct QuickCommand: Codable, Identifiable, Equatable {
     var id: UUID
     var label: String
     var command: String
-    init(id: UUID = UUID(), label: String, command: String) {
+    /// 作用范围：nil = 全局（所有会话可见）；非 nil = 仅当前会话属于该分组（含后代子组）时显示。
+    /// Optional 向后兼容旧 JSON（缺字段 → nil = 全局）。
+    var groupId: UUID?
+    init(id: UUID = UUID(), label: String, command: String, groupId: UUID? = nil) {
         self.id = id
         self.label = label
         self.command = command
+        self.groupId = groupId
     }
 }
 

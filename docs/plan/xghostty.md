@@ -384,7 +384,27 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 - [x] **查看被哪些会话/跳板机引用**：`SessionStore.sessionsReferencing(credentialId:)` → `[(node, path)]`（path = `分组 › 子组 › 会话名`）；`CredentialLibraryView.usage(of:)` 静态聚合**会话**（`SessionNode.credentialId`）+ **跳板机**（`JumpHost.credentialId`）两类引用。编辑页 `usageSection` 列出全部引用（两类图标区分、可滚动封顶 110pt，仅 `!isNew` 且非空）；列表行右侧加「N 处引用」accent 徽标。
 - [x] **删除前看清影响面**：删除确认框从笼统提示改为**列出具体引用方**（封顶 10 条、跳板机带前缀、余数省略；无人引用时明确提示"当前没有会话或跳板机引用它"）——避免误删共享凭据。
 
-> **M2 剩余**：简化 expect / 组级快捷命令 / 广播审计日志 / 会话日志落盘。（组广播、XShell·WindTerm 导入、跳板机管理、密码库查看引用 已完成。）
+### M2 —— 第十九批（2026-06-14，广播审计日志，已构建启动）
+
+- [x] **`BroadcastAuditLog`**：批量发送条向「全部 / 分组」群发命令时留痕（高危操作可追溯）。挂在 `onBroadcast` 实际群发之后，**只记真广播**（目标≠当前会话），单发不记（噪音）。串行队列异步落盘 `~/.config/xghostty/broadcast-audit.log`（0600，**JSON Lines** 每行一条：`ts`[本地时区]/`target`/`count`/`sessions[{name,host}]`/`command`），便于 `jq`/`grep` 与将来「审计查看 UI」。反查命中 tab 取会话名/host。
+- [x] **查看入口**：座舱设置「查看广播审计日志」→ Finder 定位文件（自选编辑器打开）；无记录时友好提示。
+
+### M2 —— 第二十批（2026-06-14，会话日志落盘，已构建启动）
+
+把每个 **ssh 会话**的终端输出实时 tee 到本地文件。**零改 Zig 核心**——复用 session-sharing 在 `src/` 已建好的 `ghostty_surface_set_output_callback` C 机制（调研确认通路；见 `docs/plan/session-sharing.md`）。
+
+- [x] **`SessionLogStore` / `SessionLogger`**（新）：`SessionLogger` 把 pty 原始字节追加到 `.log`——`ingest` 由 termio 回调在 **termio 线程**同步触发 → 立刻派发到自己的串行队列异步落盘，**绝不**在 termio 线程做文件 IO（否则拖慢 pty 读取）。懒创建文件（首批输出才建，目录 0700/文件 0600）。`SessionLogStore` 按开关给会话挂回调、管生命周期。
+- [x] **`SurfaceView_AppKit.swift`** `#if XGHOSTTY` 块：加 `xghosttyAttachOutputLog`/`xghosttyDetachOutputLog`（实例方法）+ 顶层 `xghosttyOutputLogCallback`（同 `sessionSharingOutputCallback` 范式，转交 `SessionLogger`）。
+- [x] **接线**：`openTab`（仅远端 ssh 会话）`start` / `closeTab` `stop`；`LayoutStore.sessionLogging` 开关（设置面板）+ 「打开日志目录」按钮。文件 `~/.config/xghostty/logs/<安全会话名>-<时间戳>.log`，内容 **raw 字节**（含 ANSI，`cat`/`less -R` 回放）。
+- **取舍**：开关**默认关**（隐私/磁盘 + 与共享互斥），**仅对新打开会话生效**。Zig 侧 output_callback 是**单槽** → 同一会话再开 ⌃⇧S 共享会互相覆盖（XGhostty 场景极少同时用）；彻底共存需在 src/ 加第二槽（改 C ABI + 重建 xcframework），成本高，未做。
+
+### M2 —— 第二十一批（2026-06-14，组级快捷命令 + 移除 Finder 服务菜单，已构建启动）
+
+- [x] **组级快捷命令**：`QuickCommand.groupId: UUID?`（nil=全局，Optional 向后兼容）。快捷条 = 全局命令 + **当前会话所属分组链**（直接父组到根）的组级命令；`select` 切 tab 时刷新（本地 shell/根级会话只见全局）。`QuickCommandEditView` 加「作用范围」下拉（全局/各分组）；`+` 新增默认 = 当前会话直接父组。拖拽重排**可见子集 → 合并回完整数组**（可见项按新序填回原槽位、隐藏项原位不动，不因过滤丢序）。
+- [x] **移除 XGhostty 的 Finder 服务菜单**：`Ghostty copy-Info.plist` 删整个 `NSServices`（`openTab`/`openWindow` 两个 "New XGhostty Tab/Window Here"，duplicate target 时从主 Ghostty 继承，座舱用不上）。`PlistBuddy -c "Delete :NSServices"` + `plutil -lint` 校验；`lsregister -f` 重注册 + `pbs -flush` 刷新服务缓存（旧菜单项消失，顽固时重开 Finder 窗口/注销重登）。主 Ghostty 服务不动。
+- [x] **Info.plist fileRef 相对路径**（已单独提交 `1bcb37ab7`）：`Ghostty copy-Info.plist` 的 PBXFileReference 从本机绝对路径 + `sourceTree=<absolute>` 改为相对 path + `<group>`（对齐主 Ghostty-Info.plist），换机/换路径后 Xcode 导航器不再丢失引用。构建走 `INFOPLIST_FILE` 不受影响。
+
+> **M2 剩余**：简化 expect（**暂缓**——自动登录主用例已被 askpass/ProxyCommand/`accept-new` 覆盖，价值低；且需先把输出捕获重构成「分发器」以与会话日志共存[单 callback 槽]，成本高）。（组广播、XShell·WindTerm 导入、跳板机管理、密码库查看引用、广播审计、会话日志落盘、组级快捷命令 已完成。）
 
 > 拖拽（1、2）在扁平 `ScrollView + LazyVStack`（已替换原 List / DisclosureGroup）上做 `onDrag`/`onDrop` + drop 落点高亮；落地前先 spike 验证拖拽手势与现有单击选中/⌘⇧多选/双击不打架。
 

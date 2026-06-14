@@ -1042,12 +1042,41 @@ class XGhosttyConsoleController: NSWindowController {
 
     private func makeQuickBar() -> QuickCommandBar {
         QuickCommandBar(
-            commands: store.quickCommands,
+            commands: visibleQuickCommands(),
             onRun: { [weak self] in self?.runQuickCommand($0) },
             onAdd: { [weak self] in self?.presentQuickCommandEditor(editing: nil) },
             onEdit: { [weak self] in self?.presentQuickCommandEditor(editing: $0) },
             onDelete: { [weak self] in self?.deleteQuickCommand($0) },
-            onReorder: { [weak self] in self?.store.setQuickCommands($0) })
+            onReorder: { [weak self] in self?.reorderVisibleQuickCommands($0) })
+    }
+
+    /// 当前会话可见的快捷命令 = 全局（groupId=nil）+ 当前会话所属分组链上的组级命令。
+    private func visibleQuickCommands() -> [QuickCommand] {
+        let ancestors = currentSessionAncestorGroupIds()
+        return store.quickCommands.filter { $0.groupId == nil || ancestors.contains($0.groupId!) }
+    }
+
+    /// 当前会话所属的所有祖先分组 id（直接父组到根）。本地 shell / 无 node → 空集（只剩全局命令）。
+    private func currentSessionAncestorGroupIds() -> Set<UUID> {
+        guard let id = currentTabId, let nodeId = tabs[id]?.nodeId else { return [] }
+        var out: Set<UUID> = []
+        var cur = store.parentId(of: nodeId)
+        while let p = cur { out.insert(p); cur = store.parentId(of: p) }
+        return out
+    }
+
+    /// 当前会话的直接父分组（新建快捷命令时作默认作用范围）。
+    private func currentSessionDirectParentGroupId() -> UUID? {
+        guard let id = currentTabId, let nodeId = tabs[id]?.nodeId else { return nil }
+        return store.parentId(of: nodeId)
+    }
+
+    /// 拖拽重排「可见子集」→ 合并回完整数组：可见项按新序填回其原槽位，隐藏项原位不动。
+    private func reorderVisibleQuickCommands(_ reordered: [QuickCommand]) {
+        let visibleIds = Set(reordered.map(\.id))
+        var it = reordered.makeIterator()
+        let merged = store.quickCommands.map { visibleIds.contains($0.id) ? (it.next() ?? $0) : $0 }
+        store.setQuickCommands(merged)
     }
 
     private func refreshQuickBar() {
@@ -1186,6 +1215,7 @@ class XGhosttyConsoleController: NSWindowController {
             sortByName: layoutStore.layout.sortByName ?? false,
             collapseDescendants: layoutStore.layout.collapseDescendants ?? true,
             collapseAllOnExit: layoutStore.layout.collapseAllOnExit ?? false,
+            sessionLogging: layoutStore.layout.sessionLogging ?? false,
             onToggleAutoSave: { [weak self] on in
                 self?.layoutStore.setAutoSave(on)
                 if on { self?.scheduleSaveLayout() }
@@ -1199,6 +1229,9 @@ class XGhosttyConsoleController: NSWindowController {
             },
             onToggleCollapseAllOnExit: { [weak self] on in
                 self?.layoutStore.setCollapseAllOnExit(on)
+            },
+            onToggleSessionLogging: { [weak self] on in
+                self?.layoutStore.setSessionLogging(on)
             },
             onResetLayout: { [weak self] in self?.resetLayout() },
             onClose: { [weak self] in self?.dismissEditor() })
@@ -1496,6 +1529,10 @@ class XGhosttyConsoleController: NSWindowController {
             }
             tabs[tabId] = tab
             tabOrder.append(tabId)
+            // 会话日志：仅对远端（ssh）会话挂输出落盘（本地 shell 不记）；开关在座舱设置，默认关。
+            if let node, !node.isLocalShell {
+                SessionLogStore.shared.start(tabId: tabId, title: title, surface: sv)
+            }
             select(tabId)
             refreshTree()
             return tabId
@@ -1562,6 +1599,7 @@ class XGhosttyConsoleController: NSWindowController {
 
     func closeTab(_ tabId: UUID) {
         guard let tab = tabs[tabId] else { return }
+        SessionLogStore.shared.stop(tabId: tabId, surface: tab.surface)   // 撤回调 + flush 关日志
         tab.scroll.removeFromSuperview()
         tabs[tabId] = nil
         tabOrder.removeAll { $0 == tabId }
@@ -1654,6 +1692,7 @@ class XGhosttyConsoleController: NSWindowController {
         currentTabId = tabId
         if let sv = tabs[tabId]?.surface { window?.makeFirstResponder(sv) }
         refreshTabBar()
+        refreshQuickBar()         // 组级快捷命令随当前会话所属分组刷新
         // 窗口标题 = 当前 tab 名 + 当前目录；订阅 pwd 变化（OSC7 跟踪）实时更新。
         titlePwdCancellable = tabs[tabId]?.surface.$pwd
             .receive(on: DispatchQueue.main)
@@ -1736,6 +1775,8 @@ class XGhosttyConsoleController: NSWindowController {
     private func presentQuickCommandEditor(editing existing: QuickCommand?) {
         let view = QuickCommandEditView(
             command: existing,
+            groups: allGroups(),
+            defaultGroupId: currentSessionDirectParentGroupId(),
             onSave: { [weak self] cmd in
                 guard let self else { return }
                 if existing == nil {
@@ -1998,6 +2039,14 @@ class XGhosttyConsoleController: NSWindowController {
         }
         let data = Self.sendBytes(for: cmd)
         for sv in targets { sv.xghosttySendBytes(data) }
+        // 审计：只记真广播（全部/分组），单发当前会话不记（噪音大）。反查命中 tab 取会话名/host。
+        if broadcastTarget != .current {
+            let hit = tabOrder.compactMap { tabs[$0] }
+                .filter { tab in targets.contains { $0 === tab.surface } }
+                .map { (name: $0.title, host: $0.nodeId.flatMap { store.find($0)?.host }) }
+            BroadcastAuditLog.shared.record(
+                command: cmd, targetLabel: broadcastTargetLabel, targets: hit)
+        }
     }
 
     /// 快捷命令：**只发当前会话**（不随广播目标下拉变化，避免点一下就喷所有机器）。

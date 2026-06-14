@@ -17,6 +17,8 @@ struct ConsoleLayout: Codable, Equatable {
     var collapseDescendants: Bool?
     /// 退出应用后是否全部折叠：开启则每次启动忽略已存展开态、全部分组收起（nil/false=按上次状态恢复）。
     var collapseAllOnExit: Bool?
+    /// 是否对远端（ssh）会话把终端输出落盘到 ~/.config/xghostty/logs（nil/false=关）。
+    var sessionLogging: Bool?
 
     init(autoSave: Bool = true,
          windowFrame: CGRect? = nil,
@@ -26,7 +28,8 @@ struct ConsoleLayout: Codable, Equatable {
          expandedGroups: [UUID]? = nil,
          sortByName: Bool? = nil,
          collapseDescendants: Bool? = nil,
-         collapseAllOnExit: Bool? = nil) {
+         collapseAllOnExit: Bool? = nil,
+         sessionLogging: Bool? = nil) {
         self.autoSave = autoSave
         self.windowFrame = windowFrame
         self.treeWidth = treeWidth
@@ -36,6 +39,7 @@ struct ConsoleLayout: Codable, Equatable {
         self.sortByName = sortByName
         self.collapseDescendants = collapseDescendants
         self.collapseAllOnExit = collapseAllOnExit
+        self.sessionLogging = sessionLogging
     }
 }
 
@@ -87,11 +91,18 @@ final class LayoutStore {
         persist()
     }
 
+    /// 仅改「会话日志落盘」偏好。
+    func setSessionLogging(_ on: Bool) {
+        layout.sessionLogging = on
+        persist()
+    }
+
     /// 清空布局字段（保留偏好开关），用于「还原默认布局」。
     func resetLayout() {
         layout = ConsoleLayout(autoSave: layout.autoSave, sortByName: layout.sortByName,
                                collapseDescendants: layout.collapseDescendants,
-                               collapseAllOnExit: layout.collapseAllOnExit)
+                               collapseAllOnExit: layout.collapseAllOnExit,
+                               sessionLogging: layout.sessionLogging)
         persist()
     }
 

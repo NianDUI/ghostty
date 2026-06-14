@@ -8,10 +8,12 @@ struct ConsoleSettingsView: View {
     @State private var sortByName: Bool
     @State private var collapseDescendants: Bool
     @State private var collapseAllOnExit: Bool
+    @State private var sessionLogging: Bool
     var onToggleAutoSave: (Bool) -> Void
     var onToggleSort: (Bool) -> Void
     var onToggleCollapseDescendants: (Bool) -> Void
     var onToggleCollapseAllOnExit: (Bool) -> Void
+    var onToggleSessionLogging: (Bool) -> Void
     var onResetLayout: () -> Void
     var onClose: () -> Void
 
@@ -19,20 +21,24 @@ struct ConsoleSettingsView: View {
          sortByName: Bool,
          collapseDescendants: Bool,
          collapseAllOnExit: Bool,
+         sessionLogging: Bool,
          onToggleAutoSave: @escaping (Bool) -> Void,
          onToggleSort: @escaping (Bool) -> Void,
          onToggleCollapseDescendants: @escaping (Bool) -> Void,
          onToggleCollapseAllOnExit: @escaping (Bool) -> Void,
+         onToggleSessionLogging: @escaping (Bool) -> Void,
          onResetLayout: @escaping () -> Void,
          onClose: @escaping () -> Void) {
         _autoSave = State(initialValue: autoSave)
         _sortByName = State(initialValue: sortByName)
         _collapseDescendants = State(initialValue: collapseDescendants)
         _collapseAllOnExit = State(initialValue: collapseAllOnExit)
+        _sessionLogging = State(initialValue: sessionLogging)
         self.onToggleAutoSave = onToggleAutoSave
         self.onToggleSort = onToggleSort
         self.onToggleCollapseDescendants = onToggleCollapseDescendants
         self.onToggleCollapseAllOnExit = onToggleCollapseAllOnExit
+        self.onToggleSessionLogging = onToggleSessionLogging
         self.onResetLayout = onResetLayout
         self.onClose = onClose
     }
@@ -73,12 +79,28 @@ struct ConsoleSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("记录会话日志（ssh 输出落盘）", isOn: $sessionLogging)
+                    .onChange(of: sessionLogging) { onToggleSessionLogging($0) }
+                Text("开启后，之后打开的 ssh 会话会把终端输出（含控制序列）追加到 ~/.config/xghostty/logs/。仅对新打开的会话生效；与 ⌃⇧S 会话共享互斥（同一会话别同时用）。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("打开日志目录") { openLogsDir() }
+            }
+
             Divider()
 
             VStack(alignment: .leading, spacing: 6) {
                 Button("还原默认布局") { onResetLayout() }
                 Text("把分隔条、窗口尺寸、分组展开态恢复到初始状态。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Button("查看广播审计日志") { openAuditLog() }
+                Text("批量发送条向「全部 / 分组」群发的命令会留痕到 broadcast-audit.log（JSON Lines），可追溯哪条命令打到了哪些机器。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
@@ -91,6 +113,29 @@ struct ConsoleSettingsView: View {
         }
         .padding(20)
         .frame(width: 420)
+    }
+
+    /// 打开会话日志目录（不存在则先建一个空目录再打开）。
+    private func openLogsDir() {
+        let dir = SessionLogStore.shared.dir
+        try? FileManager.default.createDirectory(
+            at: dir, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+        NSWorkspace.shared.open(dir)
+    }
+
+    /// 在 Finder 中定位审计日志文件（让用户自选用什么打开）；还没有记录则提示。
+    private func openAuditLog() {
+        let url = BroadcastAuditLog.shared.fileURL
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "还没有广播记录"
+            alert.informativeText = "向「全部」或某个分组群发命令后，这里会生成审计日志。"
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+        }
     }
 }
 #endif

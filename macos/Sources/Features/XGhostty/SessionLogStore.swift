@@ -1,0 +1,109 @@
+#if XGHOSTTY
+import Foundation
+
+/// 单个会话的日志 writer：把 pty 原始输出追加到一个 `.log` 文件。
+///
+/// **线程**：`ingest` 由 termio 输出回调在 **termio 线程**同步调用 → 立刻派发到自己的串行队列
+/// 异步落盘，**绝不**在 termio 线程做文件 IO（否则拖慢 pty 读取、卡终端）。
+///
+/// **内容**：raw 字节，含 ANSI 转义 / 控制序列（保真）。`cat <file>` 在终端能彩色回放，
+/// `less -R` 亦可；要纯文本可后续加「剥离 ANSI」选项。
+final class SessionLogger {
+    let fileURL: URL
+    private let queue: DispatchQueue
+    private var handle: FileHandle?
+    private var opened = false
+
+    init(fileURL: URL) {
+        self.fileURL = fileURL
+        self.queue = DispatchQueue(label: "top.niandui.xghostty.sessionlog")
+    }
+
+    /// termio 线程调用：派发到串行队列异步追加。
+    func ingest(_ data: Data) {
+        queue.async { [weak self] in self?.append(data) }
+    }
+
+    private func append(_ data: Data) {
+        if !opened { open() }
+        guard let handle else { return }
+        try? handle.write(contentsOf: data)
+    }
+
+    /// 懒创建：首批输出到来才建文件（避免空会话留空文件）。目录 0700、文件 0600。
+    private func open() {
+        opened = true
+        let fm = FileManager.default
+        try? fm.createDirectory(at: fileURL.deletingLastPathComponent(),
+                                withIntermediateDirectories: true,
+                                attributes: [.posixPermissions: 0o700])
+        if !fm.fileExists(atPath: fileURL.path) {
+            fm.createFile(atPath: fileURL.path, contents: nil,
+                          attributes: [.posixPermissions: 0o600])
+        }
+        handle = try? FileHandle(forWritingTo: fileURL)
+        _ = try? handle?.seekToEnd()
+    }
+
+    /// flush + 关闭文件句柄（串行队列上执行，确保排在所有 append 之后）。
+    func close() {
+        queue.async { [weak self] in
+            try? self?.handle?.close()
+            self?.handle = nil
+        }
+    }
+}
+
+/// 会话日志总管：按开关给**远端（ssh）会话**挂输出回调、落盘到 `~/.config/xghostty/logs/`。
+///
+/// 复用 session-sharing 在 Zig 侧建好的 `ghostty_surface_set_output_callback` C 机制
+/// （`SurfaceView.xghosttyAttachOutputLog`）——**零改 Zig 核心**。注意该回调在 Zig 侧是
+/// **单槽**：同一会话若再开 ⌃⇧S 共享会互相覆盖（XGhostty 场景极少同时用，已知取舍）。
+final class SessionLogStore {
+    static let shared = SessionLogStore()
+    let dir: URL
+
+    /// 在记的会话：tabId → logger（强持有，覆盖整个会话生命周期；`passUnretained(context)` 因此安全）。
+    private var loggers: [UUID: SessionLogger] = [:]
+
+    private let stamp: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+
+    init() {
+        dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/xghostty/logs", isDirectory: true)
+    }
+
+    /// 开关（存 layout.json）。
+    var enabled: Bool { LayoutStore.shared.layout.sessionLogging == true }
+
+    /// 开始记录（仅当开关开 + 该 tab 尚未在记）。文件名 = `<安全会话名>-<时间戳>.log`。
+    func start(tabId: UUID, title: String, surface: Ghostty.SurfaceView) {
+        guard enabled, loggers[tabId] == nil else { return }
+        let url = dir.appendingPathComponent("\(Self.safeName(title))-\(stamp.string(from: Date())).log")
+        let logger = SessionLogger(fileURL: url)
+        loggers[tabId] = logger   // 先强持有再 attach
+        surface.xghosttyAttachOutputLog(Unmanaged.passUnretained(logger).toOpaque())
+    }
+
+    /// 停止记录（撤回调 + flush 关文件）。会话关闭时调用。
+    func stop(tabId: UUID, surface: Ghostty.SurfaceView) {
+        guard let logger = loggers[tabId] else { return }
+        surface.xghosttyDetachOutputLog()
+        logger.close()
+        loggers[tabId] = nil
+    }
+
+    /// 会话名 → 安全文件名（去路径分隔/非法字符/控制符，截断 60，空则 session）。
+    private static func safeName(_ s: String) -> String {
+        let bad = CharacterSet(charactersIn: "/\\:?%*|\"<>").union(.controlCharacters)
+        let cleaned = s.components(separatedBy: bad).joined(separator: "_")
+            .trimmingCharacters(in: .whitespaces)
+        return cleaned.isEmpty ? "session" : String(cleaned.prefix(60))
+    }
+}
+#endif

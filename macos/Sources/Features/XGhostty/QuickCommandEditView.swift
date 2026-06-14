@@ -9,23 +9,36 @@ import SwiftUI
 struct QuickCommandEditView: View {
     private let id: UUID
     private let isNew: Bool
+    private let groups: [(id: UUID, name: String)]
     var onSave: (QuickCommand) -> Void
     var onCancel: () -> Void
 
     @State private var label: String
     @State private var command: String
+    @State private var groupId: UUID?
     @State private var errorText: String?
 
     init(command: QuickCommand?,
+         groups: [(id: UUID, name: String)],
+         defaultGroupId: UUID?,
          onSave: @escaping (QuickCommand) -> Void,
          onCancel: @escaping () -> Void) {
-        let c = command ?? QuickCommand(label: "", command: "")
+        // 新建时默认作用范围 = 当前会话直接所属分组（在某组下按 + 新增自然挂到该组）。
+        let c = command ?? QuickCommand(label: "", command: "", groupId: defaultGroupId)
         self.id = c.id
         self.isNew = command == nil
+        self.groups = groups
         self.onSave = onSave
         self.onCancel = onCancel
         _label = State(initialValue: c.label)
         _command = State(initialValue: c.command)
+        _groupId = State(initialValue: c.groupId)
+    }
+
+    /// 作用范围下拉的显示文案。
+    private var scopeLabel: String {
+        guard let groupId else { return "全局（所有会话）" }
+        return groups.first { $0.id == groupId }?.name ?? "已删除的分组"
     }
 
     var body: some View {
@@ -46,6 +59,31 @@ struct QuickCommandEditView: View {
                     .font(.system(size: 12, design: .monospaced))
                     .frame(height: 90)
                     .consoleEditorBox()
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("作用范围").font(.system(size: 11)).foregroundStyle(.secondary)
+                Menu {
+                    Button("全局（所有会话）") { groupId = nil }
+                    if !groups.isEmpty {
+                        Divider()
+                        ForEach(groups.indices, id: \.self) { i in
+                            Button(groups[i].name) { groupId = groups[i].id }
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text(scopeLabel)
+                        Spacer()
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 9)).foregroundStyle(.secondary)
+                    }
+                    .consoleFieldBox()
+                }
+                .buttonStyle(.plain)
+                Text("选某分组后，仅在「当前会话属于该分组（含子分组）」时，此命令才出现在快捷条；全局则始终显示。")
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let errorText {
@@ -69,7 +107,7 @@ struct QuickCommandEditView: View {
         guard !l.isEmpty else { errorText = "名称不能为空"; return }
         let c = command.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !c.isEmpty else { errorText = "命令不能为空"; return }
-        onSave(QuickCommand(id: id, label: l, command: c))
+        onSave(QuickCommand(id: id, label: l, command: c, groupId: groupId))
     }
 }
 #endif
