@@ -143,6 +143,99 @@ enum SessionCommandBuilder {
         return Built(command: parts.joined(separator: " "), environment: baseEnv)
     }
 
+    /// 构造 **sftp** 命令（「打开 SFTP」标签：在终端内跑交互式 sftp，浏览 / 收发远端文件）。
+    ///
+    /// 与 `build` 的差异：① 二进制是 `sftp`；② 端口用大写 `-P`（sftp 的端口选项，ssh 是小写 `-p`）；
+    /// ③ 不加 `-t`（sftp 自带交互，不需强制 tty）；④ **不**追加远端 OSC7 bootstrap 位置参数——sftp 的
+    /// 位置参数是远端**路径**而非 shell 命令，塞脚本会被当路径；sftp 自己维护远端 cwd，无需 OSC7 跟踪。
+    /// auth（`SSH_ASKPASS`）/ identity（`-i`）/ policy / jump 经 `-o`/`-i`/`-J` 透传，与 ssh 完全一致：
+    /// sftp 复用 ssh 传输层，`SSH_ASKPASS_REQUIRE=force` 同样让它走 askpass（见 [[XGhosttyAskpass]]）。
+    /// 本地节点无 sftp 目标，按非法主机拒绝（调用方应只对远端会话触发）。
+    static func buildSFTP(for node: SessionNode, policy: PasswordPolicy = .none,
+                          jump: Jump? = nil) throws -> Built {
+        guard !node.isLocalShell, let host = node.host, validHost(host) else {
+            throw SessionCommandError.invalidHost(node.host ?? "")
+        }
+
+        var parts: [String] = [
+            "sftp",
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
+            "-o", "HostKeyAlgorithms=+ssh-rsa",
+        ]
+
+        switch policy {
+        case .none:
+            break
+        case .auto:
+            parts += [
+                "-o", "PreferredAuthentications=publickey,keyboard-interactive,password",
+                "-o", "NumberOfPasswordPrompts=1",
+            ]
+        case .strict:
+            parts += [
+                "-o", "PubkeyAuthentication=no",
+                "-o", "PreferredAuthentications=keyboard-interactive,password",
+                "-o", "NumberOfPasswordPrompts=1",
+            ]
+        }
+
+        if let port = node.port {
+            guard (1...65535).contains(port) else {
+                throw SessionCommandError.invalidPort(port)
+            }
+            parts += ["-P", String(port)]   // sftp 端口选项是大写 -P（ssh 是小写 -p）
+        }
+
+        if let identity = node.identityFile, !identity.isEmpty {
+            let expanded = (identity as NSString).expandingTildeInPath
+            parts += ["-i", singleQuote(expanded), "-o", "IdentitiesOnly=yes"]
+        }
+
+        if let jump {
+            if jump.hasAuth {
+                parts += ["-o", singleQuote("ProxyCommand=" + proxyCommand(for: jump))]
+            } else {
+                var ep = jump.endpoint
+                if let p = jump.port { ep += ":\(p)" }
+                parts += ["-J", ep]
+            }
+        } else if let manual = node.proxyJump, !manual.isEmpty {
+            guard validProxy(manual) else {
+                throw SessionCommandError.invalidProxy(manual)
+            }
+            parts += ["-J", manual]
+        }
+
+        var target = host
+        if let user = node.user, !user.isEmpty {
+            guard validName(user) else {
+                throw SessionCommandError.invalidUser(user)
+            }
+            target = "\(user)@\(host)"
+        }
+        parts.append(target)
+
+        return Built(command: parts.joined(separator: " "), environment: baseEnv)
+    }
+
+    /// SFTP 标签首行展示用（只含 `sftp user@host` / `-P` / `-J`，不含 ServerAlive 等噪音）。本地返回 nil。
+    static func displaySFTPCommand(for node: SessionNode, viaJump: String? = nil) -> String? {
+        guard !node.isLocalShell, let host = node.host else { return nil }
+        var s = "sftp "
+        if let user = node.user, !user.isEmpty { s += "\(user)@" }
+        s += host
+        if let port = node.port { s += " -P \(port)" }
+        if let identity = node.identityFile, !identity.isEmpty {
+            s += " -i \((identity as NSString).abbreviatingWithTildeInPath)"
+        }
+        if let viaJump, !viaJump.isEmpty { s += " -J \(viaJump)" }
+        else if let jump = node.proxyJump, !jump.isEmpty { s += " -J \(jump)" }
+        return s
+    }
+
     /// 把一条跳板机构造成端点 `[user@]host`（端口另走；白名单校验，非法返回 nil）。
     static func jumpEndpoint(for jh: JumpHost) -> String? {
         guard validHost(jh.host) else { return nil }

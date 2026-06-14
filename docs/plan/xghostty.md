@@ -446,6 +446,21 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 
 > **M2 expect 至此收口**（不再暂缓）。**M3 剩余**：SFTP tab / trzsz(rz/sz) 文件传输（较大新交互模型，按需再开）。
 
+### 第二十六批（2026-06-14，SFTP 文件传输标签，已构建启动）
+
+收口 M3 计划里「开 sftp tab 按钮」一项（M3 范围本就**砍掉图形 SFTP 面板**，只做在终端内跑交互式 sftp）。复用现有 tab/surface 模型，全 `#if XGHOSTTY`，**零改 Zig**：
+
+- [x] **`SessionCommandBuilder.buildSFTP` + `displaySFTPCommand`**：与 `build` 的差异——① 二进制 `sftp`；② 端口大写 `-P`（ssh 是小写 `-p`）；③ 不加 `-t`（sftp 自带交互）；④ **不**追加远端 OSC7 bootstrap 位置参数（sftp 位置参数是远端**路径**，塞脚本会被当路径；sftp 自维护远端 cwd）。auth（`SSH_ASKPASS`）/ `-i` / policy / jump 经 `-o`/`-i`/`-J` **整段透传**——sftp 复用 ssh 传输层，`SSH_ASKPASS_REQUIRE=force` 同样让它走 askpass（含跳板 ProxyCommand、密钥、引用凭据、`+ssh-rsa` 老服务器兼容全部复用，无重复实现）。
+- [x] **入口**：会话树叶子右键「打开 SFTP」（`SessionTreeActions.onOpenSFTP` → `openSFTP` → `openTab(node:, transport:.sftp)`），仅非本地节点显示；总是新开一个标签，可与同会话的 ssh 标签并存。标题 `名字 · SFTP`。
+- [x] **`TabTransport`（ssh/sftp）+ `OpenTab.transport`**：`openTab` 按 transport 选 build/display、标题、是否发 loginCommands（sftp 跳过——登录命令是远端 shell 命令，sftp> 不收）。
+- [x] **「已连接」判定**（`SFTPReadyWatcher.swift` 新）：sftp **不发 OSC7**，ssh 那套 `$pwd` 首次上报失效 → 改扫输出里首个 `sftp>` 提示符判定登录成功（**复用第二十五批输出分发器**，成为日志/共享/expect 之外的**第四个**输出消费者）；命中即标已连接、撤探测订阅、disarm expect。
+- [x] **排除群发**：`broadcastTargets()` 的 `.all`/`.group` 一律滤掉 sftp 标签（sftp 提示符不接受 shell 命令，群发到它无意义且危险）；`.current` 单发**不**排除——让用户能在底栏对当前 sftp 会话直接敲 put/get 等 sftp 命令。
+- [x] **重连**：`reconnectExitedTab` 用尸体的原 transport 重开（sftp 尸体重连仍开 sftp，不退回 ssh）；`closeTab` 对称撤 sftpWatcher 订阅。
+
+**关键取舍/坑**：① **sftp 端口是大写 `-P`**（ssh 小写 `-p`）——抄 `build` 时极易漏改。② **sftp 不能塞远端命令位置参数**（那是路径），故没有 OSC7 目录跟踪、连接判定只能靠扫 `sftp>` 提示符。③ **必须把 sftp 标签挡在群发外**（正确性关键）——否则一条群发 `rm`/`reboot` 会被当 sftp 命令打进去；但 `.current` 保留以支持底栏直接发 sftp 命令。④ **askpass 对 sftp 同样生效**（sftp 复用 ssh 传输层 + `SSH_ASKPASS_REQUIRE=force`），故认证/跳板/密钥逻辑整段复用，无需任何 sftp 专属密码处理。⑤ **trzsz(rz/sz) 仍按计划仅文档不实现**——Ghostty 无 trzsz 协议支持（远端跑 `trz`/`tsz` 只会吐乱码），文件传输统一引导到 SFTP 标签或 `scp`；真要做 trzsz 需在分发器上实现协议状态机（被 M3 明确砍掉的 30–60h 量级，按需再开）。
+
+> **M3「开 sftp tab 按钮」已收口。** **M3 剩余（按需再开）**：trzsz(rz/sz) 协议级文件传输（M3 明确砍掉的大头，需分发器上跑 trzsz 协议状态机 + 原生文件选择/保存对话框，较大新交互模型）。
+
 > 拖拽（1、2）在扁平 `ScrollView + LazyVStack`（已替换原 List / DisclosureGroup）上做 `onDrag`/`onDrop` + drop 落点高亮；落地前先 spike 验证拖拽手势与现有单击选中/⌘⇧多选/双击不打架。
 
 ### 踩坑记录（换机/重做必看）

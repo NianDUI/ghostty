@@ -40,6 +40,7 @@ struct ScopeGroup: Identifiable {
 
 private struct SessionTreeActions {
     var onOpen: (SessionNode) -> Void
+    var onOpenSFTP: (SessionNode) -> Void        // 打开 SFTP 文件传输标签（右键）
     var onClose: (SessionNode) -> Void
     var onToggleGroup: (UUID) -> Void
     var onEdit: (SessionNode) -> Void
@@ -201,6 +202,9 @@ private struct SessionRowView: View {
                 Button("删除分组", role: .destructive) { actions.onDelete(node) }
             } else {
                 Button("打开会话") { actions.onOpen(node) }          // 总是新开一个 tab
+                if !node.isLocalShell {                              // 本地节点无 sftp 目标
+                    Button("打开 SFTP") { actions.onOpenSFTP(node) }  // 新开 sftp 文件传输标签
+                }
                 if isOpen { Button("切到已打开") { actions.onSwitch(node) } }
                 if isOpen { Button("关闭会话", role: .destructive) { actions.onClose(node) } }
                 Divider()
@@ -617,27 +621,36 @@ private struct BroadcastTargetPicker: View {
     }
 }
 
+/// 标签的连接方式：普通 ssh 登录 shell / sftp 文件传输会话。本地 shell（node==nil）按 .ssh 处理（无意义）。
+private enum TabTransport { case ssh, sftp }
+
 /// 一个打开的标签。nodeId 关联会话树节点（nil = tab 栏空白双击的临时本地 shell）。
 /// 用独立 tabId 索引（而非 node.id），以支持同一会话/多个本地 shell 同时多开。
 private final class OpenTab {
     let tabId: UUID
     let nodeId: UUID?
     let title: String
+    let transport: TabTransport         // ssh / sftp（决定是否入群发、重连用哪种、连接判定方式）
     let surface: Ghostty.SurfaceView
     let scroll: SurfaceScrollView
     var exited = false                  // ssh 已断开/登录失败的「尸体 tab」
-    var connected = false               // 真正登录成功（本地 shell 创建即真；ssh 等远端首次 OSC7 pwd）
+    var connected = false               // 真正登录成功（本地 shell 创建即真；ssh 等 OSC7 pwd；sftp 等 sftp> 提示符）
     var exitCancellable: AnyCancellable?
     var connectCancellable: AnyCancellable?   // ssh 首次 pwd（登录成功信号）订阅
     /// ⌘T 复制 ssh 会话时，等登录就绪后 cd 的一次性订阅。
     var pendingCancellable: AnyCancellable?
     /// expect 自动登录兜底（opt-in）：登录阶段监听 password: 自动答密码，连接成功/关闭时解除武装。
     var expect: ExpectAutoLogin?
-    init(tabId: UUID, nodeId: UUID?, title: String,
+    /// sftp「已连接」探测器（sftp 不发 OSC7，靠扫 `sftp>` 提示符判定）；命中后撤订阅置 nil。
+    var sftpWatcher: SFTPReadyWatcher?
+    /// sftp 标签：不入「全部/分组」群发（sftp 提示符不接受 shell 命令，群发到它无意义且危险）。
+    var isSFTP: Bool { transport == .sftp }
+    init(tabId: UUID, nodeId: UUID?, title: String, transport: TabTransport,
          surface: Ghostty.SurfaceView, scroll: SurfaceScrollView) {
         self.tabId = tabId
         self.nodeId = nodeId
         self.title = title
+        self.transport = transport
         self.surface = surface
         self.scroll = scroll
     }
@@ -909,6 +922,7 @@ class XGhosttyConsoleController: NSWindowController {
             sortByName: layoutStore.layout.sortByName ?? false,
             actions: SessionTreeActions(
                 onOpen: { [weak self] in self?.openSession($0) },
+                onOpenSFTP: { [weak self] in self?.openSFTP($0) },
                 onClose: { [weak self] in self?.closeSession($0) },
                 onToggleGroup: { [weak self] in self?.toggleGroup($0) },
                 onEdit: { [weak self] in self?.editNode($0) },
@@ -1478,6 +1492,11 @@ class XGhosttyConsoleController: NSWindowController {
         openTab(node: node)
     }
 
+    /// 右键「打开 SFTP」：总是新开一个 sftp 文件传输标签（与同会话的 ssh 标签并存）。
+    func openSFTP(_ node: SessionNode) {
+        openTab(node: node, transport: .sftp)
+    }
+
     /// 右键「切到已打开」：已开则切到其首个 tab，否则新开。
     func switchToSession(_ node: SessionNode) {
         if let id = tabOrder.first(where: { tabs[$0]?.nodeId == node.id }) {
@@ -1520,7 +1539,8 @@ class XGhosttyConsoleController: NSWindowController {
     /// - remoteInitial: 连上后发给（远端/本地）shell 的初始输入（如复制 ssh 会话后 cd 远端目录）。
     @discardableResult
     private func openTab(node: SessionNode?,
-                         workingDirectory: String? = nil) -> UUID? {
+                         workingDirectory: String? = nil,
+                         transport: TabTransport = .ssh) -> UUID? {
         guard let app = ghostty.app else { return nil }
         do {
             var cfg = Ghostty.SurfaceConfiguration()
@@ -1556,12 +1576,18 @@ class XGhosttyConsoleController: NSWindowController {
                 let policy: SessionCommandBuilder.PasswordPolicy =
                     auth.password == nil ? .none
                     : (node.passwordOnly == true ? .strict : .auto)
-                let built = try SessionCommandBuilder.build(for: effective, policy: policy, jump: jump)
+                // sftp 标签走 buildSFTP（换二进制 + 端口 -P + 去 OSC7 bootstrap），其余 ssh。
+                let built = transport == .sftp
+                    ? try SessionCommandBuilder.buildSFTP(for: effective, policy: policy, jump: jump)
+                    : try SessionCommandBuilder.build(for: effective, policy: policy, jump: jump)
                 if let cmd = built.command {
                     // 终端首行打印连接信息（本地 printf，暗灰色；不发给远端、不影响登录）。
                     // Ghostty 对 command 是 `exec -l <argv0>`，不能用 `;` 串联（否则只 exec 到
                     // printf、跑完即退 → tab 闪退），必须把「printf + ssh」整段裹进一个 sh -c 脚本。
-                    if let info = SessionCommandBuilder.displayCommand(for: effective, viaJump: jumpDisplay) {
+                    let info = transport == .sftp
+                        ? SessionCommandBuilder.displaySFTPCommand(for: effective, viaJump: jumpDisplay)
+                        : SessionCommandBuilder.displayCommand(for: effective, viaJump: jumpDisplay)
+                    if let info {
                         let script = "printf '\\033[2m%s\\033[0m\\n' \(Self.shellQuote(info)); " + cmd
                         cfg.command = "/bin/sh -c " + Self.shellQuote(script)
                     } else {
@@ -1577,8 +1603,9 @@ class XGhosttyConsoleController: NSWindowController {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: askpass.cleanup)
                 }
                 cfg.environmentVariables = env
-                title = node.name
-                if !node.loginCommands.isEmpty {
+                title = transport == .sftp ? "\(node.name) · SFTP" : node.name
+                // 登录命令是远端 shell 命令——只对 ssh 标签发；sftp> 提示符不接受它们，跳过。
+                if transport == .ssh, !node.loginCommands.isEmpty {
                     cfg.initialInput = node.loginCommands.joined(separator: "\n") + "\n"
                 }
                 // ssh 退出/登录失败后保留终端（留尸 tab 展示错误），不闪退；由 handleProcessExited 接管。
@@ -1609,6 +1636,7 @@ class XGhosttyConsoleController: NSWindowController {
 
             let tabId = UUID()
             let tab = OpenTab(tabId: tabId, nodeId: node?.id, title: title,
+                              transport: node == nil ? .ssh : transport,
                               surface: sv, scroll: scroll)
             // 子进程退出（在终端里 exit / ssh 断开）→ 自动关闭该 tab。
             tab.exitCancellable = sv.$childExitedMessage
@@ -1621,6 +1649,19 @@ class XGhosttyConsoleController: NSWindowController {
             // （OSC7，精确卡在登录成功——bootstrap 登录瞬间会 emit 一次），认证阶段保持灰。
             if node == nil || (node?.isLocalShell ?? true) {
                 tab.connected = true
+            } else if transport == .sftp {
+                // sftp 不发 OSC7，靠扫描输出里首个 `sftp>` 提示符判定登录成功（经分发器，与日志/expect 并存）。
+                let watcher = SFTPReadyWatcher { [weak self, weak tab] in
+                    guard let tab, let watcher = tab.sftpWatcher else { return }
+                    tab.connected = true
+                    tab.surface.xghosttyRemoveOutputSink(key: watcher)   // 已就绪，撤探测订阅
+                    tab.sftpWatcher = nil
+                    tab.expect?.disarm()        // sftp 登录成功 → 解除 expect 武装
+                    self?.refreshTree()
+                    self?.refreshTabBar()
+                }
+                tab.sftpWatcher = watcher
+                sv.xghosttyAddOutputSink(key: watcher) { [weak watcher] data in watcher?.feed(data) }
             } else {
                 tab.connectCancellable = sv.$pwd
                     .compactMap { $0 }
@@ -1719,6 +1760,9 @@ class XGhosttyConsoleController: NSWindowController {
             tab.surface.xghosttyRemoveOutputSink(key: expect)
             expect.disarm()
         }
+        if let watcher = tab.sftpWatcher {                                // 撤 sftp「已连接」探测订阅
+            tab.surface.xghosttyRemoveOutputSink(key: watcher)
+        }
         tab.scroll.removeFromSuperview()
         tabs[tabId] = nil
         tabOrder.removeAll { $0 == tabId }
@@ -1796,8 +1840,9 @@ class XGhosttyConsoleController: NSWindowController {
     @objc private func reconnectExitedTab() {
         guard let id = currentTabId, let tab = tabs[id], tab.exited,
               let nodeId = tab.nodeId, let node = store.find(nodeId) else { return }
+        let transport = tab.transport       // sftp 尸体重连仍开 sftp，不退回 ssh
         closeTab(id)
-        openSession(node)
+        openTab(node: node, transport: transport)
     }
 
     @objc private func closeExitedTab() {
@@ -2098,17 +2143,21 @@ class XGhosttyConsoleController: NSWindowController {
 
     /// 广播目标：按下拉选择（当前 / 全部 / 某分组）+ 三态过滤。
     private func broadcastTargets() -> [Ghostty.SurfaceView] {
+        // sftp 标签一律排除在「全部 / 分组」群发外：sftp 提示符不接受 shell 命令，群发到它
+        // 无意义且危险（如把 rm 打进文件传输会话）。`.current` 单发不排除——让用户能在底栏
+        // 对着当前 sftp 会话直接敲 put/get 等 sftp 命令。
         let candidates: [Ghostty.SurfaceView]
         switch broadcastTarget {
         case .all:
-            candidates = tabOrder.compactMap { tabs[$0]?.surface }
+            candidates = tabOrder.compactMap { tabs[$0] }
+                .filter { !$0.isSFTP }.map { $0.surface }
         case .current:
             if let id = currentTabId, let sv = tabs[id]?.surface { candidates = [sv] }
             else { candidates = [] }
         case .group(let gid):
             let leaves = leafIds(inGroup: gid)                       // 该组下已开的会话
             candidates = tabOrder.compactMap { tabs[$0] }
-                .filter { tab in tab.nodeId.map { leaves.contains($0) } ?? false }
+                .filter { tab in !tab.isSFTP && (tab.nodeId.map { leaves.contains($0) } ?? false) }
                 .map { $0.surface }
         }
         // 跳过已退出 / 密码输入态，避免命令打进密码框或丢进死会话。
