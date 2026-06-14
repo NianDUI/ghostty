@@ -11,6 +11,7 @@ struct ConsoleSettingsView: View {
     @State private var sessionLogging: Bool
     @State private var restoreLastSession: Bool
     @State private var expectAutoLogin: Bool
+    @State private var zmodemEnabled: Bool
     var onToggleAutoSave: (Bool) -> Void
     var onToggleSort: (Bool) -> Void
     var onToggleCollapseDescendants: (Bool) -> Void
@@ -18,6 +19,7 @@ struct ConsoleSettingsView: View {
     var onToggleSessionLogging: (Bool) -> Void
     var onToggleRestoreLastSession: (Bool) -> Void
     var onToggleExpectAutoLogin: (Bool) -> Void
+    var onToggleZmodem: (Bool) -> Void
     var onViewLogs: () -> Void
     var onResetLayout: () -> Void
     var onClose: () -> Void
@@ -29,6 +31,7 @@ struct ConsoleSettingsView: View {
          sessionLogging: Bool,
          restoreLastSession: Bool,
          expectAutoLogin: Bool,
+         zmodemEnabled: Bool,
          onToggleAutoSave: @escaping (Bool) -> Void,
          onToggleSort: @escaping (Bool) -> Void,
          onToggleCollapseDescendants: @escaping (Bool) -> Void,
@@ -36,6 +39,7 @@ struct ConsoleSettingsView: View {
          onToggleSessionLogging: @escaping (Bool) -> Void,
          onToggleRestoreLastSession: @escaping (Bool) -> Void,
          onToggleExpectAutoLogin: @escaping (Bool) -> Void,
+         onToggleZmodem: @escaping (Bool) -> Void,
          onViewLogs: @escaping () -> Void,
          onResetLayout: @escaping () -> Void,
          onClose: @escaping () -> Void) {
@@ -46,6 +50,7 @@ struct ConsoleSettingsView: View {
         _sessionLogging = State(initialValue: sessionLogging)
         _restoreLastSession = State(initialValue: restoreLastSession)
         _expectAutoLogin = State(initialValue: expectAutoLogin)
+        _zmodemEnabled = State(initialValue: zmodemEnabled)
         self.onToggleAutoSave = onToggleAutoSave
         self.onToggleSort = onToggleSort
         self.onToggleCollapseDescendants = onToggleCollapseDescendants
@@ -53,6 +58,7 @@ struct ConsoleSettingsView: View {
         self.onToggleSessionLogging = onToggleSessionLogging
         self.onToggleRestoreLastSession = onToggleRestoreLastSession
         self.onToggleExpectAutoLogin = onToggleExpectAutoLogin
+        self.onToggleZmodem = onToggleZmodem
         self.onViewLogs = onViewLogs
         self.onResetLayout = onResetLayout
         self.onClose = onClose
@@ -118,6 +124,14 @@ struct ConsoleSettingsView: View {
                 Toggle("SSH 自动登录兜底（expect）", isOn: $expectAutoLogin)
                     .onChange(of: expectAutoLogin) { onToggleExpectAutoLogin($0) }
                 Text("正常用 SSH_ASKPASS 注入密码、终端不会出现密码提示。少数服务器的 ssh 不认 askpass、仍在终端问密码时，开启本项会在登录阶段监听到「password:」后自动答密码（登录成功 / 45 秒后即停，避免误答 sudo 等提示）。仅对新打开的密码会话生效。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("ZMODEM 文件传输（rz/sz）", isOn: $zmodemEnabled)
+                    .onChange(of: zmodemEnabled) { onToggleZmodem($0) }
+                Text("开启后，在 ssh 会话里跑远端的 sz（下载到 ~/Downloads）/ rz（上传，弹框选文件）会自动桥接本机 lrzsz 完成传输。需先 brew install lrzsz。传输时屏幕会被「传输中」浮层遮住（底层是无法屏蔽的 ZMODEM 原始字节）。仅对新打开的 ssh 会话生效。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

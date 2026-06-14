@@ -643,6 +643,8 @@ private final class OpenTab {
     var expect: ExpectAutoLogin?
     /// sftp「已连接」探测器（sftp 不发 OSC7，靠扫 `sftp>` 提示符判定）；命中后撤订阅置 nil。
     var sftpWatcher: SFTPReadyWatcher?
+    /// ZMODEM(rz/sz)文件传输桥接器（开关开 + ssh 会话时常驻订阅，侦测触发头桥接本机 lrzsz）。
+    var zmodem: ZmodemBridge?
     /// sftp 标签：不入「全部/分组」群发（sftp 提示符不接受 shell 命令，群发到它无意义且危险）。
     var isSFTP: Bool { transport == .sftp }
     init(tabId: UUID, nodeId: UUID?, title: String, transport: TabTransport,
@@ -677,6 +679,8 @@ class XGhosttyConsoleController: NSWindowController {
     private let surfaceContainer = NSView()
     private let exitBar = NSView()                   // ssh 断开/登录失败横幅（重连/关闭）
     private let exitBarLabel = NSTextField(labelWithString: "")
+    private let zmodemOverlay = NSView()             // ZMODEM 传输期遮挡终端乱码的不透明浮层
+    private let zmodemLabel = NSTextField(labelWithString: "")
     private let inputField = NSTextField()
     private let inputBg = NSView()              // 批量发送框的圆角背景容器（仿座舱输入框样式）
     private var targetMenuHosting: NSHostingView<BroadcastTargetPicker>!
@@ -862,6 +866,7 @@ class XGhosttyConsoleController: NSWindowController {
         rSplit.addSubview(surfaceContainer)        // pane 0 = 终端（上）
         rSplit.addSubview(quickBarHosting)         // pane 1 = 快捷命令条（下）
         setupExitBar()                             // 终端容器顶部「会话已断开」横幅
+        setupZmodemOverlay()                       // ZMODEM 传输期遮乱码的不透明浮层
 
         // ── 右栏：顶部 tab（固定）+ 竖 split（填充） ──
         let rightColumn = NSView()
@@ -1193,6 +1198,8 @@ class XGhosttyConsoleController: NSWindowController {
         let barBase = bg.usingColorSpace(.sRGB) ?? bg
         let barRed = NSColor(srgbRed: 0.85, green: 0.26, blue: 0.26, alpha: 1)
         exitBar.layer?.backgroundColor = (barBase.blended(withFraction: 0.30, of: barRed) ?? barRed).cgColor
+        zmodemOverlay.layer?.backgroundColor = bg.cgColor   // 浮层用终端背景色，遮挡时不突兀
+        zmodemLabel.textColor = bg.isLightColor ? .black : .white
 
         // 顶部 tab 栏 / 快捷命令条 / 批量发送条给不透明背景，避免终端内容透出。
         tabBarHosting?.wantsLayer = true
@@ -1274,6 +1281,7 @@ class XGhosttyConsoleController: NSWindowController {
             sessionLogging: layoutStore.layout.sessionLogging ?? false,
             restoreLastSession: layoutStore.layout.restoreLastSession ?? false,
             expectAutoLogin: layoutStore.layout.expectAutoLogin ?? false,
+            zmodemEnabled: layoutStore.layout.zmodemEnabled ?? false,
             onToggleAutoSave: { [weak self] on in
                 self?.layoutStore.setAutoSave(on)
                 if on { self?.scheduleSaveLayout() }
@@ -1296,6 +1304,9 @@ class XGhosttyConsoleController: NSWindowController {
             },
             onToggleExpectAutoLogin: { [weak self] on in
                 self?.layoutStore.setExpectAutoLogin(on)
+            },
+            onToggleZmodem: { [weak self] on in
+                self?.layoutStore.setZmodemEnabled(on)
             },
             onViewLogs: { [weak self] in
                 // 关设置 sheet 再开日志查看器（座舱单 editorSheet 槽，不嵌套）。
@@ -1689,6 +1700,16 @@ class XGhosttyConsoleController: NSWindowController {
                 sv.xghosttyAddOutputSink(key: expect) { [weak expect] data in expect?.feed(data) }
                 tab.expect = expect
             }
+            // ZMODEM(rz/sz)文件传输（opt-in，默认关）：仅 ssh 远端会话武装；侦测到触发头桥接本机 lrzsz。
+            // 与日志/共享/expect 经分发器并存（不互斥）。
+            if let node, !node.isLocalShell, transport == .ssh,
+               layoutStore.layout.zmodemEnabled == true {
+                let bridge = ZmodemBridge(surface: sv) { [weak self] activity in
+                    self?.handleZmodemActivity(activity)
+                }
+                sv.xghosttyAddOutputSink(key: bridge) { [weak bridge] data in bridge?.feed(data) }
+                tab.zmodem = bridge
+            }
             select(tabId)
             refreshTree()
             return tabId
@@ -1763,6 +1784,10 @@ class XGhosttyConsoleController: NSWindowController {
         if let watcher = tab.sftpWatcher {                                // 撤 sftp「已连接」探测订阅
             tab.surface.xghosttyRemoveOutputSink(key: watcher)
         }
+        if let bridge = tab.zmodem {                                      // 撤 ZMODEM 订阅 + 取消进行中的传输
+            tab.surface.xghosttyRemoveOutputSink(key: bridge)
+            bridge.teardown()
+        }
         tab.scroll.removeFromSuperview()
         tabs[tabId] = nil
         tabOrder.removeAll { $0 == tabId }
@@ -1826,6 +1851,55 @@ class XGhosttyConsoleController: NSWindowController {
             reconnect.trailingAnchor.constraint(equalTo: close.leadingAnchor, constant: -6),
             reconnect.centerYAnchor.constraint(equalTo: exitBar.centerYAnchor),
         ])
+    }
+
+    /// ZMODEM 传输期遮乱码的不透明浮层：盖满终端容器、居中提示，传输时显示、传完隐藏。
+    private func setupZmodemOverlay() {
+        zmodemOverlay.wantsLayer = true
+        zmodemOverlay.translatesAutoresizingMaskIntoConstraints = false
+        zmodemOverlay.isHidden = true
+
+        zmodemLabel.translatesAutoresizingMaskIntoConstraints = false
+        zmodemLabel.alignment = .center
+        zmodemLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        zmodemLabel.lineBreakMode = .byTruncatingMiddle
+        zmodemLabel.usesSingleLineMode = false       // 允许两行（文件名 + 提示）
+        zmodemLabel.maximumNumberOfLines = 2
+
+        zmodemOverlay.addSubview(zmodemLabel)
+        surfaceContainer.addSubview(zmodemOverlay)   // 最后加 → 盖在终端与 exitBar 之上
+        NSLayoutConstraint.activate([
+            zmodemOverlay.topAnchor.constraint(equalTo: surfaceContainer.topAnchor),
+            zmodemOverlay.leadingAnchor.constraint(equalTo: surfaceContainer.leadingAnchor),
+            zmodemOverlay.trailingAnchor.constraint(equalTo: surfaceContainer.trailingAnchor),
+            zmodemOverlay.bottomAnchor.constraint(equalTo: surfaceContainer.bottomAnchor),
+            zmodemLabel.centerXAnchor.constraint(equalTo: zmodemOverlay.centerXAnchor),
+            zmodemLabel.centerYAnchor.constraint(equalTo: zmodemOverlay.centerYAnchor),
+            zmodemLabel.leadingAnchor.constraint(greaterThanOrEqualTo: zmodemOverlay.leadingAnchor, constant: 20),
+            zmodemLabel.trailingAnchor.constraint(lessThanOrEqualTo: zmodemOverlay.trailingAnchor, constant: -20),
+        ])
+    }
+
+    /// 桥接器活动（主线程）：开始传输 → 显浮层遮乱码；结束 → 隐浮层（短延时等远端 Ctrl-L 重绘落地）。
+    private func handleZmodemActivity(_ activity: ZmodemBridge.Activity) {
+        switch activity {
+        case .started(let dir, let label):
+            let verb = dir == .download ? "接收" : "发送"
+            zmodemLabel.stringValue = "ZMODEM \(verb)中：\(label)\n（传输期间请勿操作终端）"
+            zmodemOverlay.isHidden = false
+            surfaceContainer.addSubview(zmodemOverlay)   // 提到最上层（防新 tab 的 scroll 后插盖住）
+        case .finished(let message):
+            // 等远端 Ctrl-L 的重绘到达再撤浮层，避免一撤就露出旧乱码。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.zmodemOverlay.isHidden = true
+            }
+            if let message {
+                let alert = NSAlert()
+                alert.messageText = message
+                alert.addButton(withTitle: "好")
+                alert.runModal()
+            }
+        }
     }
 
     /// 按当前 tab 是否「尸体」刷新横幅显隐与文案。

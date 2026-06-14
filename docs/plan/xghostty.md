@@ -471,6 +471,22 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 
 > **关键**：自签证书签名只解决了"重建指纹变"，但**早于证书创建的钥匙串项仍带旧 ACL**；要彻底不弹，必须在新证书签名下**重建该项的 ACL**（删项重建，新项默认信任创建者=cert-leaf 稳定）。这是"已签证书仍反复弹框"的通解。
 
+### 第二十八批（2026-06-14，ZMODEM(rz/sz)文件传输——桥接本机 lrzsz，第一批，已构建启动）
+
+收口 M3 当初砍掉的 trzsz/rz-sz 大头。用户选**桥接本机 lrzsz**方案（vs 纯 Swift 实现 ZMODEM）。全 `#if XGHOSTTY`，**零改 Zig**：
+
+- [x] **`ZmodemBridge.swift`（新）**：在输出分发器上侦测 ZMODEM 触发头——`**\x18B00`(ZRQINIT，远端 `sz`→本机收) / `**\x18B01`(ZRINIT，远端 `rz`→本机发)——命中即 spawn 本机 `rz`/`sz`，把**触发头起的后续 pty 输出**喂给其 stdin、其 stdout 经 `send_bytes` 回灌远端，本机 lrzsz 当 ZMODEM 端点跑完整协议。下载存 `~/Downloads`（不弹框，避免 ZMODEM 超时）；上传弹 `NSOpenPanel` 选文件（远端 rz 会耐心等）。
+- [x] **触发→接管的字节交接**：扫描态累积封顶 512B，命中后把 `bytes[触发头index...]` 存 `pendingToChild`、切 active 态；子进程就绪后先灌 pending 再实时转发（termio 线程写 stdin pipe）。
+- [x] **遮乱码浮层**：硬约束——**没法阻止 ZMODEM 原始字节被终端渲染**（要改 Zig），故传输期屏幕刷乱码。控制器加 `zmodemOverlay`（盖满 surfaceContainer 的不透明终端背景色浮层 + 居中提示），传输时显、传完延时 0.25s 隐（等远端 Ctrl-L 重绘落地）。`ZmodemBridge.Activity{started/finished}` 回调驱动。
+- [x] **lrzsz 缺失兜底**：逐候选路径探 `/opt/homebrew/bin`、`/usr/local/bin`、`/usr/bin` 的 rz/sz；找不到则向远端发 ZMODEM 取消序列（`CAN`×8 + `BS`×8）让远端干净中止 + 弹「请 brew install lrzsz」提示，**不留远端卡死**。
+- [x] **接线**：`LayoutStore.zmodemEnabled`（默认关）+ 设置面板开关；`openTab` 仅 **ssh transport + 远端会话 + 开关开**时武装（`OpenTab.zmodem` 持有，分发器订阅 `bridge.feed`）；`closeTab` 撤订阅 + `teardown`（进行中则取消远端 + 杀子进程）。传完桥接器自动复位回扫描态，可连续多次传输。
+
+**关键取舍/坑**：① **零改 Zig → 无法屏蔽渲染**，传输期必刷乱码，只能浮层遮 + 传完 Ctrl-L 清；这是 fork 不动核心的固有代价。② **下载不弹保存框**（直存 ~/Downloads）——ZMODEM 有 ~10s 超时，弹框选目录会超时断流；上传可弹框（rz 等得起）。③ **触发头方向位**：`**\x18B` 后两个 hex 位是帧类型，`00`=ZRQINIT(我们收/rz)、`01`=ZRINIT(我们发/sz)；扫描只会撞到首个握手头（数据帧是 binary `A`/`C` 头且那时已 active）。④ **sz 加 `-e`**（转义控制字符）防 pty 链路不 8-bit-clean；rz `-y -b`。⑤ 本机**未装 lrzsz**（已探测确认），用户测前需 `brew install lrzsz`。
+
+**第一批范围**：核心桥接（下载+上传）+ 浮层 + 缺失兜底 + 开关。**待后续批**：传输进度条（解析 rz/sz stderr 的 `Bytes Sent/BPS`）、传输中「取消」按钮、后台 tab 传输的浮层归属、自定义下载目录、传完是否发 Ctrl-L 可配。
+
+> **M3 ZMODEM 第一批落地（桥接 lrzsz）。** 待打磨：进度/取消/目录/后台归属。
+
 > 拖拽（1、2）在扁平 `ScrollView + LazyVStack`（已替换原 List / DisclosureGroup）上做 `onDrag`/`onDrop` + drop 落点高亮；落地前先 spike 验证拖拽手势与现有单击选中/⌘⇧多选/双击不打架。
 
 ### 踩坑记录（换机/重做必看）

@@ -26,6 +26,9 @@ struct ConsoleLayout: Codable, Equatable {
     /// 密码会话是否启用 expect 式自动登录兜底（nil/false=关）：askpass 未生效、ssh 仍在终端问
     /// 密码时，监听到 `password:` 自动答密码。默认关——正常靠 askpass，本项是少数环境的退路。
     var expectAutoLogin: Bool?
+    /// 是否启用 ZMODEM(rz/sz)文件传输（nil/false=关）：远端跑 sz/rz 时桥接本机 lrzsz 自动收发。
+    /// 默认关——需本机装 lrzsz，且仅少数场景用；开启后对新打开的 ssh 会话生效。
+    var zmodemEnabled: Bool?
 
     init(autoSave: Bool = true,
          windowFrame: CGRect? = nil,
@@ -39,7 +42,8 @@ struct ConsoleLayout: Codable, Equatable {
          sessionLogging: Bool? = nil,
          restoreLastSession: Bool? = nil,
          lastSessionIds: [UUID]? = nil,
-         expectAutoLogin: Bool? = nil) {
+         expectAutoLogin: Bool? = nil,
+         zmodemEnabled: Bool? = nil) {
         self.autoSave = autoSave
         self.windowFrame = windowFrame
         self.treeWidth = treeWidth
@@ -53,6 +57,7 @@ struct ConsoleLayout: Codable, Equatable {
         self.restoreLastSession = restoreLastSession
         self.lastSessionIds = lastSessionIds
         self.expectAutoLogin = expectAutoLogin
+        self.zmodemEnabled = zmodemEnabled
     }
 }
 
@@ -122,6 +127,12 @@ final class LayoutStore {
         persist()
     }
 
+    /// 仅改「ZMODEM 文件传输」偏好。
+    func setZmodemEnabled(_ on: Bool) {
+        layout.zmodemEnabled = on
+        persist()
+    }
+
     /// 记录上次打开的会话集（关窗口时调用，供下次启动恢复）。
     func setLastSessionIds(_ ids: [UUID]) {
         layout.lastSessionIds = ids
@@ -136,7 +147,8 @@ final class LayoutStore {
                                sessionLogging: layout.sessionLogging,
                                restoreLastSession: layout.restoreLastSession,
                                lastSessionIds: layout.lastSessionIds,
-                               expectAutoLogin: layout.expectAutoLogin)
+                               expectAutoLogin: layout.expectAutoLogin,
+                               zmodemEnabled: layout.zmodemEnabled)
         persist()
     }
 
