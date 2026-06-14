@@ -557,6 +557,19 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 
 **关键取舍/坑**：① **duplicate target 的非 Debug 配置必须手动补全定制**——否则出 Release 是「普通终端 + 撞 bundle id」废品；`xcodebuild -showBuildSettings` 是 ground truth，别猜 pbxproj。② **签名两套规则别搞混**：自签证书 app（XGhostty）xcodebuild 已签、**禁止再 codesign**；adhoc app（主 Ghostty）按流水线重签。③ **Release entitlements 不带 disable-library-validation** → 自签证书出 Release 必崩，只改带它的 ReleaseLocal。④ 图标走 setIcon(forFile:) 同时管 Dock+Finder，且写 xattr 不动 asset → 不累加。
 
+### 第三十二批（2026-06-14，XGhostty 专属绿图标——拆掉三层真凶才显示，真机通过）
+
+用户要 XGhostty 用一张自做的绿色 neon 成品图（左上幽灵 + 右下 `X_`，`docs/design/XGhostty_APPICON_source.zip`）作图标，与原版蓝 Ghostty 区分。**期间踩了 macOS 26 图标的三层坑，逐层拆掉才显示**（中途试过运行时 `setIcon`/`applicationIconImage` 合成 + 红圈白 X 角标等多版，全废弃）。最终方案 = **传统 appiconset + 拆掉继承自 Ghostty 的两个图标机制 + 重建 LaunchServices**。
+
+- [x] **图标资源**：把成品图做成传统 `XGhosttyAppIcon.appiconset`（16→1024 各尺寸，四角透明 + 标准留白，放 `macos/Assets.xcassets/`），pbxproj 把 **XGhostty 三配置**的 `ASSETCATALOG_COMPILER_APPICON_NAME` 从 `Ghostty` 改 `XGhosttyAppIcon`（只改 04775E49/4A/4B 三块，主 Ghostty 的 6 处不动）。`AppIcon.swift` 撤回上游原始（删掉之前那版 `#if XGHOSTTY` 角标合成 hack）、删 `XGhosttyAppIcon.swift`。
+- [x] **真凶①：`Ghostty.icon`（macOS 26 Icon Composer `.icon` 格式）被 duplicate 继承** → 编译生成 `Ghostty.icns` 进 bundle，**优先级盖过 appiconset 的 `XGhosttyAppIcon.icns`**（bundle 里两个 icns 并存，显示 Ghostty 蓝）。解法：从 XGhostty 的 Copy Bundle Resources **移除 `Ghostty.icon`**（删 pbxproj 的 PBXBuildFile `04775E3A` + Resources phase 引用）。**必须 clean 构建**——增量构建不清旧 `Ghostty.icns` 残留。
+- [x] **真凶②：`DockTilePlugin`（NSDockTilePlugIn）被继承** → 它在 **Dock 进程**里跑、用自定义 `contentView` 自绘图标（硬编码读 `com.mitchellh.ghostty` 配置 → 画原版蓝），**盖过 bundle 图标**。典型症状：**Finder 绿、Dock 蓝**——`NSWorkspace.icon(forFile:)` 和 `NSRunningApplication.icon` 都返回绿（读 bundle icns），唯独 Dock 视觉蓝（插件的 contentView 覆盖）。解法：① `Ghostty copy-Info.plist` 删 `NSDockTilePlugIn` 键；② pbxproj 从 XGhostty 的 "Copy DockTilePlugin" 阶段移除插件 embed（清空 `04775E46` phase 的 files）→ clean 构建 → bundle 无 `Contents/PlugIns/`（签名仍有效，证书签名自动重签）。
+- [x] **真凶③：LaunchServices 脏注册 + 顽固图标缓存** → 多次重装在 LS 留下 DerivedData(Debug/ReleaseLocal) 的脏路径注册；`killall Dock`、清 `com.apple.iconservices`/`com.apple.dock.iconcache`、`lsregister -f`、甚至**重启**（但重启那会儿 bundle 还带旧 Ghostty.icns/plugin，不算数）都刷不掉。**终极解法：`lsregister -kill -r -domain local -domain system -domain user` 重建整个 LS 数据库**（约 30-60s）+ `killall Dock iconservicesagent` → 绿图标显示。
+
+**关键诊断法**：图标"装了不显示"时，先用脚本把 `NSWorkspace.shared.icon(forFile: app)` 和 `NSRunningApplication(...).icon` 导成 png 看——**若都绿但 Dock 蓝 → 锁定 DockTilePlugin 自绘 + LS 缓存**（不是 bundle 问题，别再改 bundle）。`assetutil --info Assets.car` 看 appiconset 是否编进，`PlistBuddy Print :NSDockTilePlugIn` 看插件键，`lsregister -dump | grep` 看脏注册。
+
+**铁律/教训**：① **duplicate 来的 macOS app 出专属图标，必须拆掉两个继承机制**——`.icon`（Icon Composer 资源，盖过 appiconset）和 `DockTilePlugin`（Dock 自绘，盖过 bundle 图标）。② **`.icon` 是成品分层格式**（gloss/screen/ghost/bevel 多图层 + 系统套容器），用户的扁平成品图塞 `.icon` 当单图层会被系统再套一层容器（双重边框）→ 用**传统 appiconset**（成品图原样显示）反而对。③ **macOS 图标缓存顽固到变态**：bundle 全对、所有 API 返回新图，Dock 仍显旧图时，认准是 LS/Dock 缓存，`lsregister -kill -r` 重建 LS DB 是核武器，别再瞎改 bundle。④ 全程只改 XGhostty 专属文件（`Ghostty copy-Info.plist`、pbxproj 的 04775Exx 块、新 appiconset），**主 Ghostty 零影响**（APPICON 仍 Ghostty、AppIcon.swift 回上游原始、主 app 的 .icon/DockTilePlugin 都没动）。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**

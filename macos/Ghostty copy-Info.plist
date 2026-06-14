@@ -57,8 +57,6 @@
 	<true/>
 	<key>NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac</key>
 	<true/>
-	<key>NSDockTilePlugIn</key>
-	<string>DockTilePlugin.plugin</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>OSAScriptingDefinition</key>
