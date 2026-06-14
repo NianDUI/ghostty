@@ -56,6 +56,26 @@ final class XGhosttyCredentialStore {
     /// 仅查存在性：走明文索引，不碰 Keychain → 不弹授权框。
     func hasPassword(for id: UUID) -> Bool { index.contains(id.uuidString) }
 
+    // MARK: 修复钥匙串授权（治"每次启动都弹授权框"）
+
+    /// 在**当前签名身份**下重建保险库项的 ACL：删旧项 → 用内存里的密码重新 `SecItemAdd`。
+    ///
+    /// **病根**：保险库项最早可能是 **ad-hoc 签名时代**创建的，其 ACL 信任的是当时的 cdhash；换成
+    /// 自签证书后身份对不上 → 每次启动读保险库都弹「XGhostty 想访问钥匙串」。重复证书又让
+    /// 「始终允许」追加的授权粘不稳。**删项重建**让新项的默认 ACL 只信任**创建它的本 app**——而本
+    /// app 的指定要求是 cert-leaf（跨重建稳定），故此后同证书签名的构建读取保险库**根本不弹框**。
+    ///
+    /// 返回 (修复成功, 迁移的密码条数)。`ensureLoaded` 那一步若旧 ACL 仍脏会弹**最后一次**授权框
+    /// （点「始终允许」放行即可），之后永不再弹。
+    @discardableResult
+    func repairKeychainACL() -> (ok: Bool, count: Int) {
+        ensureLoaded()                       // 读出现有密码进内存（启动时多半已载入；脏 ACL 在此弹最后一次）
+        guard let snapshot = cache else { return (false, 0) }
+        Self.deleteVault(service: service, account: account)   // 连同脏 ACL 删掉旧项
+        cache = snapshot                     // 用内存快照重建（writeVault 找不到项→走 SecItemAdd 新建干净 ACL）
+        return (persistVault(), snapshot.count)
+    }
+
     // MARK: 写
 
     /// 写入/更新会话密码。
@@ -126,6 +146,15 @@ final class XGhosttyCredentialStore {
         insert[kSecValueData] = data
         insert[kSecAttrAccessible] = kSecAttrAccessibleWhenUnlocked
         return SecItemAdd(insert as CFDictionary, nil) == errSecSuccess
+    }
+
+    /// 删掉保险库项本身（连其 ACL）；修复授权时先删后重建用。
+    private static func deleteVault(service: String, account: String) {
+        SecItemDelete([
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+        ] as CFDictionary)
     }
 
     /// 旧逐会话 item 的 account（id）列表——只读属性、不读密文，**不弹授权框**。

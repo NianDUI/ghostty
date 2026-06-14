@@ -461,6 +461,16 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 
 > **M3「开 sftp tab 按钮」已收口。** **M3 剩余（按需再开）**：trzsz(rz/sz) 协议级文件传输（M3 明确砍掉的大头，需分发器上跑 trzsz 协议状态机 + 原生文件选择/保存对话框，较大新交互模型）。
 
+### 第二十七批（2026-06-14，修复钥匙串反复弹授权框，已构建启动）
+
+用户反馈「XGhostty 想访问钥匙串 top.niandui.xghostty」框每次启动都弹。诊断：**签名是稳定自签证书**（`Authority=Ghostty Dev Cert`，**非 ad-hoc**），DR=`identifier "top.niandui.xghostty" and certificate leaf = H"82139ee5…"`，**leaf 与历史记录一致**——不是"重建指纹变"那个老问题。真因：**保险库钥匙串项的 ACL 还是 ad-hoc 时代创建时的**（信任旧 cdhash），换证书后身份对不上 → 每次读保险库都弹；本机还有**两个一模一样的「Ghostty Dev Cert」签名身份**（同 SHA-1，疑似 p12 重复导入），让「始终允许」追加的授权粘不稳。
+
+- [x] **`XGhosttyCredentialStore.repairKeychainACL()`**：`ensureLoaded` 读出内存快照 → `deleteVault`（删旧项连其脏 ACL）→ `persistVault`（找不到项→走 `SecItemAdd` 在**当前签名下**新建）。新项默认 ACL 只信任**创建它的本 app**，而本 app 的指定要求是 cert-leaf（跨重建稳定）→ 此后同证书签名构建读取保险库**根本不弹框**（连「始终允许」都不用）。返回 (ok, 迁移条数)。
+- [x] **设置面板「修复钥匙串授权」按钮**（`ConsoleSettingsView.repairKeychain`）：直接调 store + NSAlert 反馈（含迁移条数）；说明文案提示"会读一次现有密码，旧授权仍脏时弹最后一次、点始终允许放行"。
+- 重复证书清理需动 login 钥匙串（用户本人操作）：`security find-identity -v -p codesigning` 看到两条同 hash → 删多余那份私钥/证书。
+
+> **关键**：自签证书签名只解决了"重建指纹变"，但**早于证书创建的钥匙串项仍带旧 ACL**；要彻底不弹，必须在新证书签名下**重建该项的 ACL**（删项重建，新项默认信任创建者=cert-leaf 稳定）。这是"已签证书仍反复弹框"的通解。
+
 > 拖拽（1、2）在扁平 `ScrollView + LazyVStack`（已替换原 List / DisclosureGroup）上做 `onDrag`/`onDrop` + drop 落点高亮；落地前先 spike 验证拖拽手势与现有单击选中/⌘⇧多选/双击不打架。
 
 ### 踩坑记录（换机/重做必看）

@@ -131,6 +131,13 @@ struct ConsoleSettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
+                Button("修复钥匙串授权") { repairKeychain() }
+                Text("若每次启动都弹「XGhostty 想访问你的钥匙串」框：点这里在当前签名下重建密码保险库的授权（删项重建），之后同一证书签名的构建读取保险库不再弹框。会先读一次现有密码（旧授权仍脏时可能弹最后一次，点「始终允许」放行）。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
                 Button("查看广播审计日志") { openAuditLog() }
                 Text("批量发送条向「全部 / 分组」群发的命令会留痕到 broadcast-audit.log（JSON Lines），可追溯哪条命令打到了哪些机器。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -156,6 +163,23 @@ struct ConsoleSettingsView: View {
             at: dir, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])
         NSWorkspace.shared.open(dir)
+    }
+
+    /// 在当前签名下重建保险库钥匙串项的 ACL（治"每次启动弹授权框"），弹结果反馈。
+    private func repairKeychain() {
+        let result = XGhosttyCredentialStore.shared.repairKeychainACL()
+        let alert = NSAlert()
+        if result.ok {
+            alert.messageText = "已修复钥匙串授权"
+            alert.informativeText = "已在当前签名下重建密码保险库（含 \(result.count) 条密码）。"
+                + "之后同一证书签名的构建读取保险库不再弹授权框。"
+        } else {
+            alert.messageText = "修复未完成"
+            alert.informativeText = "读取或写回保险库失败。若刚才的授权框点了「拒绝」，请重试并点「始终允许」。"
+            alert.alertStyle = .warning
+        }
+        alert.addButton(withTitle: "好")
+        alert.runModal()
     }
 
     /// 在 Finder 中定位审计日志文件（让用户自选用什么打开）；还没有记录则提示。
