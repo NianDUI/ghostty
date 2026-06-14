@@ -98,6 +98,74 @@ final class SessionLogStore {
         loggers[tabId] = nil
     }
 
+    /// logs 目录下的 .log 文件，按修改时间倒序（查看器用）。
+    func logFiles() -> [URL] {
+        let fm = FileManager.default
+        guard let urls = try? fm.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]) else { return [] }
+        return urls.filter { $0.pathExtension == "log" }.sorted { a, b in
+            let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? .distantPast
+            let db = (try? b.resourceValues(forKeys: [.contentModificationDateKey]))?
+                .contentModificationDate ?? .distantPast
+            return da > db
+        }
+    }
+
+    /// 读日志内容（plain=剥离 ANSI 成纯文本）。超大只取末尾 ~500KB，避免卡 UI。
+    func readLog(_ url: URL, plain: Bool) -> String {
+        guard let data = try? Data(contentsOf: url) else { return "" }
+        let maxBytes = 500_000
+        let truncated = data.count > maxBytes
+        let slice = truncated ? data.suffix(maxBytes) : data
+        let raw = String(decoding: slice, as: UTF8.self)
+        let head = truncated ? "…（文件较大，仅显示末尾 \(maxBytes / 1000) KB）\n\n" : ""
+        return head + (plain ? Self.stripANSI(raw) : raw)
+    }
+
+    /// 简单剥离 ANSI：去 CSI(ESC[…) / OSC(ESC]…) / 其他 ESC 序列 + 控制字符（留 \n \t）。
+    /// 交互式程序（vim/top）的光标定位输出剥离后布局仍可能不完美——简单剥离的固有局限。
+    static func stripANSI(_ s: String) -> String {
+        let scalars = Array(s.unicodeScalars)
+        var out = String.UnicodeScalarView()
+        out.reserveCapacity(scalars.count)
+        var i = 0
+        while i < scalars.count {
+            let c = scalars[i]
+            if c == "\u{1B}" {                                            // ESC
+                if i + 1 < scalars.count, scalars[i + 1] == "[" {         // CSI: ESC [ … 终止符 0x40–0x7E
+                    i += 2
+                    while i < scalars.count {
+                        let f = scalars[i]; i += 1
+                        if f.value >= 0x40 && f.value <= 0x7E { break }
+                    }
+                    continue
+                }
+                if i + 1 < scalars.count, scalars[i + 1] == "]" {         // OSC: ESC ] … BEL 或 ESC \
+                    i += 2
+                    while i < scalars.count {
+                        if scalars[i] == "\u{07}" { i += 1; break }
+                        if scalars[i] == "\u{1B}", i + 1 < scalars.count, scalars[i + 1] == "\\" {
+                            i += 2; break
+                        }
+                        i += 1
+                    }
+                    continue
+                }
+                i += 2                                                   // 其他 ESC 序列：跳过 ESC + 1 字节
+                continue
+            }
+            if c.value < 0x20 {                                          // 控制字符：留换行/制表，余（含 \r）丢弃
+                if c == "\n" || c == "\t" { out.append(c) }
+            } else {
+                out.append(c)
+            }
+            i += 1
+        }
+        return String(out)
+    }
+
     /// 会话名 → 安全文件名（去路径分隔/非法字符/控制符，截断 60，空则 session）。
     private static func safeName(_ s: String) -> String {
         let bad = CharacterSet(charactersIn: "/\\:?%*|\"<>").union(.controlCharacters)

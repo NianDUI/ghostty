@@ -53,6 +53,7 @@ private struct SessionTreeActions {
     var onSettings: () -> Void                    // 打开座舱设置
     var onCredentials: () -> Void                 // 打开密码库
     var onJumpHosts: () -> Void                   // 打开跳板机管理
+    var onWorkspaces: () -> Void                  // 打开工作区管理
     var onImport: (ImportSource) -> Void          // 从 WindTerm / XShell 导入会话
     var onExpandAll: () -> Void                   // 展开全部分组
     var onCollapseAll: () -> Void                 // 折叠全部分组
@@ -317,6 +318,11 @@ private struct SessionTreeView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("跳板机管理")
+                Button { actions.onWorkspaces() } label: {
+                    Image(systemName: "rectangle.stack")
+                }
+                .buttonStyle(.borderless)
+                .help("工作区（保存/恢复一组会话）")
                 Button { actions.onSettings() } label: {
                     Image(systemName: "gearshape")
                 }
@@ -720,8 +726,8 @@ class XGhosttyConsoleController: NSWindowController {
         applyTheme()
         updateBroadcastWarning()
         installKeyMonitor()
-        // 默认打开第一个会话，避免空白。
-        if let first = store.allHosts.first { openSession(first) }
+        // 启动会话：恢复上次会话集（若开关开）或默认开第一个，避免空白。
+        restoreOrOpenInitialSession()
         // 初始分隔位置（延后到布局完成后）。
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -905,6 +911,7 @@ class XGhosttyConsoleController: NSWindowController {
                 onSettings: { [weak self] in self?.presentSettings() },
                 onCredentials: { [weak self] in self?.presentCredentials() },
                 onJumpHosts: { [weak self] in self?.presentJumpHosts() },
+                onWorkspaces: { [weak self] in self?.presentWorkspaces() },
                 onImport: { [weak self] source in self?.presentImport(source) },
                 onExpandAll: { [weak self] in self?.expandAllGroups() },
                 onCollapseAll: { [weak self] in self?.collapseAllGroups() },
@@ -1216,6 +1223,7 @@ class XGhosttyConsoleController: NSWindowController {
             collapseDescendants: layoutStore.layout.collapseDescendants ?? true,
             collapseAllOnExit: layoutStore.layout.collapseAllOnExit ?? false,
             sessionLogging: layoutStore.layout.sessionLogging ?? false,
+            restoreLastSession: layoutStore.layout.restoreLastSession ?? false,
             onToggleAutoSave: { [weak self] on in
                 self?.layoutStore.setAutoSave(on)
                 if on { self?.scheduleSaveLayout() }
@@ -1233,6 +1241,14 @@ class XGhosttyConsoleController: NSWindowController {
             onToggleSessionLogging: { [weak self] on in
                 self?.layoutStore.setSessionLogging(on)
             },
+            onToggleRestoreLastSession: { [weak self] on in
+                self?.layoutStore.setRestoreLastSession(on)
+            },
+            onViewLogs: { [weak self] in
+                // 关设置 sheet 再开日志查看器（座舱单 editorSheet 槽，不嵌套）。
+                self?.dismissEditor()
+                DispatchQueue.main.async { self?.presentSessionLogViewer() }
+            },
             onResetLayout: { [weak self] in self?.resetLayout() },
             onClose: { [weak self] in self?.dismissEditor() })
         let sheet = makeThemedSheet(view)
@@ -1246,6 +1262,56 @@ class XGhosttyConsoleController: NSWindowController {
         let sheet = makeThemedSheet(view)
         editorSheet = sheet
         window?.beginSheet(sheet)
+    }
+
+    /// 打开会话日志查看器 sheet（座舱设置「查看会话日志…」进入）。
+    @objc private func presentSessionLogViewer() {
+        let view = SessionLogViewerView(onClose: { [weak self] in self?.dismissEditor() })
+        let sheet = makeThemedSheet(view)
+        editorSheet = sheet
+        window?.beginSheet(sheet)
+    }
+
+    /// 打开工作区管理 sheet（左下 ▦）。
+    @objc private func presentWorkspaces() {
+        let view = WorkspaceLibraryView(
+            currentSessionCount: currentOpenSessionIds().count,
+            onOpen: { [weak self] w in self?.openWorkspace(w) },
+            onSaveCurrent: { [weak self] name in self?.saveCurrentWorkspace(name: name) },
+            onClose: { [weak self] in self?.dismissEditor() })
+        let sheet = makeThemedSheet(view)
+        editorSheet = sheet
+        window?.beginSheet(sheet)
+    }
+
+    /// 当前打开的会话节点 id（按 tab 顺序，只含有 nodeId 的会话；临时本地 shell 不计）。
+    private func currentOpenSessionIds() -> [UUID] {
+        tabOrder.compactMap { tabs[$0]?.nodeId }
+    }
+
+    /// 把当前打开的会话集存为新工作区。
+    private func saveCurrentWorkspace(name: String) {
+        WorkspaceStore.shared.add(Workspace(name: name, sessionIds: currentOpenSessionIds()))
+    }
+
+    /// 打开工作区：按存的顺序逐个 openSession（已删节点跳过；追加到现有 tab，不关已开的）。
+    private func openWorkspace(_ w: Workspace) {
+        for sid in w.sessionIds {
+            if let node = store.find(sid), !node.isGroup { openSession(node) }
+        }
+    }
+
+    /// 启动时决定开哪些会话：首个窗口 + 「恢复上次会话」开 + 有记录 → 恢复那组；
+    /// 没恢复到任何会话（开关关 / 无记录 / 节点已删）→ 兜底开第一个，避免空白。
+    private func restoreOrOpenInitialSession() {
+        if XGhosttyConsoleController.all.isEmpty,
+           layoutStore.layout.restoreLastSession == true,
+           let last = layoutStore.layout.lastSessionIds, !last.isEmpty {
+            for sid in last {
+                if let node = store.find(sid), !node.isGroup { openSession(node) }
+            }
+        }
+        if tabOrder.isEmpty, let first = store.allHosts.first { openSession(first) }
     }
 
     /// 打开跳板机管理 sheet（左下分叉图标）。
@@ -2194,6 +2260,8 @@ extension XGhosttyConsoleController: NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         // 关窗口前 flush 一次布局（防抖有 0.4s 延迟，拖完立即关可能没存上）。
         if layoutStore.layout.autoSave { layoutStore.save(captureLayout()) }
+        // 记录当前会话集，供下次「启动恢复上次会话」。
+        layoutStore.setLastSessionIds(currentOpenSessionIds())
         XGhosttyConsoleController.all.removeAll { $0 === self }
     }
 

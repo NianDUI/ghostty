@@ -9,11 +9,14 @@ struct ConsoleSettingsView: View {
     @State private var collapseDescendants: Bool
     @State private var collapseAllOnExit: Bool
     @State private var sessionLogging: Bool
+    @State private var restoreLastSession: Bool
     var onToggleAutoSave: (Bool) -> Void
     var onToggleSort: (Bool) -> Void
     var onToggleCollapseDescendants: (Bool) -> Void
     var onToggleCollapseAllOnExit: (Bool) -> Void
     var onToggleSessionLogging: (Bool) -> Void
+    var onToggleRestoreLastSession: (Bool) -> Void
+    var onViewLogs: () -> Void
     var onResetLayout: () -> Void
     var onClose: () -> Void
 
@@ -22,11 +25,14 @@ struct ConsoleSettingsView: View {
          collapseDescendants: Bool,
          collapseAllOnExit: Bool,
          sessionLogging: Bool,
+         restoreLastSession: Bool,
          onToggleAutoSave: @escaping (Bool) -> Void,
          onToggleSort: @escaping (Bool) -> Void,
          onToggleCollapseDescendants: @escaping (Bool) -> Void,
          onToggleCollapseAllOnExit: @escaping (Bool) -> Void,
          onToggleSessionLogging: @escaping (Bool) -> Void,
+         onToggleRestoreLastSession: @escaping (Bool) -> Void,
+         onViewLogs: @escaping () -> Void,
          onResetLayout: @escaping () -> Void,
          onClose: @escaping () -> Void) {
         _autoSave = State(initialValue: autoSave)
@@ -34,11 +40,14 @@ struct ConsoleSettingsView: View {
         _collapseDescendants = State(initialValue: collapseDescendants)
         _collapseAllOnExit = State(initialValue: collapseAllOnExit)
         _sessionLogging = State(initialValue: sessionLogging)
+        _restoreLastSession = State(initialValue: restoreLastSession)
         self.onToggleAutoSave = onToggleAutoSave
         self.onToggleSort = onToggleSort
         self.onToggleCollapseDescendants = onToggleCollapseDescendants
         self.onToggleCollapseAllOnExit = onToggleCollapseAllOnExit
         self.onToggleSessionLogging = onToggleSessionLogging
+        self.onToggleRestoreLastSession = onToggleRestoreLastSession
+        self.onViewLogs = onViewLogs
         self.onResetLayout = onResetLayout
         self.onClose = onClose
     }
@@ -80,12 +89,23 @@ struct ConsoleSettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
+                Toggle("启动时恢复上次打开的会话", isOn: $restoreLastSession)
+                    .onChange(of: restoreLastSession) { onToggleRestoreLastSession($0) }
+                Text("开启后，下次启动座舱自动重新打开上次关闭时的会话集（ssh 会话会重新登录）；关闭则只默认打开第一个会话。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
                 Toggle("记录会话日志（ssh 输出落盘）", isOn: $sessionLogging)
                     .onChange(of: sessionLogging) { onToggleSessionLogging($0) }
                 Text("开启后，之后打开的 ssh 会话会把终端输出（含控制序列）追加到 ~/.config/xghostty/logs/。仅对新打开的会话生效；与 ⌃⇧S 会话共享互斥（同一会话别同时用）。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Button("打开日志目录") { openLogsDir() }
+                HStack {
+                    Button("查看会话日志…") { onViewLogs() }
+                    Button("打开日志目录") { openLogsDir() }
+                }
             }
 
             Divider()

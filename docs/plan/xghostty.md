@@ -406,6 +406,21 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 
 > **M2 剩余**：简化 expect（**暂缓**——自动登录主用例已被 askpass/ProxyCommand/`accept-new` 覆盖，价值低；且需先把输出捕获重构成「分发器」以与会话日志共存[单 callback 槽]，成本高）。（组广播、XShell·WindTerm 导入、跳板机管理、密码库查看引用、广播审计、会话日志落盘、组级快捷命令 已完成。）
 
+### M3 —— 第二十二批（2026-06-14，工作区 / 会话恢复，已构建启动）
+
+把「一组会话」做成可保存/可恢复的单元（运维每天开固定一批生产机的刚需）。全 `#if XGHOSTTY`：
+
+- [x] **工作区（手动）`WorkspaceStore` / `Workspace{name, sessionIds}`**（持久化 `~/.config/xghostty/workspaces.json` 0600）+ `WorkspaceLibraryView` 管理 sheet（列表一键「打开」/删除 + 「保存当前 N 个会话为新工作区」）。左树底部 ▦（`rectangle.stack`）入口。打开 = 按存的顺序逐个 `openSession`（已删节点跳过、追加不关现有 tab）；保存 = 抓 `currentOpenSessionIds()`（tabOrder 里有 nodeId 的会话，临时本地 shell 不计）。
+- [x] **会话恢复（自动）**：`LayoutStore.restoreLastSession` 开关（默认关）+ `lastSessionIds`。`windowWillClose` 记当前会话集；`init` 的 `restoreOrOpenInitialSession()`：首个窗口（`all.isEmpty`）+ 开关开 + 有记录 → 恢复那组（ssh 重新登录），否则兜底开第一个避免空白。设置面板「启动时恢复上次打开的会话」开关。
+
+### M3 —— 第二十三批（2026-06-14，会话日志增强，已构建启动）
+
+- [x] **`SessionLogStore` 扩展**：`stripANSI`（扫描式剥离 CSI[`ESC[…`]/OSC[`ESC]…`]/其他 ESC 序列 + 控制字符，留 `\n`/`\t`、丢 `\r`）+ `logFiles`（按修改时间倒序）+ `readLog`（纯文本可选剥离；超大只取末尾 500KB 防卡 UI）。
+- [x] **`SessionLogViewerView`**（新 sheet）：选日志文件（Menu）+「原始/纯文本」切换 + 滚动查看 + 在 Finder 显示/删除。**raw 保真落盘不变**，纯文本是查看时按需剥离（不改磁盘）。座舱设置「查看会话日志…」入口（先 `dismissEditor` 关设置再 `presentSessionLogViewer`，避免嵌套 sheet）。
+- **局限**：纯文本简单剥离对普通命令输出（ls/df/cat）效果好；交互式 TUI（vim/top）布局剥离后仍可能不完美（已在 UI 注明）。
+
+> **M3 剩余**：SFTP tab / trzsz(rz/sz) 文件传输（较大的新交互模型，按需再开）。（工作区、会话恢复、会话日志增强 已完成。）
+
 > 拖拽（1、2）在扁平 `ScrollView + LazyVStack`（已替换原 List / DisclosureGroup）上做 `onDrag`/`onDrop` + drop 落点高亮；落地前先 spike 验证拖拽手势与现有单击选中/⌘⇧多选/双击不打架。
 
 ### 踩坑记录（换机/重做必看）

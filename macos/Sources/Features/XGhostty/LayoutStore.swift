@@ -19,6 +19,10 @@ struct ConsoleLayout: Codable, Equatable {
     var collapseAllOnExit: Bool?
     /// 是否对远端（ssh）会话把终端输出落盘到 ~/.config/xghostty/logs（nil/false=关）。
     var sessionLogging: Bool?
+    /// 启动时是否自动恢复上次打开的会话集（nil/false=关，仅默认开第一个会话）。
+    var restoreLastSession: Bool?
+    /// 上次关闭窗口时打开的会话节点 id（供 restoreLastSession 恢复；仅有 nodeId 的会话）。
+    var lastSessionIds: [UUID]?
 
     init(autoSave: Bool = true,
          windowFrame: CGRect? = nil,
@@ -29,7 +33,9 @@ struct ConsoleLayout: Codable, Equatable {
          sortByName: Bool? = nil,
          collapseDescendants: Bool? = nil,
          collapseAllOnExit: Bool? = nil,
-         sessionLogging: Bool? = nil) {
+         sessionLogging: Bool? = nil,
+         restoreLastSession: Bool? = nil,
+         lastSessionIds: [UUID]? = nil) {
         self.autoSave = autoSave
         self.windowFrame = windowFrame
         self.treeWidth = treeWidth
@@ -40,6 +46,8 @@ struct ConsoleLayout: Codable, Equatable {
         self.collapseDescendants = collapseDescendants
         self.collapseAllOnExit = collapseAllOnExit
         self.sessionLogging = sessionLogging
+        self.restoreLastSession = restoreLastSession
+        self.lastSessionIds = lastSessionIds
     }
 }
 
@@ -97,12 +105,26 @@ final class LayoutStore {
         persist()
     }
 
-    /// 清空布局字段（保留偏好开关），用于「还原默认布局」。
+    /// 仅改「启动恢复上次会话」偏好。
+    func setRestoreLastSession(_ on: Bool) {
+        layout.restoreLastSession = on
+        persist()
+    }
+
+    /// 记录上次打开的会话集（关窗口时调用，供下次启动恢复）。
+    func setLastSessionIds(_ ids: [UUID]) {
+        layout.lastSessionIds = ids
+        persist()
+    }
+
+    /// 清空布局字段（保留偏好开关 + 上次会话），用于「还原默认布局」。
     func resetLayout() {
         layout = ConsoleLayout(autoSave: layout.autoSave, sortByName: layout.sortByName,
                                collapseDescendants: layout.collapseDescendants,
                                collapseAllOnExit: layout.collapseAllOnExit,
-                               sessionLogging: layout.sessionLogging)
+                               sessionLogging: layout.sessionLogging,
+                               restoreLastSession: layout.restoreLastSession,
+                               lastSessionIds: layout.lastSessionIds)
         persist()
     }
 
