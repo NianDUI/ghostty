@@ -681,6 +681,7 @@ class XGhosttyConsoleController: NSWindowController {
     private let exitBarLabel = NSTextField(labelWithString: "")
     private let zmodemOverlay = NSView()             // ZMODEM 传输期遮挡终端乱码的不透明浮层
     private let zmodemLabel = NSTextField(labelWithString: "")
+    private var zmodemHeader = ""                     // 当前传输的"接收/发送 + 文件名"抬头(进度行附其后)
     private let inputField = NSTextField()
     private let inputBg = NSView()              // 批量发送框的圆角背景容器（仿座舱输入框样式）
     private var targetMenuHosting: NSHostingView<BroadcastTargetPicker>!
@@ -1311,6 +1312,21 @@ class XGhosttyConsoleController: NSWindowController {
             },
             onToggleTrzsz: { [weak self] on in
                 self?.layoutStore.setTrzszEnabled(on)
+                // 开 trzsz 但本机没装包裹器（trzsz-go 的 `trzsz` 命令）→ 即时引导，免得静默退回普通 ssh。
+                if on, Self.trzszPath() == nil {
+                    let alert = NSAlert()
+                    alert.messageText = "未找到 trzsz 本地包裹命令"
+                    alert.informativeText = """
+                    trzsz 文件传输需要本机的包裹器（trzsz-go 包提供的 `trzsz` 命令）。
+
+                    请安装：brew install trzsz-go
+                    （若装过 Python 版 trzsz，需先 brew uninstall trzsz，两者冲突）
+
+                    另：远端服务器需有 trz/tsz 命令。未装本地包裹器时，会话会照常以普通 ssh 打开。
+                    """
+                    alert.addButton(withTitle: "好")
+                    alert.runModal()
+                }
             },
             onViewLogs: { [weak self] in
                 // 关设置 sheet 再开日志查看器（座舱单 editorSheet 槽，不嵌套）。
@@ -1892,8 +1908,8 @@ class XGhosttyConsoleController: NSWindowController {
         zmodemLabel.alignment = .center
         zmodemLabel.font = .systemFont(ofSize: 13, weight: .medium)
         zmodemLabel.lineBreakMode = .byTruncatingMiddle
-        zmodemLabel.usesSingleLineMode = false       // 允许两行（文件名 + 提示）
-        zmodemLabel.maximumNumberOfLines = 2
+        zmodemLabel.usesSingleLineMode = false       // 允许多行（抬头 + 进度行）
+        zmodemLabel.maximumNumberOfLines = 3
 
         zmodemOverlay.addSubview(zmodemLabel)
         surfaceContainer.addSubview(zmodemOverlay)   // 最后加 → 盖在终端与 exitBar 之上
@@ -1914,12 +1930,16 @@ class XGhosttyConsoleController: NSWindowController {
         switch activity {
         case .started(let dir, let label):
             let verb = dir == .download ? "接收" : "发送"
-            zmodemLabel.stringValue = "ZMODEM \(verb)中：\(label)\n（传输期间请勿操作终端）"
+            zmodemHeader = "ZMODEM \(verb)中：\(label)"
+            zmodemLabel.stringValue = zmodemHeader + "\n（传输期间请勿操作终端）"
             zmodemOverlay.isHidden = false
             surfaceContainer.addSubview(zmodemOverlay)   // 提到最上层（防新 tab 的 scroll 后插盖住）
+        case .progress(let line):
+            // lrzsz stderr 解析出的进度行（如 "Bytes Sent: 1024/4096 BPS:512"），接在抬头之后。
+            zmodemLabel.stringValue = (zmodemHeader.isEmpty ? "ZMODEM 传输中" : zmodemHeader) + "\n" + line
         case .finished(let message):
-            // 等远端 Ctrl-L 的重绘到达再撤浮层，避免一撤就露出旧乱码。
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            // 等远端 Ctrl-L 的重绘到达再撤浮层（晚于 ZmodemBridge 里 0.2s 的恢复渲染），避免一撤就露出旧帧。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
                 self?.zmodemOverlay.isHidden = true
             }
             if let message {

@@ -26,6 +26,7 @@ final class ZmodemBridge {
     /// 活动通知(主线程)：驱动控制器浮层。
     enum Activity {
         case started(Direction, String)     // 方向 + 文件名/描述
+        case progress(String)               // 进度行(解析自 rz/sz stderr)
         case finished(String?)              // 完成提示(nil=静默)
     }
 
@@ -140,9 +141,10 @@ final class ZmodemBridge {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: bin)
         // rz: -y 覆盖同名 / -b 二进制；sz: -b 二进制 / -e 转义控制字符(pty 链路更稳)。
+        // -v 让 lrzsz 把进度/状态写到 stderr，供下方解析驱动进度显示。
         proc.arguments = direction == .download
-            ? ["-y", "-b"]
-            : (["-b", "-e"] + fileArgs)
+            ? ["-y", "-b", "-v"]
+            : (["-b", "-e", "-v"] + fileArgs)
         if direction == .download { proc.currentDirectoryURL = downloadsDir }
 
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
@@ -156,8 +158,22 @@ final class ZmodemBridge {
             guard !d.isEmpty else { return }
             DispatchQueue.main.async { self?.surface?.xghosttySendBytes(d) }
         }
-        // stderr 丢弃(进度解析留作后续批)；读空避免管道塞满阻塞子进程。
-        errPipe.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
+        // stderr：lrzsz 把进度/状态写这里(用 \r 原地刷新)。取最后一段非空、清控制字符后驱动进度显示。
+        // 同时读空避免管道塞满阻塞子进程。
+        errPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let d = handle.availableData
+            guard !d.isEmpty, let self else { return }
+            let raw = String(decoding: d, as: UTF8.self)
+            let segs = raw.split(whereSeparator: { $0 == "\r" || $0 == "\n" })
+            guard let last = segs.last(where: {
+                !$0.trimmingCharacters(in: .whitespaces).isEmpty
+            }) else { return }
+            let clean = String(String.UnicodeScalarView(
+                last.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7f }
+            )).trimmingCharacters(in: .whitespaces)
+            guard !clean.isEmpty else { return }
+            DispatchQueue.main.async { self.onActivity(.progress(clean)) }
+        }
 
         proc.terminationHandler = { [weak self] _ in
             DispatchQueue.main.async { self?.handleChildExit() }
@@ -186,11 +202,15 @@ final class ZmodemBridge {
     // MARK: 主线程：子进程退出 / 收尾
 
     private func handleChildExit() {
-        // 先恢复渲染(关 divert)，否则随后的重绘响应仍被截流、屏幕停在传输前那帧。
-        surface?.xghosttySetOutputDiverted(false)
-        // 传完发 Ctrl-L 让远端在 shell 提示符处重绘——把冻结帧刷成新提示符。
-        surface?.xghosttySendBytes(Data([0x0c]))
-        onActivity(.finished(nil))
+        onActivity(.finished(nil))   // 通知控制器（浮层延时隐，留出下面重绘落地的时间）
+        // 子进程已退，但远端可能还在吐 ZMODEM 收尾字节(OO / 帧尾)。再保持截流一小会儿把它们吞掉，
+        // 否则一关 divert 这些尾字节会漏渲成残留乱码(如提示符后多个 `�`)。之后恢复渲染 + Ctrl-L
+        // 让远端在 shell 提示符处重绘——把冻结帧刷成干净新提示符。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            self.surface?.xghosttySetOutputDiverted(false)
+            self.surface?.xghosttySendBytes(Data([0x0c]))
+        }
         resetToScanning()
     }
 
