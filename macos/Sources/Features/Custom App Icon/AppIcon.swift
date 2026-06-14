@@ -88,7 +88,7 @@ enum AppIcon: Equatable, Codable, Sendable {
 #if !DOCK_TILE_PLUGIN
 /// Making sure that `NSWorkspace.shared.setIcon` executes on only one thread at a time
 actor AppIconUpdater {
-    func update(icon: AppIcon?) {
+    func update(icon: AppIcon?) async {
         UserDefaults.ghostty.appIcon = icon
         // Notify DockTilePlugin to update dock icon
         DistributedNotificationCenter.default()
@@ -99,10 +99,18 @@ actor AppIconUpdater {
                 deliverImmediately: true,
             )
 
+#if XGHOSTTY
+        // XGhostty：在最终图标右下角叠加「X」角标，使其在 Dock / Finder 中区别于原版 Ghostty。
+        // official(nil)时取 app 默认图标作底；NSImage 合成需在主线程（lockFocus）。
+        let explicit = icon?.image(in: .main)
+        let badged = await MainActor.run { XGhosttyAppIcon.withXBadge(base: explicit) }
+        NSWorkspace.shared.setIcon(badged, forFile: Bundle.main.bundlePath)
+#else
         NSWorkspace.shared.setIcon(
             icon?.image(in: .main),
             forFile: Bundle.main.bundlePath,
         )
+#endif
         NSWorkspace.shared.noteFileSystemChanged(Bundle.main.bundlePath)
     }
 }

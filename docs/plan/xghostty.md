@@ -533,6 +533,30 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 
 > 拖拽（1、2）在扁平 `ScrollView + LazyVStack`（已替换原 List / DisclosureGroup）上做 `onDrag`/`onDrop` + drop 落点高亮；落地前先 spike 验证拖拽手势与现有单击选中/⌘⇧多选/双击不打架。
 
+### 第三十一批（2026-06-14，出正式版 ReleaseFast + XGhostty Release 配置补全 + 图标加 X，真机装好启动通过）
+
+用户要出「正式版」并装 /Applications。过程暴露并修复了 XGhostty 从没出过 Release 的配置缺口，并按需把图标加了 X 区分。
+
+**① XGhostty 的 Release/ReleaseLocal 配置当初只配了 Debug（致命缺口）**
+- duplicate 出 XGhostty target 时，差异化定制（`XGHOSTTY` 编译标志 / bundle id `top.niandui.xghostty` / 显示名 / `Ghostty Dev Cert`+Manual 签名）**只加在了 Debug 配置**；Release/ReleaseLocal 还是从主 Ghostty 原样复制（bundle id `com.mitchellh.ghostty`、ad-hoc、**无 XGHOSTTY 标志**）。
+- 后果：直接 `-configuration ReleaseLocal` 出 XGhostty = 编成**普通 Ghostty 终端**（所有 `#if XGHOSTTY` 不编译）+ bundle id 撞主 app。从没出过 XGhostty Release，全部真机测试都是 Debug 构建。
+- 修复：把 Debug 的 4 项定制平移到 **ReleaseLocal 块**（pbxproj `04775E4B`，整块用唯一 id 锚替换；两个 ReleaseLocal 块[主 Ghostty/XGhostty]共用 `GhosttyReleaseLocal.entitlements`，displayname/bundleid 段也全等，唯一可靠锚是块 id 行 `04775E4B` 与改出来的 `DisplayName="XGhostty"`+ReleaseLocal 独有 `AudioCapture`）。`SWIFT_ACTIVE_COMPILATION_CONDITIONS = "XGHOSTTY"`（不带 DEBUG）。
+- **只改 ReleaseLocal、不碰 Release**：Release 用 `Ghostty.entitlements` **不带** `disable-library-validation`，自签证书 + hardened runtime 加载 GhosttyKit 会 SIGKILL；`GhosttyReleaseLocal.entitlements` 带（Debug/ReleaseLocal 都带）。macos/CLAUDE.md 正式版流水线本来就走 ReleaseLocal。
+
+**② 图标加 X（用户要在原 Ghostty 图标上加 X 区分，不是单纯染色）**
+- XGhostty 复用主 app 的 AppIcon 资源（`ASSETCATALOG_COMPILER_APPICON_NAME = Ghostty`），所以图标与 Ghostty 完全相同（一直没换）。
+- 实现：`AppIconUpdater.update`（`Features/Custom App Icon/AppIcon.swift`）加 `#if XGHOSTTY` 分支，对最终图标叠加红底白「X」角标（新 `Features/XGhostty/XGhosttyAppIcon.swift` 的 `withXBadge`：右下角红圆+白描边+白 X，主线程 lockFocus 合成）；走原有 `NSWorkspace.setIcon(forFile: bundlePath)` → **Dock 与 Finder 都带 X**。
+- **不会累加**：setIcon 写的是 bundle 的 Finder 自定义图标 xattr（com.apple.FinderInfo），**不动 Assets.car**；底图取自 `NSImage(named: NSImage.applicationIconName)`（asset 原图，无 X），每次启动重新合成。
+- `update` 因加 `await MainActor.run`（lockFocus 要主线程）改成 `async`；唯一调用方 AppDelegate:890 已 `await`，主 app `#else` 分支行为零变。
+
+**③ 出正式版 + 安装（真机通过）**
+- Zig：`zig build -Doptimize=ReleaseFast -Demit-macos-app=false`（两个 app 共享 xcframework）。
+- 主 Ghostty：`xcodebuild -scheme Ghostty -configuration ReleaseLocal` → 48M ReleaseFast 二进制（universal）、adhoc；装前 `codesign --force --deep --sign -` 重签再**原子替换** `/Applications`（cp 到 `.new` 再 `rm+mv`，删除正在运行 bundle 窗口压到毫秒，**不 kill 正跑 Claude Code 的 Ghostty**，重启才生效）。
+- XGhostty：`xcodebuild -scheme XGhostty -configuration ReleaseLocal` → 49M ReleaseFast、真座舱（20951 个 XGhostty 符号）、bundle id top.niandui.xghostty、Authority=Ghostty Dev Cert、显示名 XGhostty；**直接 cp 装、绝不重签**（证书签名 xcodebuild 已签好，再 `--sign -` 会 SIGKILL）；先 kill 旧 XGhostty PID 再装再 open。
+- 验证：XGhostty 启动存活（PID 在、启动时间 > 二进制 mtime 非 stale）、`--verify --deep --strict` OK、图标 X 生效（bundle 写了 FinderInfo）。首启动读保险库会因 cdhash 变弹一次钥匙串授权（已知，点「始终允许」）。
+
+**关键取舍/坑**：① **duplicate target 的非 Debug 配置必须手动补全定制**——否则出 Release 是「普通终端 + 撞 bundle id」废品；`xcodebuild -showBuildSettings` 是 ground truth，别猜 pbxproj。② **签名两套规则别搞混**：自签证书 app（XGhostty）xcodebuild 已签、**禁止再 codesign**；adhoc app（主 Ghostty）按流水线重签。③ **Release entitlements 不带 disable-library-validation** → 自签证书出 Release 必崩，只改带它的 ReleaseLocal。④ 图标走 setIcon(forFile:) 同时管 Dock+Finder，且写 xattr 不动 asset → 不累加。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**
