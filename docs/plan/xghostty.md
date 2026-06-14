@@ -500,6 +500,21 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 
 > **里程碑：XGhostty 不再"零改 Zig"**——改成"**改 Zig 但纯加法 + 默认关**"，对原版 app 仍是 provably 零行为变化。代价：①每次改 C-ABI 要重建 xcframework；②上游 merge 若动 `processOutputLocked` 要重贴那行 `if return`（就一行）。**ZMODEM 乱码已根治**（屏幕冻结干净）。
 
+### 第三十批（2026-06-14，文件传输方案收敛：统一 `trzsz -z -d ssh`，真机验证通过）
+
+真机迭代后大改方向。**关键发现**：`trzsz --help` 暴露 **`-z`「enable zmodem lrzsz (rz/sz)」** 与 **`-d`「dragfile」**——即 trzsz-go 的本地包裹器 `trzsz -z -d ssh` **一条命令原生接管全部四种**（trz/tsz **和** rz/sz），自带进度/无乱码/拖文件上传，比自绘桥接可靠得多。
+
+- [x] **自绘 lrzsz 桥接（ZmodemBridge）证明不可靠**：管道桥接 rz/sz **握手跑不通**（lrzsz 要真 tty 做 tcsetattr/isatty），ZMODEM 响应漏给远端 shell（`bash: �: 未找到命令`）。已改成 **pty 桥接**（`posix_openpt`+slave 设 raw 防回显，stdin/stdout 接 slave、父读写 master）——但仅作 **「没装 trzsz-go」的兜底**。
+- [x] **统一走 trzsz-go 包裹**：`openTab` 在 **ssh + 任一文件传输开关开 + 装了 trzsz-go** 时把 `built.command` 前缀成 `'<trzsz>' -z -d <ssh…>`，并把本机 cwd 设 `~/Downloads`（trzsz 下载落点）。包裹时**不**再武装 ZmodemBridge（`trzszWrapped` 标记）。askpass/跳板/OSC7/登录命令全透传（trzsz 继承 env + 转发普通输出）。
+- [x] **Esc 取消**：keyMonitor 的 keyCode 53 在 `activeZmodemBridge != nil` 时调 `bridge.cancel()`（发 ZMODEM CAN + 杀 rz/sz + 撤截流 + 回车）。仅对兜底桥接路径有效（trzsz 包裹时 trzsz 自管）。
+- [x] **设置开关理顺**：「文件传输（trz/tsz/rz/sz·推荐）」（=旧 trzszEnabled，开它即 `trzsz -z -d` 包裹，强烈推荐）+「ZMODEM 兜底（仅未装 trzsz-go 时）」（=旧 zmodemEnabled，pty 桥接兜底）。装了 trzsz-go 只开推荐那个。
+
+**真机验证结论**：`sz 598MB` → trzsz 接管成功（`Transferred 598 MB, Speed 77.8 MB/s. Success!!`）；`tsz` → 存到 `~/Downloads`（同名自动加 `.1` 后缀防覆盖）。
+
+**进度/总大小的取舍（trzsz-go 固有，XGhostty 改不了）**：trzsz-go 对两种协议两套进度——**trzsz 原生(tsz/trz)** 用带 `Progress.totalUnitCount` 的**完整进度条**（含总大小+百分比，协议握手带文件大小）；**ZMODEM(sz/rz 经 -z)** 硬编码成 `[2KTransferred %s, Speed %s.`——**只有已传量+速度、无总大小**。结论：**想要总大小就用 `tsz`/`trz` 替代 `sz`/`rz`**（效果一样、显示更全）；sz/rz 仅给只有 lrzsz 的老服务器兜底。
+
+> **M3 文件传输至此收敛并真机通过**：统一 `trzsz -z -d ssh`（推荐），pty 桥接作无-trzsz-go 兜底，Esc 可取消，下载落 ~/Downloads。**Zig 核心的 divert 现仅服务兜底桥接**（trzsz 包裹路径用不上 divert，trzsz 自己消化协议字节）。
+
 ### 第二十八批（2026-06-14，ZMODEM(rz/sz)文件传输——桥接本机 lrzsz，第一批，已构建启动）
 
 收口 M3 当初砍掉的 trzsz/rz-sz 大头。用户选**桥接本机 lrzsz**方案（vs 纯 Swift 实现 ZMODEM）。全 `#if XGHOSTTY`，**零改 Zig**：
