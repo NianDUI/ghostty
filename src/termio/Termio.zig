@@ -89,6 +89,14 @@ thread_enter_state: ?*ThreadEnterState = null,
 ///   `processOutput_thread_id` below.
 output_callback: OutputCallback = .{},
 
+/// When true, pty output is handed to `output_callback` but NOT fed to the
+/// terminal parser/renderer. Used by embedders to "take over" the byte stream
+/// (e.g. an inline ZMODEM/file-transfer bridge) so binary protocol bytes don't
+/// paint garbage on the screen. Defaults to false — the terminal behaves
+/// identically unless an embedder explicitly diverts. Toggled via
+/// `setOutputDiverted` (under the renderer mutex from `Surface`).
+output_diverted: bool = false,
+
 /// Debug-only: thread ID of the first `processOutputLocked` invocation.
 /// All subsequent invocations must come from the same thread, otherwise
 /// the host callback can race against itself even though the renderer
@@ -447,6 +455,10 @@ pub fn setOutputCallback(self: *Termio, callback: OutputCallback) void {
     self.output_callback = callback;
 }
 
+pub fn setOutputDiverted(self: *Termio, diverted: bool) void {
+    self.output_diverted = diverted;
+}
+
 /// Update the configuration.
 pub fn changeConfig(self: *Termio, td: *ThreadData, config: *DerivedConfig) !void {
     // The remainder of this function is modifying terminal state or
@@ -703,6 +715,12 @@ fn processOutputLocked(self: *Termio, buf: []const u8) void {
     }
 
     self.output_callback.invoke(buf);
+
+    // Output diverted (e.g. an inline ZMODEM/file-transfer takeover): the bytes
+    // have been handed to the callback consumer and must NOT reach the terminal
+    // screen. Skip render + parse so the screen stays frozen-clean during the
+    // transfer instead of painting raw binary protocol bytes as garbage.
+    if (self.output_diverted) return;
 
     // Schedule a render. We can call this first because we have the lock.
     self.terminal_stream.handler.queueRender() catch unreachable;

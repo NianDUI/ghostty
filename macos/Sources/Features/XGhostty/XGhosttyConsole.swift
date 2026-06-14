@@ -1282,6 +1282,7 @@ class XGhosttyConsoleController: NSWindowController {
             restoreLastSession: layoutStore.layout.restoreLastSession ?? false,
             expectAutoLogin: layoutStore.layout.expectAutoLogin ?? false,
             zmodemEnabled: layoutStore.layout.zmodemEnabled ?? false,
+            trzszEnabled: layoutStore.layout.trzszEnabled ?? false,
             onToggleAutoSave: { [weak self] on in
                 self?.layoutStore.setAutoSave(on)
                 if on { self?.scheduleSaveLayout() }
@@ -1307,6 +1308,9 @@ class XGhosttyConsoleController: NSWindowController {
             },
             onToggleZmodem: { [weak self] on in
                 self?.layoutStore.setZmodemEnabled(on)
+            },
+            onToggleTrzsz: { [weak self] on in
+                self?.layoutStore.setTrzszEnabled(on)
             },
             onViewLogs: { [weak self] in
                 // 关设置 sheet 再开日志查看器（座舱单 editorSheet 槽，不嵌套）。
@@ -1592,6 +1596,14 @@ class XGhosttyConsoleController: NSWindowController {
                     ? try SessionCommandBuilder.buildSFTP(for: effective, policy: policy, jump: jump)
                     : try SessionCommandBuilder.build(for: effective, policy: policy, jump: jump)
                 if let cmd = built.command {
+                    // trzsz 透明包裹（仅 ssh 会话、开关开、本机装了 trzsz）：`trzsz ssh …` 让本机
+                    // trzsz 坐在 pty 与 ssh 之间，自动拦截远端 trz/tsz 协议（XGhostty 端无乱码、
+                    // 自带进度条）。未装 trzsz 则静默退回普通 ssh。下载落点靠下方把 cwd 设到 ~/Downloads。
+                    var runCmd = cmd
+                    if transport == .ssh, layoutStore.layout.trzszEnabled == true,
+                       let trzsz = Self.trzszPath() {
+                        runCmd = Self.shellQuote(trzsz) + " " + cmd
+                    }
                     // 终端首行打印连接信息（本地 printf，暗灰色；不发给远端、不影响登录）。
                     // Ghostty 对 command 是 `exec -l <argv0>`，不能用 `;` 串联（否则只 exec 到
                     // printf、跑完即退 → tab 闪退），必须把「printf + ssh」整段裹进一个 sh -c 脚本。
@@ -1599,10 +1611,10 @@ class XGhosttyConsoleController: NSWindowController {
                         ? SessionCommandBuilder.displaySFTPCommand(for: effective, viaJump: jumpDisplay)
                         : SessionCommandBuilder.displayCommand(for: effective, viaJump: jumpDisplay)
                     if let info {
-                        let script = "printf '\\033[2m%s\\033[0m\\n' \(Self.shellQuote(info)); " + cmd
+                        let script = "printf '\\033[2m%s\\033[0m\\n' \(Self.shellQuote(info)); " + runCmd
                         cfg.command = "/bin/sh -c " + Self.shellQuote(script)
                     } else {
-                        cfg.command = cmd
+                        cfg.command = runCmd
                     }
                 }
                 var env = built.environment
@@ -1627,6 +1639,13 @@ class XGhosttyConsoleController: NSWindowController {
             }
             if let workingDirectory, !workingDirectory.isEmpty {
                 cfg.workingDirectory = workingDirectory
+            } else if transport == .ssh, layoutStore.layout.trzszEnabled == true,
+                      let node, !node.isLocalShell, Self.trzszPath() != nil {
+                // trzsz 默认把 tsz 下载落到本机进程 cwd → 设成 ~/Downloads，兑现「下载到 ~/Downloads」。
+                let dl = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Downloads", isDirectory: true)
+                try? FileManager.default.createDirectory(at: dl, withIntermediateDirectories: true)
+                cfg.workingDirectory = dl.path
             }
 
             let sv = Ghostty.SurfaceView(app, baseConfig: cfg)
@@ -1757,6 +1776,16 @@ class XGhosttyConsoleController: NSWindowController {
     /// 单引号包裹 + 转义，安全拼进 `cd '…'`。
     private static func shellQuote(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// 查找本机 trzsz（应用环境未必带 brew PATH，逐候选路径探）。未装则返回 nil → 退回普通 ssh。
+    private static func trzszPath() -> String? {
+        let candidates = [
+            "/opt/homebrew/bin/trzsz",   // Apple Silicon brew
+            "/usr/local/bin/trzsz",      // Intel brew
+            "/usr/bin/trzsz",
+        ]
+        return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
     }
 
     /// 命令文本 → 发送字节：多行视为「每行一条命令」逐行执行（\n→\r），末尾补一个 \r。

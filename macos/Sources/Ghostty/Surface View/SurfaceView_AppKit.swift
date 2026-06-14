@@ -499,6 +499,15 @@ extension Ghostty {
             guard let surface else { return }
             XGhosttyOutputDispatch.remove(surface: surface, key: key)
         }
+
+        /// XGhostty 输出截流：开则 pty 输出仍发给 output_callback（分发器→各订阅者），但**不再喂
+        /// 终端解析器/渲染器**——用于 ZMODEM 等"接管字节流"的传输期，避免二进制协议字节刷成满屏乱码
+        /// （屏幕冻结在传输前那一帧）。关则恢复正常渲染。底层是 Zig 核心新增的
+        /// `ghostty_surface_set_output_diverted`（纯加法、默认关，主 Ghostty.app 不受影响）。
+        func xghosttySetOutputDiverted(_ diverted: Bool) {
+            guard let surface else { return }
+            ghostty_surface_set_output_diverted(surface, diverted)
+        }
 #endif
 
         fileprivate func applySharedResize(cols: Int, rows: Int) {

@@ -77,7 +77,7 @@ final class ZmodemBridge {
         }
     }
 
-    /// 会话关闭：若正在传输则取消远端 + 杀子进程。
+    /// 会话关闭：若正在传输则取消远端 + 杀子进程 + 恢复渲染。
     func teardown() {
         lock.lock()
         let proc = process
@@ -86,7 +86,10 @@ final class ZmodemBridge {
         stdinHandle = nil
         state = .scanning
         lock.unlock()
-        if active { cancelRemote() }
+        if active {
+            cancelRemote()
+            surface?.xghosttySetOutputDiverted(false)
+        }
         proc?.terminationHandler = nil
         if proc?.isRunning == true { proc?.terminate() }
     }
@@ -104,6 +107,10 @@ final class ZmodemBridge {
             return
         }
 
+        // 截流：从这一刻起 pty 输出不再喂解析器 → 屏幕冻结干净，ZMODEM 二进制不刷乱码。
+        // 失败/结束/teardown 各路径都会恢复（false）。
+        surface.xghosttySetOutputDiverted(true)
+
         var fileArgs: [String] = []
         let downloadsDir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Downloads", isDirectory: true)
@@ -117,6 +124,7 @@ final class ZmodemBridge {
             panel.prompt = "上传"
             panel.message = "选择要上传到远端当前目录的文件"
             guard panel.runModal() == .OK, !panel.urls.isEmpty else {
+                surface.xghosttySetOutputDiverted(false)
                 cancelRemote(); resetToScanning(); onActivity(.finished("已取消上传")); return
             }
             fileArgs = panel.urls.map { $0.path }
@@ -158,6 +166,7 @@ final class ZmodemBridge {
         do {
             try proc.run()
         } catch {
+            surface.xghosttySetOutputDiverted(false)
             cancelRemote(); resetToScanning(); onActivity(.finished("启动 \(toolName) 失败")); return
         }
 
@@ -177,7 +186,9 @@ final class ZmodemBridge {
     // MARK: 主线程：子进程退出 / 收尾
 
     private func handleChildExit() {
-        // 传完发 Ctrl-L 让远端在 shell 提示符处重绘清屏(清掉我们渲染出的乱码)，再撤浮层。
+        // 先恢复渲染(关 divert)，否则随后的重绘响应仍被截流、屏幕停在传输前那帧。
+        surface?.xghosttySetOutputDiverted(false)
+        // 传完发 Ctrl-L 让远端在 shell 提示符处重绘——把冻结帧刷成新提示符。
         surface?.xghosttySendBytes(Data([0x0c]))
         onActivity(.finished(nil))
         resetToScanning()

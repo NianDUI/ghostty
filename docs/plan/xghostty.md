@@ -482,6 +482,24 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 
 > **教训**：自签/ad-hoc 代码的钥匙串 ACL 按 cdhash 钉死，**任何"重建 ACL"都无法跨重建免弹**；要么 allow-all（降安全）要么真证书。别再说"删项重建就不弹"。
 
+### 第二十九批（2026-06-14，⚠️ 首次改 Zig 核心：输出 divert 去 ZMODEM 乱码 + trzsz 支持，已构建启动）
+
+**用户授权改 Zig 核心**（此前铁律是"XGhostty 零改 src/"——虽然 session-sharing 早已往 src/ 加过 `output_callback`）。两件事：①给 ZMODEM 加"截流"彻底去乱码；②加 trzsz 支持。
+
+**① 改 Zig 核心：输出 divert（纯加法、默认关、主 app 零影响）**
+- 病根定位：`Termio.zig processOutputLocked` 在 `output_callback.invoke(buf)`（我们拿副本，705 行）之后、于 733-747 行把 `buf` 喂 VT 解析器写屏。XGhostty 只拿只读副本、拦不住解析 → ZMODEM 二进制刷成满屏乱码。
+- 改动 4 处全是加法：`Termio.zig` 加 `output_diverted: bool = false` 字段 + `setOutputDiverted` + 在 invoke 后插 `if (self.output_diverted) return;`（截流时跳过 render+parse，屏幕冻结在传输前那帧）；`Surface.zig` 加 `setTermioOutputDiverted`（取 renderer 锁保证不在批中途翻转）；`embedded.zig` 导出 `ghostty_surface_set_output_diverted`；`include/ghostty.h` 声明。
+- **安全保证**：字段默认 false，主 Ghostty.app 从不调该导出 → 早返回永不触发 → `processOutputLocked` 逐字节行为不变。是加法+默认关，非改逻辑。**C-ABI 变 → 重建 `GhosttyKit.xcframework`（`zig build -Demit-macos-app=false`，已做，新符号进了全平台头）**。
+- XGhostty 侧：`SurfaceView.xghosttySetOutputDiverted(_:)` 包该导出；`ZmodemBridge` 传输确定开始（找到 rz/sz 后）`true`、失败/取消/结束/teardown `false`；**结束时先关 divert 再发 Ctrl-L**（否则重绘响应仍被截流、屏幕停在冻结帧）。**坑：divert 不能从 `feed`（在 `output_callback.invoke` 里、已持 renderer 锁的 termio 线程）调**——会同线程重锁死锁；只能主线程 dispatch 调（start/exit/teardown 都在主线程，OK）。代价：触发→主线程 dispatch 那点延迟内的极少首批字节仍会渲一下（ZRQINIT ~20B 一闪），可忽略。
+
+**② trzsz 支持（包裹 ssh，无需 divert）**
+- trzsz 设计上就是透明包 ssh：`trzsz ssh user@host` 让本机 trzsz 坐在 pty 与 ssh 之间，远端 trz/tsz 协议在到 XGhostty 前就被 trzsz 吃掉自理 → **XGhostty 端本就无乱码、连 divert 都用不上、自带进度条**。
+- 实现：`LayoutStore.trzszEnabled`（默认关）+ 设置开关；`openTab` 仅 **ssh transport + 开关开 + 本机装了 trzsz** 时把 `built.command` 前缀成 `'<trzsz路径>' ssh …`（`trzszPath()` 逐候选路径探 brew bin，未装静默退回普通 ssh）；下载落点：trzsz 默认存进程 cwd → 给 trzsz 包裹的会话把 `cfg.workingDirectory` 设到 `~/Downloads` 兑现"下载到 ~/Downloads"。askpass/跳板/OSC7 全透传（trzsz 继承 env、转发普通输出）。
+- 与 lrzsz 桥接**并存不冲突**：trzsz 拦 trzsz 协议，经典 ZMODEM(`**\x18B0`)穿过 trzsz 到 XGhostty 由 ZmodemBridge 接。
+- 本机**未装 trzsz**（已探测），测前 `brew install trzsz`。**待验证**：trzsz CLI 实际下载落点是否真按 cwd（没装没法核 --help，先按 cwd 赌）、上传是否走拖文件进终端。
+
+> **里程碑：XGhostty 不再"零改 Zig"**——改成"**改 Zig 但纯加法 + 默认关**"，对原版 app 仍是 provably 零行为变化。代价：①每次改 C-ABI 要重建 xcframework；②上游 merge 若动 `processOutputLocked` 要重贴那行 `if return`（就一行）。**ZMODEM 乱码已根治**（屏幕冻结干净）。
+
 ### 第二十八批（2026-06-14，ZMODEM(rz/sz)文件传输——桥接本机 lrzsz，第一批，已构建启动）
 
 收口 M3 当初砍掉的 trzsz/rz-sz 大头。用户选**桥接本机 lrzsz**方案（vs 纯 Swift 实现 ZMODEM）。全 `#if XGHOSTTY`，**零改 Zig**：

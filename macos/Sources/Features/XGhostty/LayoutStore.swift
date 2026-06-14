@@ -29,6 +29,9 @@ struct ConsoleLayout: Codable, Equatable {
     /// 是否启用 ZMODEM(rz/sz)文件传输（nil/false=关）：远端跑 sz/rz 时桥接本机 lrzsz 自动收发。
     /// 默认关——需本机装 lrzsz，且仅少数场景用；开启后对新打开的 ssh 会话生效。
     var zmodemEnabled: Bool?
+    /// 是否启用 trzsz(trz/tsz)文件传输（nil/false=关）：把 ssh 命令包成 `trzsz ssh …`，由本机
+    /// trzsz 透明拦截 trz/tsz 协议。默认关——需本机装 trzsz；开启后对新打开的 ssh 会话生效。
+    var trzszEnabled: Bool?
 
     init(autoSave: Bool = true,
          windowFrame: CGRect? = nil,
@@ -43,7 +46,8 @@ struct ConsoleLayout: Codable, Equatable {
          restoreLastSession: Bool? = nil,
          lastSessionIds: [UUID]? = nil,
          expectAutoLogin: Bool? = nil,
-         zmodemEnabled: Bool? = nil) {
+         zmodemEnabled: Bool? = nil,
+         trzszEnabled: Bool? = nil) {
         self.autoSave = autoSave
         self.windowFrame = windowFrame
         self.treeWidth = treeWidth
@@ -58,6 +62,7 @@ struct ConsoleLayout: Codable, Equatable {
         self.lastSessionIds = lastSessionIds
         self.expectAutoLogin = expectAutoLogin
         self.zmodemEnabled = zmodemEnabled
+        self.trzszEnabled = trzszEnabled
     }
 }
 
@@ -133,6 +138,12 @@ final class LayoutStore {
         persist()
     }
 
+    /// 仅改「trzsz 文件传输」偏好。
+    func setTrzszEnabled(_ on: Bool) {
+        layout.trzszEnabled = on
+        persist()
+    }
+
     /// 记录上次打开的会话集（关窗口时调用，供下次启动恢复）。
     func setLastSessionIds(_ ids: [UUID]) {
         layout.lastSessionIds = ids
@@ -148,7 +159,8 @@ final class LayoutStore {
                                restoreLastSession: layout.restoreLastSession,
                                lastSessionIds: layout.lastSessionIds,
                                expectAutoLogin: layout.expectAutoLogin,
-                               zmodemEnabled: layout.zmodemEnabled)
+                               zmodemEnabled: layout.zmodemEnabled,
+                               trzszEnabled: layout.trzszEnabled)
         persist()
     }
 

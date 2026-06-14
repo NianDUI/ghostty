@@ -3334,6 +3334,16 @@ pub fn setTermioOutputCallback(self: *Surface, callback: termio.Termio.OutputCal
     self.io.setOutputCallback(callback);
 }
 
+/// Divert pty output away from the terminal parser/renderer (output still goes
+/// to the output callback). Used by embedders for inline byte-stream takeover
+/// (ZMODEM/file transfer). Taking the renderer mutex ensures a clean handoff:
+/// the flag never flips mid-batch.
+pub fn setTermioOutputDiverted(self: *Surface, diverted: bool) void {
+    self.renderer_state.mutex.lock();
+    defer self.renderer_state.mutex.unlock();
+    self.io.setOutputDiverted(diverted);
+}
+
 /// Callback for when the surface is fully visible or not, regardless
 /// of focus state. This is used to pause rendering when the surface
 /// is not visible, and also re-render when it becomes visible again.

@@ -1966,6 +1966,17 @@ pub const CAPI = struct {
         });
     }
 
+    /// Divert pty output away from the terminal parser/renderer (output still
+    /// flows to the output callback set above). Used for inline byte-stream
+    /// takeover like ZMODEM/file transfer so binary protocol data doesn't paint
+    /// the screen. Pass false to restore normal rendering.
+    export fn ghostty_surface_set_output_diverted(
+        surface: *Surface,
+        diverted: bool,
+    ) void {
+        surface.core_surface.setTermioOutputDiverted(diverted);
+    }
+
     /// Set the preedit text for the surface. This is used for IME
     /// composition. If the length is 0, then the preedit text is cleared.
     export fn ghostty_surface_preedit(
