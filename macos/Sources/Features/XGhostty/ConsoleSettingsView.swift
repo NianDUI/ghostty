@@ -68,6 +68,10 @@ struct ConsoleSettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("座舱设置").font(.headline)
 
+            // 内容多、面板会超屏 → 套固定高度 ScrollView，标题与底部「取消/完成」常驻可见。
+            // 自适应 sheet 里的 ScrollView 必须给确定高度，否则塌成 0（见密码库那次坑）。
+            ScrollView {
+              VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("自动保存窗口布局", isOn: $autoSave)
                     .onChange(of: autoSave) { onToggleAutoSave($0) }
@@ -157,6 +161,9 @@ struct ConsoleSettingsView: View {
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+              }                       // 关 ScrollView 内 VStack
+            }                         // 关 ScrollView
+            .frame(height: 440)       // 确定高度：内容超出则滚动，标题/按钮常驻不被挤出屏
 
             HStack {
                 Spacer()
