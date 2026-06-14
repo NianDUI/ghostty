@@ -1938,8 +1938,9 @@ class XGhosttyConsoleController: NSWindowController {
             // lrzsz stderr 解析出的进度行（如 "Bytes Sent: 1024/4096 BPS:512"），接在抬头之后。
             zmodemLabel.stringValue = (zmodemHeader.isEmpty ? "ZMODEM 传输中" : zmodemHeader) + "\n" + line
         case .finished(let message):
-            // 等远端 Ctrl-L 的重绘到达再撤浮层（晚于 ZmodemBridge 里 0.2s 的恢复渲染），避免一撤就露出旧帧。
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
+            // 此时 ZmodemBridge 已撤截流 + 回车（成功路径），等远端新提示符落地再撤浮层，避免露出旧帧。
+            zmodemHeader = ""
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                 self?.zmodemOverlay.isHidden = true
             }
             if let message {

@@ -2,23 +2,28 @@
 import AppKit
 import Foundation
 
-/// ZMODEM(rz/sz) 文件传输桥接器：复用本机 lrzsz 二进制，**零改 Zig 核心**。
+/// ZMODEM(rz/sz) 文件传输桥接器：复用本机 lrzsz 二进制，桥接到 Zig 核心的输出截流(divert)。
 ///
 /// **原理**：远端跑 `sz file`(下载到本机) / `rz`(从本机上传) 会先发 ZMODEM 触发头——
 /// `**\x18B00…`(ZRQINIT，远端要发、我们收) 或 `**\x18B01…`(ZRINIT，远端等、我们发)。我们在
-/// 输出分发器([[OutputDispatch]]，零改 Zig 拿到 pty 输出副本)上侦测到触发头后，spawn 本机
+/// 输出分发器([[OutputDispatch]])上侦测到触发头后，调 `xghosttySetOutputDiverted(true)` 让
+/// Zig 核心把 pty 输出**截流**(只发回调、不喂解析器→屏幕冻结干净不刷乱码)，再 spawn 本机
 /// `rz`/`sz`，把**触发头起的后续 pty 输出**喂给它的 stdin、它的 stdout 经 `send_bytes` 回灌远端
-/// ——本机 lrzsz 充当 ZMODEM 端点，跑完整协议。
+/// ——本机 lrzsz 充当 ZMODEM 端点跑完整协议。
 ///
-/// **硬约束**：我们没法阻止原始 ZMODEM 二进制字节被终端渲染(那要改 Zig)，故传输期屏幕会刷乱码，
-/// 由控制器盖**不透明浮层**遮挡；传完发 Ctrl-L 让远端重绘清屏、再撤浮层。
+/// **收尾(去残留乱码)**：子进程退出后远端可能还在吐 ZMODEM 收尾字节(OO/帧尾)。**保持截流**进入
+/// draining 态，直到 pty 输出**静默 ~250ms**(收尾字节吐完)才恢复渲染、并发一个回车(`\r`)要个干净
+/// 新提示符(不用 Ctrl-L——它在远端 readline 没就绪时会被当字面字符回显成 `�`)。
+///
+/// **进度**：不靠 lrzsz 的 stderr(管道里它未必输出)，直接**数桥接流过的文件字节**——下载数喂给 rz
+/// 的字节、上传数 sz 吐出的字节，每 256KB 报一次「已接收/发送 X.X MB」。
 ///
 /// **依赖**：本机需装 lrzsz(`brew install lrzsz`)；找不到 rz/sz 则向远端发 ZMODEM 取消序列
-/// (`CAN`×8) 让远端干净中止，并提示安装。
+/// (`CAN`×8) 让远端干净中止并提示安装。
 ///
-/// **线程模型**：`feed` 由分发器在 **termio 线程**调用(扫描/转发到子进程 stdin)；子进程 stdout
-/// 的 `readabilityHandler` 在私有队列读、切主线程 `send_bytes`；UI(浮层/选择框)与启动/收尾全在主线程。
-/// 一个桥接器随会话常驻：每次传输结束自动复位回扫描态，可连续处理多次传输。
+/// **线程模型**：`feed` 由分发器在 **termio 线程**调用；子进程 stdout 的 `readabilityHandler` 在
+/// 私有队列读、切主线程 `send_bytes`；UI/启动/收尾/divert 全在主线程(divert 不能从 feed 调——那时
+/// 已持 renderer 锁，会同线程死锁)。一个桥接器随会话常驻，每次传输结束复位回扫描态，可连续多传。
 final class ZmodemBridge {
     /// download = 远端 sz → 本机 rz(接收)；upload = 远端 rz ← 本机 sz(发送)。
     enum Direction { case download, upload }
@@ -26,7 +31,7 @@ final class ZmodemBridge {
     /// 活动通知(主线程)：驱动控制器浮层。
     enum Activity {
         case started(Direction, String)     // 方向 + 文件名/描述
-        case progress(String)               // 进度行(解析自 rz/sz stderr)
+        case progress(String)               // 进度行(已接收/发送 X.X MB)
         case finished(String?)              // 完成提示(nil=静默)
     }
 
@@ -34,13 +39,18 @@ final class ZmodemBridge {
     private let onActivity: (Activity) -> Void
 
     private let lock = NSLock()
-    private enum State { case scanning, active }
+    private enum State { case scanning, active, draining }
     private var state: State = .scanning
     private var accum = Data()               // 扫描期累积(找触发头)，封顶 512B
     private var process: Process?
     private var stdinHandle: FileHandle?
     private var pendingToChild = Data()       // 子进程就绪前先缓存要喂给它的字节
     private var childReady = false
+
+    private var direction: Direction = .download
+    private var transferredBytes = 0          // 已传输文件字节(进度用)
+    private var lastProgressBucket = -1        // 上次报告的 256KB 桶号
+    private var drainWork: DispatchWorkItem?   // 收尾静默判定的延时撤截流(仅主线程访问)
 
     init(surface: Ghostty.SurfaceView, onActivity: @escaping (Activity) -> Void) {
         self.surface = surface
@@ -56,7 +66,8 @@ final class ZmodemBridge {
         lock.lock()
         switch state {
         case .active:
-            // 已接管：pty 字节全喂给子进程(未就绪先缓存)。
+            // 已接管：pty 字节全喂给子进程(未就绪先缓存)。下载方向顺带计入进度。
+            let dir = direction
             if childReady, let h = stdinHandle {
                 lock.unlock()
                 try? h.write(contentsOf: data)
@@ -64,6 +75,13 @@ final class ZmodemBridge {
                 pendingToChild.append(data)
                 lock.unlock()
             }
+            if dir == .download { bumpProgress(data.count) }
+
+        case .draining:
+            // 收尾排空中：字节仍被 Zig 截流丢弃(不渲染)；来一批就重置静默计时器，等真正安静再撤截流。
+            lock.unlock()
+            DispatchQueue.main.async { [weak self] in self?.scheduleDrainFinish() }
+
         case .scanning:
             accum.append(data)
             if accum.count > 512 { accum.removeFirst(accum.count - 512) }
@@ -72,25 +90,28 @@ final class ZmodemBridge {
             // 命中：从触发头起的字节要喂给子进程；切到接管态。
             pendingToChild = Data(bytes[hit.index...])
             accum = Data()
+            direction = hit.direction
+            transferredBytes = 0
+            lastProgressBucket = -1
             state = .active
             lock.unlock()
             DispatchQueue.main.async { [weak self] in self?.start(direction: hit.direction) }
         }
     }
 
-    /// 会话关闭：若正在传输则取消远端 + 杀子进程 + 恢复渲染。
+    /// 会话关闭：若正在传输/收尾则取消远端 + 杀子进程 + 恢复渲染。
     func teardown() {
+        drainWork?.cancel()
         lock.lock()
         let proc = process
-        let active = (state == .active)
+        let wasActive = (state == .active)
+        let wasTransfer = (state == .active || state == .draining)
         process = nil
         stdinHandle = nil
         state = .scanning
         lock.unlock()
-        if active {
-            cancelRemote()
-            surface?.xghosttySetOutputDiverted(false)
-        }
+        if wasActive { cancelRemote() }
+        if wasTransfer { surface?.xghosttySetOutputDiverted(false) }
         proc?.terminationHandler = nil
         if proc?.isRunning == true { proc?.terminate() }
     }
@@ -109,7 +130,7 @@ final class ZmodemBridge {
         }
 
         // 截流：从这一刻起 pty 输出不再喂解析器 → 屏幕冻结干净，ZMODEM 二进制不刷乱码。
-        // 失败/结束/teardown 各路径都会恢复（false）。
+        // 失败/取消/收尾/teardown 各路径都会恢复(false)。
         surface.xghosttySetOutputDiverted(true)
 
         var fileArgs: [String] = []
@@ -141,10 +162,9 @@ final class ZmodemBridge {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: bin)
         // rz: -y 覆盖同名 / -b 二进制；sz: -b 二进制 / -e 转义控制字符(pty 链路更稳)。
-        // -v 让 lrzsz 把进度/状态写到 stderr，供下方解析驱动进度显示。
         proc.arguments = direction == .download
-            ? ["-y", "-b", "-v"]
-            : (["-b", "-e", "-v"] + fileArgs)
+            ? ["-y", "-b"]
+            : (["-b", "-e"] + fileArgs)
         if direction == .download { proc.currentDirectoryURL = downloadsDir }
 
         let inPipe = Pipe(), outPipe = Pipe(), errPipe = Pipe()
@@ -152,28 +172,15 @@ final class ZmodemBridge {
         proc.standardOutput = outPipe
         proc.standardError = errPipe
 
-        // 子进程 stdout(ZMODEM 响应) → send_bytes 回灌远端。
+        // 子进程 stdout(ZMODEM 响应/上传文件数据) → send_bytes 回灌远端。上传方向顺带计入进度。
         outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let d = handle.availableData
-            guard !d.isEmpty else { return }
-            DispatchQueue.main.async { self?.surface?.xghosttySendBytes(d) }
-        }
-        // stderr：lrzsz 把进度/状态写这里(用 \r 原地刷新)。取最后一段非空、清控制字符后驱动进度显示。
-        // 同时读空避免管道塞满阻塞子进程。
-        errPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let d = handle.availableData
             guard !d.isEmpty, let self else { return }
-            let raw = String(decoding: d, as: UTF8.self)
-            let segs = raw.split(whereSeparator: { $0 == "\r" || $0 == "\n" })
-            guard let last = segs.last(where: {
-                !$0.trimmingCharacters(in: .whitespaces).isEmpty
-            }) else { return }
-            let clean = String(String.UnicodeScalarView(
-                last.unicodeScalars.filter { $0.value >= 0x20 && $0.value != 0x7f }
-            )).trimmingCharacters(in: .whitespaces)
-            guard !clean.isEmpty else { return }
-            DispatchQueue.main.async { self.onActivity(.progress(clean)) }
+            DispatchQueue.main.async { self.surface?.xghosttySendBytes(d) }
+            if self.direction == .upload { self.bumpProgress(d.count) }
         }
+        // stderr 读空避免管道塞满阻塞子进程(进度改用字节计数，不解析 stderr)。
+        errPipe.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
 
         proc.terminationHandler = { [weak self] _ in
             DispatchQueue.main.async { self?.handleChildExit() }
@@ -194,24 +201,59 @@ final class ZmodemBridge {
         let pending = pendingToChild
         pendingToChild = Data()
         lock.unlock()
-        if !pending.isEmpty { try? stdinHandle?.write(contentsOf: pending) }
+        if !pending.isEmpty {
+            try? stdinHandle?.write(contentsOf: pending)
+            if direction == .download { bumpProgress(pending.count) }
+        }
 
         onActivity(.started(direction, label))
     }
 
-    // MARK: 主线程：子进程退出 / 收尾
+    // MARK: 主线程：进度 / 子进程退出 / 收尾
+
+    /// 累加文件字节，跨 256KB 桶时报一次进度(下载在 termio 线程、上传在管道队列调，各自单线程)。
+    private func bumpProgress(_ n: Int) {
+        transferredBytes += n
+        let bucket = transferredBytes / (256 * 1024)
+        guard bucket != lastProgressBucket else { return }
+        lastProgressBucket = bucket
+        let mb = Double(transferredBytes) / (1024 * 1024)
+        let verb = direction == .download ? "已接收" : "已发送"
+        let txt = String(format: "%@ %.1f MB", verb, mb)
+        DispatchQueue.main.async { [weak self] in self?.onActivity(.progress(txt)) }
+    }
 
     private func handleChildExit() {
-        onActivity(.finished(nil))   // 通知控制器（浮层延时隐，留出下面重绘落地的时间）
-        // 子进程已退，但远端可能还在吐 ZMODEM 收尾字节(OO / 帧尾)。再保持截流一小会儿把它们吞掉，
-        // 否则一关 divert 这些尾字节会漏渲成残留乱码(如提示符后多个 `�`)。之后恢复渲染 + Ctrl-L
-        // 让远端在 shell 提示符处重绘——把冻结帧刷成干净新提示符。
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-            guard let self else { return }
-            self.surface?.xghosttySetOutputDiverted(false)
-            self.surface?.xghosttySendBytes(Data([0x0c]))
-        }
-        resetToScanning()
+        // 子进程已退，但远端可能还在吐 ZMODEM 收尾字节。进入 draining 态保持截流，直到输出静默
+        // ~250ms(收尾吐完)才在 finishDrain 撤截流 + 回车要新提示符——避免尾字节漏渲成残留乱码。
+        lock.lock()
+        state = .draining
+        process = nil
+        stdinHandle = nil
+        childReady = false
+        lock.unlock()
+        scheduleDrainFinish()
+    }
+
+    /// 重置静默计时器：每次收到收尾字节就把"撤截流"往后推 250ms，真正安静后才执行。
+    private func scheduleDrainFinish() {
+        drainWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.finishDrain() }
+        drainWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
+    private func finishDrain() {
+        surface?.xghosttySetOutputDiverted(false)            // 恢复渲染
+        surface?.xghosttySendBytes(Data([0x0d]))             // 回车 → 干净新提示符(不用 Ctrl-L)
+        lock.lock()
+        if state == .draining { state = .scanning }
+        accum = Data()
+        pendingToChild = Data()
+        transferredBytes = 0
+        lastProgressBucket = -1
+        lock.unlock()
+        onActivity(.finished(nil))   // 屏幕已恢复干净，这才隐浮层
     }
 
     private func resetToScanning() {
@@ -222,6 +264,8 @@ final class ZmodemBridge {
         childReady = false
         pendingToChild = Data()
         accum = Data()
+        transferredBytes = 0
+        lastProgressBucket = -1
         lock.unlock()
     }
 
