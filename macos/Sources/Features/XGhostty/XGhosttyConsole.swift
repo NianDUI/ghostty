@@ -631,6 +631,8 @@ private final class OpenTab {
     var connectCancellable: AnyCancellable?   // ssh 首次 pwd（登录成功信号）订阅
     /// ⌘T 复制 ssh 会话时，等登录就绪后 cd 的一次性订阅。
     var pendingCancellable: AnyCancellable?
+    /// expect 自动登录兜底（opt-in）：登录阶段监听 password: 自动答密码，连接成功/关闭时解除武装。
+    var expect: ExpectAutoLogin?
     init(tabId: UUID, nodeId: UUID?, title: String,
          surface: Ghostty.SurfaceView, scroll: SurfaceScrollView) {
         self.tabId = tabId
@@ -1257,6 +1259,7 @@ class XGhosttyConsoleController: NSWindowController {
             collapseAllOnExit: layoutStore.layout.collapseAllOnExit ?? false,
             sessionLogging: layoutStore.layout.sessionLogging ?? false,
             restoreLastSession: layoutStore.layout.restoreLastSession ?? false,
+            expectAutoLogin: layoutStore.layout.expectAutoLogin ?? false,
             onToggleAutoSave: { [weak self] on in
                 self?.layoutStore.setAutoSave(on)
                 if on { self?.scheduleSaveLayout() }
@@ -1276,6 +1279,9 @@ class XGhosttyConsoleController: NSWindowController {
             },
             onToggleRestoreLastSession: { [weak self] on in
                 self?.layoutStore.setRestoreLastSession(on)
+            },
+            onToggleExpectAutoLogin: { [weak self] on in
+                self?.layoutStore.setExpectAutoLogin(on)
             },
             onViewLogs: { [weak self] in
                 // 关设置 sheet 再开日志查看器（座舱单 editorSheet 槽，不嵌套）。
@@ -1519,10 +1525,12 @@ class XGhosttyConsoleController: NSWindowController {
         do {
             var cfg = Ghostty.SurfaceConfiguration()
             let title: String
+            var expectPassword: String?   // 供 expect 兜底武装（仅密码会话、开关开时用）
             if let node {
                 // 解析有效认证（会话级密钥 > 引用凭据[密钥/密码] > 内联密码）。
                 // 密钥凭据的私钥路径并入 effective.identityFile，让命令构造器走 `ssh -i`。
                 let auth = resolveAuth(for: node)
+                expectPassword = auth.password
                 var effective = node
                 effective.identityFile = auth.identityFile
                 // 引用式跳板：proxyJumpId → 跳板机清单条目，解析它自己的登录凭据。
@@ -1622,6 +1630,7 @@ class XGhosttyConsoleController: NSWindowController {
                     .sink { [weak self, weak tab] _ in
                         tab?.connected = true
                         tab?.connectCancellable = nil
+                        tab?.expect?.disarm()   // 登录成功 → 解除 expect 武装（防误答登录后的 sudo 等提示）
                         self?.refreshTree()
                         self?.refreshTabBar()
                     }
@@ -1631,6 +1640,13 @@ class XGhosttyConsoleController: NSWindowController {
             // 会话日志：仅对远端（ssh）会话挂输出落盘（本地 shell 不记）；开关在座舱设置，默认关。
             if let node, !node.isLocalShell {
                 SessionLogStore.shared.start(tabId: tabId, title: title, surface: sv)
+            }
+            // expect 自动登录兜底（opt-in，默认关）：仅密码会话武装。askpass 生效则终端无 password:
+            // 提示、兜底静默；askpass 失效时监听到提示自动答密码。与日志/共享经分发器并存。
+            if let pw = expectPassword, layoutStore.layout.expectAutoLogin == true {
+                let expect = ExpectAutoLogin(surface: sv, password: pw)
+                sv.xghosttyAddOutputSink(key: expect) { [weak expect] data in expect?.feed(data) }
+                tab.expect = expect
             }
             select(tabId)
             refreshTree()
@@ -1699,6 +1715,10 @@ class XGhosttyConsoleController: NSWindowController {
     func closeTab(_ tabId: UUID) {
         guard let tab = tabs[tabId] else { return }
         SessionLogStore.shared.stop(tabId: tabId, surface: tab.surface)   // 撤回调 + flush 关日志
+        if let expect = tab.expect {                                      // 撤 expect 订阅 + 解除武装
+            tab.surface.xghosttyRemoveOutputSink(key: expect)
+            expect.disarm()
+        }
         tab.scroll.removeFromSuperview()
         tabs[tabId] = nil
         tabOrder.removeAll { $0 == tabId }

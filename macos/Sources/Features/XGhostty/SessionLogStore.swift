@@ -56,9 +56,9 @@ final class SessionLogger {
 
 /// 会话日志总管：按开关给**远端（ssh）会话**挂输出回调、落盘到 `~/.config/xghostty/logs/`。
 ///
-/// 复用 session-sharing 在 Zig 侧建好的 `ghostty_surface_set_output_callback` C 机制
-/// （`SurfaceView.xghosttyAttachOutputLog`）——**零改 Zig 核心**。注意该回调在 Zig 侧是
-/// **单槽**：同一会话若再开 ⌃⇧S 共享会互相覆盖（XGhostty 场景极少同时用，已知取舍）。
+/// 复用 session-sharing 在 Zig 侧建好的 `ghostty_surface_set_output_callback` C 机制——**零改
+/// Zig 核心**。经 `XGhosttyOutputDispatch`（Swift 侧多订阅分发器）订阅输出，于是会话日志与
+/// ⌃⇧S 共享、expect 自动登录可**同时**挂同一会话（不再互相覆盖单槽）。
 final class SessionLogStore {
     static let shared = SessionLogStore()
     let dir: URL
@@ -86,14 +86,14 @@ final class SessionLogStore {
         guard enabled, loggers[tabId] == nil else { return }
         let url = dir.appendingPathComponent("\(Self.safeName(title))-\(stamp.string(from: Date())).log")
         let logger = SessionLogger(fileURL: url)
-        loggers[tabId] = logger   // 先强持有再 attach
-        surface.xghosttyAttachOutputLog(Unmanaged.passUnretained(logger).toOpaque())
+        loggers[tabId] = logger   // 先强持有再订阅（logger 作 sink 的退订 key）
+        surface.xghosttyAddOutputSink(key: logger) { [weak logger] data in logger?.ingest(data) }
     }
 
-    /// 停止记录（撤回调 + flush 关文件）。会话关闭时调用。
+    /// 停止记录（退订 + flush 关文件）。会话关闭时调用。
     func stop(tabId: UUID, surface: Ghostty.SurfaceView) {
         guard let logger = loggers[tabId] else { return }
-        surface.xghosttyDetachOutputLog()
+        surface.xghosttyRemoveOutputSink(key: logger)
         logger.close()
         loggers[tabId] = nil
     }

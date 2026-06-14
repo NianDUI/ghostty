@@ -10,12 +10,14 @@ struct ConsoleSettingsView: View {
     @State private var collapseAllOnExit: Bool
     @State private var sessionLogging: Bool
     @State private var restoreLastSession: Bool
+    @State private var expectAutoLogin: Bool
     var onToggleAutoSave: (Bool) -> Void
     var onToggleSort: (Bool) -> Void
     var onToggleCollapseDescendants: (Bool) -> Void
     var onToggleCollapseAllOnExit: (Bool) -> Void
     var onToggleSessionLogging: (Bool) -> Void
     var onToggleRestoreLastSession: (Bool) -> Void
+    var onToggleExpectAutoLogin: (Bool) -> Void
     var onViewLogs: () -> Void
     var onResetLayout: () -> Void
     var onClose: () -> Void
@@ -26,12 +28,14 @@ struct ConsoleSettingsView: View {
          collapseAllOnExit: Bool,
          sessionLogging: Bool,
          restoreLastSession: Bool,
+         expectAutoLogin: Bool,
          onToggleAutoSave: @escaping (Bool) -> Void,
          onToggleSort: @escaping (Bool) -> Void,
          onToggleCollapseDescendants: @escaping (Bool) -> Void,
          onToggleCollapseAllOnExit: @escaping (Bool) -> Void,
          onToggleSessionLogging: @escaping (Bool) -> Void,
          onToggleRestoreLastSession: @escaping (Bool) -> Void,
+         onToggleExpectAutoLogin: @escaping (Bool) -> Void,
          onViewLogs: @escaping () -> Void,
          onResetLayout: @escaping () -> Void,
          onClose: @escaping () -> Void) {
@@ -41,12 +45,14 @@ struct ConsoleSettingsView: View {
         _collapseAllOnExit = State(initialValue: collapseAllOnExit)
         _sessionLogging = State(initialValue: sessionLogging)
         _restoreLastSession = State(initialValue: restoreLastSession)
+        _expectAutoLogin = State(initialValue: expectAutoLogin)
         self.onToggleAutoSave = onToggleAutoSave
         self.onToggleSort = onToggleSort
         self.onToggleCollapseDescendants = onToggleCollapseDescendants
         self.onToggleCollapseAllOnExit = onToggleCollapseAllOnExit
         self.onToggleSessionLogging = onToggleSessionLogging
         self.onToggleRestoreLastSession = onToggleRestoreLastSession
+        self.onToggleExpectAutoLogin = onToggleExpectAutoLogin
         self.onViewLogs = onViewLogs
         self.onResetLayout = onResetLayout
         self.onClose = onClose
@@ -99,13 +105,21 @@ struct ConsoleSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("记录会话日志（ssh 输出落盘）", isOn: $sessionLogging)
                     .onChange(of: sessionLogging) { onToggleSessionLogging($0) }
-                Text("开启后，之后打开的 ssh 会话会把终端输出（含控制序列）追加到 ~/.config/xghostty/logs/。仅对新打开的会话生效；与 ⌃⇧S 会话共享互斥（同一会话别同时用）。")
+                Text("开启后，之后打开的 ssh 会话会把终端输出（含控制序列）追加到 ~/.config/xghostty/logs/。仅对新打开的会话生效；可与 ⌃⇧S 会话共享同时开（输出经分发器多路转发）。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     Button("查看会话日志…") { onViewLogs() }
                     Button("打开日志目录") { openLogsDir() }
                 }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("SSH 自动登录兜底（expect）", isOn: $expectAutoLogin)
+                    .onChange(of: expectAutoLogin) { onToggleExpectAutoLogin($0) }
+                Text("正常用 SSH_ASKPASS 注入密码、终端不会出现密码提示。少数服务器的 ssh 不认 askpass、仍在终端问密码时，开启本项会在登录阶段监听到「password:」后自动答密码（登录成功 / 45 秒后即停，避免误答 sudo 等提示）。仅对新打开的密码会话生效。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider()

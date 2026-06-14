@@ -486,18 +486,18 @@ extension Ghostty {
             }
         }
 
-        /// XGhostty 会话日志：复用 session-sharing 在 Zig 侧建好的 output_callback C 机制，把本
-        /// surface 的 pty 原始输出 tee 给 `SessionLogger`(context)。**单 callback 槽**——同一会话
-        /// 再开 ⌃⇧S 共享会互相覆盖（已知取舍）。`context` = `passUnretained(logger)`，logger 由
-        /// `SessionLogStore` 强持有到 detach。
-        func xghosttyAttachOutputLog(_ context: UnsafeMutableRawPointer) {
+        /// XGhostty 输出订阅：把本 surface 的 pty 原始输出转发给一个 sink。经
+        /// `XGhosttyOutputDispatch`（Swift 侧**多订阅分发器**）挂到 Zig 的 output_callback 单槽，
+        /// 于是会话日志 / ⌃⇧S 共享 / expect 自动登录可**同时**监听同一会话输出（不再互相覆盖）。
+        /// `key` 用订阅方对象本身做退订凭据；`sink` 在 termio 线程被调用，须快速返回（只 enqueue/scan）。
+        func xghosttyAddOutputSink(key: AnyObject, _ sink: @escaping (Data) -> Void) {
             guard let surface else { return }
-            ghostty_surface_set_output_callback(surface, xghosttyOutputLogCallback, context)
+            XGhosttyOutputDispatch.add(surface: surface, key: key, sink: sink)
         }
 
-        func xghosttyDetachOutputLog() {
+        func xghosttyRemoveOutputSink(key: AnyObject) {
             guard let surface else { return }
-            ghostty_surface_set_output_callback(surface, nil, nil)
+            XGhosttyOutputDispatch.remove(surface: surface, key: key)
         }
 #endif
 
@@ -2033,20 +2033,6 @@ private func sessionSharingOutputCallback(
     controller.enqueueOutgoing(data)
 }
 
-#if XGHOSTTY
-/// XGhostty 会话日志回调：termio 线程每批 pty 输出触发，转交 `SessionLogger` 异步落盘。
-/// 顶层无捕获函数 → 可直接桥接为 C 函数指针（同 `sessionSharingOutputCallback` 范式）。
-private func xghosttyOutputLogCallback(
-    _ context: UnsafeMutableRawPointer?,
-    _ bytes: UnsafePointer<CChar>?,
-    _ length: UInt
-) {
-    guard let context, let bytes, length > 0 else { return }
-    let logger = Unmanaged<SessionLogger>.fromOpaque(context).takeUnretainedValue()
-    logger.ingest(Data(bytes: bytes, count: Int(length)))
-}
-#endif
-
 /// One-shot bridge for "create a surface and immediately share it"
 /// (the create_session control frame). The requesting session's
 /// controller arms it right before triggering a new_window/new_tab/
@@ -2817,12 +2803,24 @@ private final class SessionSharingController {
     }
 
     private func attachOutputCallback() {
+#if XGHOSTTY
+        // XGhostty：经多订阅分发器挂输出，让共享与会话日志 / expect 同会话共存（不抢单槽）。
+        // key 用本 controller 对象；sink 把每批输出 enqueue 给上行队列（同 sessionSharingOutputCallback）。
+        surfaceView?.xghosttyAddOutputSink(key: self) { [weak self] data in
+            self?.enqueueOutgoing(data)
+        }
+#else
         let context = Unmanaged.passUnretained(self).toOpaque()
         outputBridge.attach(surface: surfaceView?.surface, context: context)
+#endif
     }
 
     private func detachOutputCallback() {
+#if XGHOSTTY
+        surfaceView?.xghosttyRemoveOutputSink(key: self)
+#else
         outputBridge.detach(surface: surfaceView?.surface)
+#endif
     }
 
     private func setState(_ state: Ghostty.OSSurfaceView.SharingState) {

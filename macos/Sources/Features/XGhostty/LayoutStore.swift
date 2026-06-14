@@ -23,6 +23,9 @@ struct ConsoleLayout: Codable, Equatable {
     var restoreLastSession: Bool?
     /// 上次关闭窗口时打开的会话节点 id（供 restoreLastSession 恢复；仅有 nodeId 的会话）。
     var lastSessionIds: [UUID]?
+    /// 密码会话是否启用 expect 式自动登录兜底（nil/false=关）：askpass 未生效、ssh 仍在终端问
+    /// 密码时，监听到 `password:` 自动答密码。默认关——正常靠 askpass，本项是少数环境的退路。
+    var expectAutoLogin: Bool?
 
     init(autoSave: Bool = true,
          windowFrame: CGRect? = nil,
@@ -35,7 +38,8 @@ struct ConsoleLayout: Codable, Equatable {
          collapseAllOnExit: Bool? = nil,
          sessionLogging: Bool? = nil,
          restoreLastSession: Bool? = nil,
-         lastSessionIds: [UUID]? = nil) {
+         lastSessionIds: [UUID]? = nil,
+         expectAutoLogin: Bool? = nil) {
         self.autoSave = autoSave
         self.windowFrame = windowFrame
         self.treeWidth = treeWidth
@@ -48,6 +52,7 @@ struct ConsoleLayout: Codable, Equatable {
         self.sessionLogging = sessionLogging
         self.restoreLastSession = restoreLastSession
         self.lastSessionIds = lastSessionIds
+        self.expectAutoLogin = expectAutoLogin
     }
 }
 
@@ -111,6 +116,12 @@ final class LayoutStore {
         persist()
     }
 
+    /// 仅改「expect 自动登录兜底」偏好。
+    func setExpectAutoLogin(_ on: Bool) {
+        layout.expectAutoLogin = on
+        persist()
+    }
+
     /// 记录上次打开的会话集（关窗口时调用，供下次启动恢复）。
     func setLastSessionIds(_ ids: [UUID]) {
         layout.lastSessionIds = ids
@@ -124,7 +135,8 @@ final class LayoutStore {
                                collapseAllOnExit: layout.collapseAllOnExit,
                                sessionLogging: layout.sessionLogging,
                                restoreLastSession: layout.restoreLastSession,
-                               lastSessionIds: layout.lastSessionIds)
+                               lastSessionIds: layout.lastSessionIds,
+                               expectAutoLogin: layout.expectAutoLogin)
         persist()
     }
 

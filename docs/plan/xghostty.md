@@ -404,7 +404,7 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 - [x] **移除 XGhostty 的 Finder 服务菜单**：`Ghostty copy-Info.plist` 删整个 `NSServices`（`openTab`/`openWindow` 两个 "New XGhostty Tab/Window Here"，duplicate target 时从主 Ghostty 继承，座舱用不上）。`PlistBuddy -c "Delete :NSServices"` + `plutil -lint` 校验；`lsregister -f` 重注册 + `pbs -flush` 刷新服务缓存（旧菜单项消失，顽固时重开 Finder 窗口/注销重登）。主 Ghostty 服务不动。
 - [x] **Info.plist fileRef 相对路径**（已单独提交 `1bcb37ab7`）：`Ghostty copy-Info.plist` 的 PBXFileReference 从本机绝对路径 + `sourceTree=<absolute>` 改为相对 path + `<group>`（对齐主 Ghostty-Info.plist），换机/换路径后 Xcode 导航器不再丢失引用。构建走 `INFOPLIST_FILE` 不受影响。
 
-> **M2 剩余**：简化 expect（**暂缓**——自动登录主用例已被 askpass/ProxyCommand/`accept-new` 覆盖，价值低；且需先把输出捕获重构成「分发器」以与会话日志共存[单 callback 槽]，成本高）。（组广播、XShell·WindTerm 导入、跳板机管理、密码库查看引用、广播审计、会话日志落盘、组级快捷命令 已完成。）
+> **M2 剩余**：简化 expect —— **已在第二十五批收口**（先做输出多订阅分发器解决与会话日志的单槽冲突，再实现 expect 自动登录兜底，opt-in 默认关）。（组广播、XShell·WindTerm 导入、跳板机管理、密码库查看引用、广播审计、会话日志落盘、组级快捷命令 已完成。）**M2 全部完成。**
 
 ### M3 —— 第二十二批（2026-06-14，工作区 / 会话恢复，已构建启动）
 
@@ -432,6 +432,19 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 **关键坑/取舍**：① **系统下拉（NSMenu）背景无法自定义**——要座舱统一样式必须放弃系统 Menu、自绘弹层。② 自绘 flyout 用 **SwiftUI 嵌套 `.popover`** 递归实现；hover 切换靠「只在 hover 本层某行时更新 `openSub`、离开不清」保证移到子浮层不收。③ `presentationBackground` 需 macOS 13.3+，用 `#available` gate（低版本 fallback `.background`）。④ 迭代历程（缩进扁平→系统 submenu→自绘纯色→自绘缩进直选→自绘 flyout+命令面板视觉）记录了"系统好用 vs 座舱样式"的反复权衡，最终自绘 flyout 两者兼得。
 
 > **M3 剩余**：SFTP tab / trzsz(rz/sz) 文件传输（较大的新交互模型，按需再开）。（工作区、会话恢复、会话日志增强、下拉自绘 submenu 已完成。）
+
+### 第二十五批（2026-06-14，输出多订阅分发器 + 会话日志/共享共存 + expect 自动登录兜底，已构建启动）
+
+把 XGhostty 侧 pty 输出捕获从「单槽抢占」重构成「多订阅分发器」，顺带收口 M2 暂缓的 expect。全 `#if XGHOSTTY`，**零改 Zig 核心**：
+
+- [x] **`XGhosttyOutputDispatch`（新 `OutputDispatch.swift`）**：每个 surface 一个分发器，只向 Zig 的 `ghostty_surface_set_output_callback` **单槽**注册**一个** trampoline（`xghosttyOutputDispatchCallback`），trampoline 把每批 pty 字节转发给该 surface 的**全部订阅者**。订阅 `add`/退订 `remove`（主线程）用 `key: AnyObject`（订阅方对象本身的 `ObjectIdentifier`）做凭据；`dispatch`（termio 线程）取订阅者快照后出锁逐个调用。**dispatcher 常驻注册表不随订阅清零销毁**——回避「termio 正回调、主线程释放 dispatcher」的 UAF（`passUnretained` context 必须回调期间有效）；订阅清零只把 Zig 回调置 nil（无开销），下次再挂回。
+- [x] **会话日志 + ⌃⇧S 共享同会话共存**（消除「已知互斥」取舍）：`SurfaceView` 的 `xghosttyAttachOutputLog/Detach`（含旧顶层 `xghosttyOutputLogCallback`）换成通用 `xghosttyAddOutputSink(key:_:)`/`xghosttyRemoveOutputSink(key:)`，内部走分发器。`SessionLogStore` 用 `logger` 做 key 订阅。**session-sharing 控制器**的 `attachOutputCallback`/`detachOutputCallback` 仅在 `#if XGHOSTTY` 下改走分发器（`key: self`、sink→`enqueueOutgoing`）——`#else` 主 app 仍走 `SessionSharingOutputBridge.live` 直连单槽，**原版 Ghostty.app 路径一字不改**。现在同一会话日志落盘与共享可同时生效（输出多路转发）。
+- [x] **expect 式自动登录兜底（`ExpectAutoLogin.swift`，opt-in 默认关）**：收口 M2 暂缓项。正常路径 `SSH_ASKPASS_REQUIRE=force` → 终端无 `password:` 提示 → 兜底静默；少数环境 ssh 不认 askpass（仍在 tty 问密码）→ 监听到 `password:` 用 `send_bytes`（复用广播原语，行尾 `\r`、绕 bracketed-paste）自动答密码。**只在登录阶段武装**：连接成功（首个 OSC7 pwd）/ 45s 超时 / 关闭标签即解除武装——**防误答登录后的 `sudo` 提示**（`[sudo] password for…` 也含 `password:`）；最多答 2 次防喷密码。`feed` 在 termio 线程匹配累积尾巴（120 字符、跨批拼接、小写、清尾防重复触发）。
+- [x] **接线**：`LayoutStore.expectAutoLogin`（默认关）+ 设置面板开关；`openTab` 仅对**有密码的远端会话**且开关开时武装（`expectPassword = auth.password`）；`OpenTab.expect` 持有；connect 成功 sink + `closeTab` 解除武装 + 退订。
+
+**关键取舍/坑**：① **`ghostty_surface_t` 实为 `UnsafeMutableRawPointer`（不是 `OpaquePointer`）**——注册表 key 用 `[ghostty_surface_t: …]`（即 `[UnsafeMutableRawPointer: …]`，Hashable），别想当然写 `OpaquePointer`（`typedef void* ghostty_surface_t`，但 importer 这里给的是 RawPointer，编译报 `no exact matches in call to subscript`）。② **分发器 dispatcher 不释放**是刻意的——与既有单槽 detach 同一类竞态（termio 线程回调 vs 主线程置 nil），用「常驻」彻底消除 UAF，代价是每个曾打开的 surface 留一个极小对象，可忽略。③ **seam 选在 controller 的 attach/detach + `#if XGHOSTTY`**，而非改 `SessionSharingOutputBridge.live`（共享 struct 主 app 也用）——保证主 app 行为零变更、回归面最小。④ **expect 必须登录阶段限定武装**：否则会把 ssh 密码误答给登录后的 sudo/其他 `password:` 提示；用「连接成功即 disarm」精确卡住，45s 超时兜底（登录失败留尸 tab 时也能解除）。⑤ askpass 与 expect 天然互斥：askpass 生效则无提示、expect 不触发；askpass 失效才由 expect 接管——叠加不冲突。
+
+> **M2 expect 至此收口**（不再暂缓）。**M3 剩余**：SFTP tab / trzsz(rz/sz) 文件传输（较大新交互模型，按需再开）。
 
 > 拖拽（1、2）在扁平 `ScrollView + LazyVStack`（已替换原 List / DisclosureGroup）上做 `onDrag`/`onDrop` + drop 落点高亮；落地前先 spike 验证拖拽手势与现有单击选中/⌘⇧多选/双击不打架。
 
