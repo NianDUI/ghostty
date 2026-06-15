@@ -225,7 +225,10 @@ replace_target() {
   fi
 
   # 退出运行实例（保护：宿主 / 主 Ghostty 不 kill，只原子替换 + 提示重启）
-  pid="$(ps -A -o pid,comm | awk -v a="$app" 'index($0, a"/Contents/MacOS/ghostty") {print $1}' | head -1)"
+  # 前导 "/" 锚定：'Ghostty.app' 是 'XGhostty.app' 的子串，不加 "/" 会让主 Ghostty 的
+  # 匹配吃进 XGhostty 进程（反之 XGhostty 不会吃主 Ghostty）。'/Ghostty.app/' 不是
+  # '/XGhostty.app/' 的子串（后者 '/' 后是 'X'），加前导 "/" 即可精确消歧。
+  pid="$(ps -A -o pid,comm | awk -v a="$app" 'index($0, "/" a"/Contents/MacOS/ghostty") {print $1}' | head -1)"
   if [ -n "$pid" ]; then
     if pid_is_my_ancestor "$pid"; then
       warn "$(target_name "$t")(PID $pid)是当前终端宿主 → 不 kill；原子替换 inode 保留，本会话不受影响，重启后生效。"
