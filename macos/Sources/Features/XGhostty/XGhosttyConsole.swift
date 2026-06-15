@@ -68,6 +68,7 @@ private struct SessionTreeActions {
     var onExpandLevel: (SessionNode) -> Void      // 展开本级（只展开该分组一层，子组不递归）
     var onExpandSubtree: (SessionNode) -> Void    // 展开该分组的全部子组
     var onCollapseSubtree: (SessionNode) -> Void  // 折叠该分组的全部子组
+    var onSetGroupPasswordOnly: (SessionNode, Bool) -> Void  // 批量设分组下密码会话「仅用密码」(true=设/false=取消)
 }
 
 /// 拖拽落点相对目标行的位置：之前（同级）/ 之后（同级）/ 移入（仅分组）。
@@ -191,6 +192,9 @@ private struct SessionRowView: View {
                 Button("展开本级") { actions.onExpandLevel(node) }
                 Button("展开全部子组") { actions.onExpandSubtree(node) }
                 Button("折叠全部子组") { actions.onCollapseSubtree(node) }
+                Divider()
+                Button("本组全部「仅用密码」") { actions.onSetGroupPasswordOnly(node, true) }
+                Button("本组取消「仅用密码」") { actions.onSetGroupPasswordOnly(node, false) }
                 Divider()
                 Button("新建会话…") { actions.onAddChild(node, false) }
                 Button("新建分组…") { actions.onAddChild(node, true) }
@@ -664,6 +668,26 @@ private final class FocusableHostingView<Content: View>: NSHostingView<Content> 
     override var acceptsFirstResponder: Bool { true }
 }
 
+/// 批量发送指令输入框：座舱把 ⌘C/⌘V 等绑给了终端复制粘贴，普通 NSTextField 编辑时
+/// 这些标准编辑快捷键会被吞。聚焦编辑时（`currentEditor != nil`）拦截 ⌘X/C/V/A 直接走
+/// field editor，让剪切/复制/粘贴/全选在输入框里正常工作；未聚焦时放行（不影响终端快捷键）。
+private final class BroadcastInputField: NSTextField {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+              let editor = currentEditor() as? NSTextView,
+              let key = event.charactersIgnoringModifiers?.lowercased() else {
+            return super.performKeyEquivalent(with: event)
+        }
+        switch key {
+        case "x": editor.cut(nil); return true
+        case "c": editor.copy(nil); return true
+        case "v": editor.paste(nil); return true
+        case "a": editor.selectAll(nil); return true
+        default: return super.performKeyEquivalent(with: event)
+        }
+    }
+}
+
 /// XGhostty 座舱：左会话树 + 顶部会话 Tab + 右终端 + 快捷栏 + 底部广播条。
 class XGhosttyConsoleController: NSWindowController {
     /// 所有活动座舱窗口（⌘N 多窗口）。
@@ -683,7 +707,7 @@ class XGhosttyConsoleController: NSWindowController {
     private let zmodemLabel = NSTextField(labelWithString: "")
     private var zmodemHeader = ""                     // 当前传输的"接收/发送 + 文件名"抬头(进度行附其后)
     private weak var activeZmodemBridge: ZmodemBridge?  // 进行中传输的桥接器(供 Esc 取消定位)
-    private let inputField = NSTextField()
+    private let inputField = BroadcastInputField()
     private let inputBg = NSView()              // 批量发送框的圆角背景容器（仿座舱输入框样式）
     private var targetMenuHosting: NSHostingView<BroadcastTargetPicker>!
     private var broadcastTarget: BroadcastTarget = .current   // 广播目标：当前 / 全部 / 某分组
@@ -800,7 +824,7 @@ class XGhosttyConsoleController: NSWindowController {
         quickBarHosting = NSHostingView(rootView: makeQuickBar())
         surfaceContainer.wantsLayer = true
 
-        inputField.stringValue = "echo XGHOSTTY_OK"
+        // 默认空值（不预填命令）。
         // 多行输入：默认一行高（随 sendBar 高度，分隔条可拖高看多行）；⏎ 换行、⌘⏎ 发送。
         // 发送时多行会按「每行一条命令」逐行执行（见 sendBytes(for:)）。
         inputField.usesSingleLineMode = false
@@ -959,7 +983,46 @@ class XGhosttyConsoleController: NSWindowController {
                 onCollapseAll: { [weak self] in self?.collapseAllGroups() },
                 onExpandLevel: { [weak self] in self?.expandLevel($0) },
                 onExpandSubtree: { [weak self] in self?.setSubtreeExpanded($0, expanded: true) },
-                onCollapseSubtree: { [weak self] in self?.setSubtreeExpanded($0, expanded: false) }))
+                onCollapseSubtree: { [weak self] in self?.setSubtreeExpanded($0, expanded: false) },
+                onSetGroupPasswordOnly: { [weak self] group, only in
+                    self?.setGroupPasswordOnly(group, only: only) }))
+    }
+
+    /// 批量把分组（含后代）下「密码登录」会话设为 / 取消「仅用密码」。密钥登录会话不受影响。二次确认。
+    private func setGroupPasswordOnly(_ group: SessionNode, only: Bool) {
+        guard group.isGroup else { return }
+        let total = store.passwordLoginLeafCount(inGroup: group.id)
+        guard total > 0 else {
+            let none = NSAlert()
+            none.alertStyle = .informational
+            none.messageText = "分组「\(group.name)」下没有密码登录的会话"
+            none.informativeText = "「仅用密码」只对密码登录会话有意义；密钥登录会话不受影响。"
+            none.addButton(withTitle: "好")
+            none.runModal()
+            return
+        }
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        if only {
+            alert.messageText = "把分组「\(group.name)」下的密码登录会话全部设为「仅用密码」？"
+            alert.informativeText = "共 \(total) 个密码登录会话将只走密码、不再尝试 SSH 密钥。密钥登录会话不受影响。"
+            alert.addButton(withTitle: "全部设为仅用密码")
+        } else {
+            alert.messageText = "取消分组「\(group.name)」下密码登录会话的「仅用密码」？"
+            alert.informativeText = "共 \(total) 个会话将恢复为「自动」（先试默认密钥、失败再用密码）。密钥登录会话不受影响。"
+            alert.addButton(withTitle: "全部取消")
+        }
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let changed = store.setPasswordOnly(only ? true : nil, inGroup: group.id)
+        refreshTree()
+        let done = NSAlert()
+        done.alertStyle = .informational
+        done.messageText = changed > 0
+            ? "已更新 \(changed) 个会话\(only ? "为「仅用密码」" : "为「自动」")"
+            : "无需更新（已是目标状态）"
+        done.addButton(withTitle: "好")
+        done.runModal()
     }
 
     /// 展开本级：只展开该分组一层（露出直接子项；内部子组保持收起）——分组右键「展开本级」。

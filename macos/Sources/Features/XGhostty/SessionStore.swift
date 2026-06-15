@@ -176,6 +176,54 @@ final class SessionStore {
         save()
     }
 
+    /// 叶子是否「密码登录」（非密钥）。密钥 = 会话指定 `identityFile`，或引用了密钥库（`isKey`）凭据。
+    /// 与 `SessionEditView` 的认证方式判定保持一致。
+    static func isPasswordLogin(_ n: SessionNode) -> Bool {
+        if n.identityFile != nil { return false }
+        if let cid = n.credentialId, CredentialLibrary.shared.find(cid)?.isKey == true { return false }
+        return true
+    }
+
+    /// 分组（含后代）下「密码登录」叶子数（排除本地 shell / 密钥会话）。批量「仅用密码」前预览用。
+    func passwordLoginLeafCount(inGroup groupId: UUID) -> Int {
+        guard let g = find(groupId), let c = g.children else { return 0 }
+        return SessionStore.leaves(c).filter { !$0.isLocalShell && SessionStore.isPasswordLogin($0) }.count
+    }
+
+    /// 批量把分组（含后代）下所有「密码登录」叶子的 `passwordOnly` 设为 `value`
+    /// （`true` = 仅用密码；`nil` = 自动：先试默认密钥再密码）。本地 shell / 密钥会话跳过。
+    /// 一次遍历重建树 + 一次落盘。返回实际改动的会话数。
+    @discardableResult
+    func setPasswordOnly(_ value: Bool?, inGroup groupId: UUID) -> Int {
+        var changed = 0
+        func transform(_ nodes: [SessionNode]) -> [SessionNode] {
+            nodes.map { n in
+                var n = n
+                if let c = n.children {
+                    n.children = transform(c)
+                } else if !n.isLocalShell, SessionStore.isPasswordLogin(n) {
+                    if n.passwordOnly != value { changed += 1 }
+                    n.passwordOnly = value
+                }
+                return n
+            }
+        }
+        func locate(_ nodes: [SessionNode]) -> [SessionNode] {
+            nodes.map { n in
+                var n = n
+                if n.id == groupId, n.children != nil {
+                    n.children = transform(n.children!)
+                } else if let c = n.children {
+                    n.children = locate(c)
+                }
+                return n
+            }
+        }
+        roots = locate(roots)
+        if changed > 0 { save() }
+        return changed
+    }
+
     /// 按 id 删除节点（连带其子树）。
     func remove(_ id: UUID) {
         roots = SessionStore.delete(id, from: roots)
