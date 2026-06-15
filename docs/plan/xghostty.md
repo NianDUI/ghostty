@@ -570,6 +570,27 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 
 **铁律/教训**：① **duplicate 来的 macOS app 出专属图标，必须拆掉两个继承机制**——`.icon`（Icon Composer 资源，盖过 appiconset）和 `DockTilePlugin`（Dock 自绘，盖过 bundle 图标）。② **`.icon` 是成品分层格式**（gloss/screen/ghost/bevel 多图层 + 系统套容器），用户的扁平成品图塞 `.icon` 当单图层会被系统再套一层容器（双重边框）→ 用**传统 appiconset**（成品图原样显示）反而对。③ **macOS 图标缓存顽固到变态**：bundle 全对、所有 API 返回新图，Dock 仍显旧图时，认准是 LS/Dock 缓存，`lsregister -kill -r` 重建 LS DB 是核武器，别再瞎改 bundle。④ 全程只改 XGhostty 专属文件（`Ghostty copy-Info.plist`、pbxproj 的 04775Exx 块、新 appiconset），**主 Ghostty 零影响**（APPICON 仍 Ghostty、AppIcon.swift 回上游原始、主 app 的 .icon/DockTilePlugin 都没动）。
 
+### 第三十三批（2026-06-15，批量「仅用密码」+ 批量发送框 ⌘X/默认空值/命令历史，正式版已替换 /Applications）
+
+- [x] **批量「仅用密码」**（分组右键）：`SessionStore.setPasswordOnly(_:inGroup:)`（遍历重建子树，只对 `!isLocalShell && isPasswordLogin` 叶子设值，一次 save）+ `passwordLoginLeafCount` + `static isPasswordLogin`（有 identityFile 或引用 isKey 凭据 = 密钥，与 SessionEditView 判定一致）；分组 contextMenu「本组全部/取消『仅用密码』」→ NSAlert 预览数量 + 二次确认。
+- [x] **批量发送框 ⌘X 剪切**：`inputField` 改自定义 `BroadcastInputField`（override `performKeyEquivalent`，仅 `currentEditor()!=nil`[聚焦编辑]时拦 ⌘X/C/V/A 走 field editor，未聚焦放行不夺终端快捷键）——根因：座舱把 ⌘C/V 绑给终端复制粘贴，普通 NSTextField 编辑时被吞。删掉调试默认值（NSTextField 初值本就空）。
+- [x] **批量发送框命令历史**：发送后清空 + ↑/↓ 回滚（多行友好，`recordAndClear`/`recallPrev`/`recallNext` + `cursorInFirstLine`/`cursorInLastLine`）。
+- [x] **部署脚本 `scripts/xghostty-deploy.sh`**：把出正式版固化成一条命令（`[xghostty|ghostty|both]`，不带参交互 select；`--core/--skip-core/--build-only/--yes/-h`），自动判 zig 重建 + 签名两套规则按 target 自动切 + 验证后才询问替换 + `pid_is_my_ancestor` 保护宿主。详见踩坑记录 C。
+
+### 第三十四批（2026-06-15，根治 XGhostty cmd+w/关窗后 surface 不释放 —— CPU 不降 + SSH 僵尸，已部署）
+
+关标签/关窗后 UI 层都释放，但 `SurfaceView`+`Surface`+C surface 不释放 → `ghostty_surface_free` 永不调 → 渲染/IO 线程 + CVDisplayLink + pty/ssh 全泄漏（CPU 不降、SSH 僵尸）。修复 = 新增 `SurfaceView.teardownSurfaceForClose()`（早期名 `xghosttyCloseSurface`），`closeTab` + `windowWillClose`（对残余标签遍历）调用，置空 `surfaceModel` 确定性触发 `ghostty_surface_free`。验证（单实例 8 会话）：关后 SurfaceView/Surface/CVDisplayLink/ssh 全归零、线程回落、CPU 0%。**完整诊断技法（`leak --trace` 反向引用树）与根因见踩坑记录 D**。
+
+### 第三十五批（2026-06-15，把泄漏修复扩到主 Ghostty —— undo 感知版，已 ReleaseFast 部署，运行时验证通过）
+
+主 Ghostty 同病但**不能照搬**：它关标签/窗/split 后故意把 surface 塞 undo 栈多活 `undo-timeout`（默认 5s，`src/config/Config.zig:@"undo-timeout"`）供 ⌘Z 复活，无脑置空 surfaceModel 会让 ⌘Z 复活成死 surface。**正确解 = undo 感知，卡在 undo 真过期那刻才拆、⌘Z 撤销的绝不拆**（commit `320491ab1`）：
+
+- [x] `ExpiringUndoManager.registerUndo` 加 `onExpire`——只在真过期（定时器 / `isUndoRegistrationEnabled` false / `duration<=0` / 清空）触发，**⌘Z 执行时不触发**（`ExpiringTarget.invoked` 标志，执行 undo 的 `super.registerUndo` 闭包里先 `markInvoked()`；`expire()` 里 `!invoked` 才调 onExpire；`didExpire` 去重 timer/手动/deinit 三路）；`duration<=0`/禁注册时立即 onExpire（等价即时拆）。
+- [x] `SurfaceView.xghosttyCloseSurface` 去 `#if` 改名 `teardownSurfaceForClose()` 两端共用，清理升级为 deinit 超集（补 `searchNeedleCancellable`/`trackingAreas`/`SecureInput.removeScoped`/`invalidateRestorableState`/删通知）+ `guard surfaceModel != nil` 幂等。
+- [x] `BaseTerminalController.teardownOrphanedSurfaces<S:Sequence>`（static）——`DispatchQueue.main.async` 派发，**只拆「已不在任何 `TerminalController.all` 的 surfaceTree 里」的**（liveness 守卫双保险，⌘Z 拉回活树的不动；`SplitTree` 是 Sequence/Collection 故 `Set(tree).subtracting`/`tree.contains(view)` 可用）。
+- [x] 四个 undo 注册点挂 onExpire：`replaceSurfaceTree`（关 split 的 undo 拆 `oldTree−newTree` + 内层 redo 拆 `newTree−oldTree`[覆盖「建 split 又撤销」]）、`closeTabImmediately`、`registerUndoForCloseWindow`（单窗口 `undoState.surfaceTree` + 多标签 `undoStates.flatMap`）。
+- [x] 纯 Swift 零 C-ABI 改动，但出生产仍重跑 ReleaseFast zig（主 Ghostty 是日常驱动，不能降 Debug-hybrid）。运行时验证通过（重启后开标签 cmd+w 全关、等 >5s，heap SurfaceView 降到 = 活会话数）。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**
@@ -579,3 +600,17 @@ duplicate 把 **iOS target 的排除清单**错按给新 target，导致：
 **解法**：把新 target 的 `PBXFileSystemSynchronizedBuildFileExceptionSet.membershipExceptions` 改成与正牌 macOS `Ghostty`（例外集 `81F82CB1`）**一字不差**——排除 `App/iOS/iOSApp.swift`、`Features/Custom App Icon/DockTilePlugin.swift`、`Ghostty/Surface View/SurfaceView_UIKit.swift` 三个。备份在 `project.pbxproj.bak-xghostty`。
 
 **B. setup-dev-cert.sh 的 p12 导入坑**（已在脚本注释）：非空中转密码 + OpenSSL3 需 `-legacy -macalg sha1`，否则 `security` 报 "MAC verification failed"。命令行导私钥还需 GUI 授权，最终用钥匙串访问「证书助理」一步到位最稳。
+
+**C. 出正式版 / 部署的硬规则（XGhostty 与主 Ghostty 相反，违反即 SIGKILL）**
+- **ReleaseFast 才是真 release**：`zig build -Demit-macos-app=false` 默认 Debug → 出 Debug-hybrid（zig 核心慢、最终二进制 ~120MB）。出生产必 `-Doptimize=ReleaseFast`。标尺：ReleaseFast `ghostty-internal.a` ≈270–283MB（Debug ≈386MB）、最终二进制 ~48MB。**纯 Swift 改动可复用已有 ReleaseFast xcframework 跳过 zig**（只 `xcodebuild`）。
+- **签名两套规则**：① **XGhostty** 用自签 `Ghostty Dev Cert`（`CODE_SIGN_STYLE=Manual`），`xcodebuild` 已自动签，**绝不要再手动 `codesign --force --deep --sign -`**——`--deep` 在 macOS 26 重签内嵌 dylib → 运行期 `SIGKILL (Code Signature Invalid)` / amfi 拒绝（诡异点：`codesign --verify` 仍报 valid）。② **主 Ghostty** 是 adhoc，`zig build` 直接换二进制后**必须** `codesign --force --deep --sign -` 重签再启动，否则 SIGKILL。
+- **只改 ReleaseLocal 不碰 Release 配置**：Release 的 `Ghostty.entitlements` 无 `disable-library-validation` → 自签证书出 Release 必 SIGKILL；ReleaseLocal 的 entitlements 有，所以出生产走 `-configuration ReleaseLocal`。
+- **原子替换 + 不杀宿主**：`cp .new → rm 旧 → mv` 替换 `/Applications`（运行中实例靠 mmap 旧 inode 不受影响）；别 `kill` 当前 Claude Code 宿主（=主 `Ghostty.app`）。**重建后 `open` 前先 kill 旧实例**——同 bundle id 时 LaunchServices 只激活旧实例、不换新二进制（现象：改了代码重建后 UI 毫无变化）。
+- 全流程已固化进 `scripts/xghostty-deploy.sh`（坑：macOS 自带 `/bin/bash` 是 3.2 无 `declare -A` → 用 `eval` 间接变量；`stat -f%z`/`ps -o ppid=` 是 BSD 写法）。
+
+**D. Surface 泄漏诊断技法（可复用）+ cmd+w/关窗不释放的根因**
+- **现象**：关标签/关窗后 UI 层（控制器 / scroll view）都释放，但 `Ghostty.SurfaceView` + `Ghostty.Surface` + C surface 不释放 → `ghostty_surface_free` 永不调 → 渲染/IO 线程 + **CVDisplayLink（按刷新率空转 = CPU 元凶）** + pty/ssh 全泄漏。
+- **诊断技法（hardened-runtime release 包 lldb / Xcode 内存图附不上[无 get-task-allow]、没开 MallocStackLogging 时的杀手锏）**：① `heap <pid> | grep -cE 'Ghostty.SurfaceView$'` 数活实例（**同一条命令里连开多次会冲突读 0 → 要么单次、要么快照到文件再 grep**）；② `leaks <pid>` 不报这些 = 它们「可从根可达」（非孤立环）→ 被全局/静态强引用；③ `leaks <pid> --outputGraph=/tmp/x.memgraph` 导内存图，`heap /tmp/x.memgraph -addresses 'Ghostty.SurfaceView'` 取地址，**`leaks /tmp/x.memgraph --trace=<addr>` = 反向引用树**（顶层=目标，下层=谁引用它，直指 ARC 持有者）。
+- **根因（--trace 实测）**：SurfaceView 被 **AppKit 内部块 `-[NSView _commonAwake]_block_invoke`（`__strong [capture]`）+ 通知中心 + 运行中的 CVDisplayLink** 钉住，view 离窗/dealloc 时本该清却没触发；C surface 在 `+74184` 的 nsview 指针是 `Unmanaged.passUnretained`（弱回指，`SurfaceView.swift:withCValue`）被 `leaks` 保守扫描当成引用 → 既盖住真凶、也让 `leaks` 不报泄漏。
+- **修复**：`SurfaceView.teardownSurfaceForClose()` 主动撤监听/计时器/订阅、`removeFromSuperview()`、**置空 `surfaceModel`** 确定性触发 `Ghostty.Surface.deinit → ghostty_surface_free`（停线程/CVDisplayLink/pty/ssh，不等迟来的 deinit；幂等）。XGhostty 关 tab 即调（第三十四批）；**主 Ghostty 有 undo-close 不能照搬**——见第三十五批的 undo 感知方案（卡 undo 真过期才拆、⌘Z 撤销不拆）。
+- **诊断时务必单实例**：`open DerivedData/…app` 时若 `/Applications` 同 bundle id 实例也被启 / 误点 Dock，两实例打架污染测量（用 `lsof -p <pid> | awk '/txt/&&/MacOS\/ghostty/'` 看真实路径区分；曾靠 `mv /Applications/XGhostty.app .prodbak` 临时挪开生产版才测干净）。`log stream` 的 NSLog 探针可能被 unified log 级别过滤抓不到，**heap 计数才是可靠 oracle**。
