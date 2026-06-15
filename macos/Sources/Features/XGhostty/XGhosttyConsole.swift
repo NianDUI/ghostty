@@ -668,10 +668,25 @@ private final class FocusableHostingView<Content: View>: NSHostingView<Content> 
     override var acceptsFirstResponder: Bool { true }
 }
 
-/// 批量发送指令输入框：座舱把 ⌘C/⌘V 等绑给了终端复制粘贴，普通 NSTextField 编辑时
-/// 这些标准编辑快捷键会被吞。聚焦编辑时（`currentEditor != nil`）拦截 ⌘X/C/V/A 直接走
-/// field editor，让剪切/复制/粘贴/全选在输入框里正常工作；未聚焦时放行（不影响终端快捷键）。
-private final class BroadcastInputField: NSTextField {
+/// 批量发送指令输入框：
+/// - 座舱把 ⌘C/⌘V 等绑给了终端复制粘贴，普通 NSTextField 编辑时这些标准编辑快捷键会被吞 →
+///   聚焦编辑时（`currentEditor != nil`）拦截 ⌘X/C/V/A 直接走 field editor；未聚焦放行（不影响终端快捷键）。
+/// - 命令历史：发送后清空（`recordAndClear`）；↑/↓ 像 shell 一样回滚已发送的命令。框是多行的
+///   （⏎ 换行、⌘⏎ 发送），故只在「光标已在第一行」时 ↑ 翻上一条、「在最后一行」时 ↓ 翻下一条，
+///   其余情况 ↑/↓ 仍是多行内的光标上下移动（单行内容时首行=末行，↑/↓ 始终翻历史）。
+private final class BroadcastInputField: NSTextField, NSTextFieldDelegate {
+    private var history: [String] = []   // 已发送命令（按时间顺序，相邻去重）
+    private var cursor = 0               // 浏览游标：== history.count 表示在编辑「新命令」
+    private var draft = ""               // 翻历史前暂存的未发送内容
+
+    /// 发送后调用：把命令计入历史并清空输入框，游标复位到「新命令」。
+    func recordAndClear(_ cmd: String) {
+        if history.last != cmd { history.append(cmd) }   // 相邻重复不重复记
+        cursor = history.count
+        draft = ""
+        stringValue = ""
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
               let editor = currentEditor() as? NSTextView,
@@ -685,6 +700,49 @@ private final class BroadcastInputField: NSTextField {
         case "a": editor.selectAll(nil); return true
         default: return super.performKeyEquivalent(with: event)
         }
+    }
+
+    // MARK: 命令历史（↑/↓）。返回 true=已处理（吞掉默认）；false=交给默认（多行内移动光标）。
+    func control(_ control: NSControl, textView: NSTextView,
+                 doCommandBy selector: Selector) -> Bool {
+        switch selector {
+        case #selector(NSResponder.moveUp(_:)):   return recallPrev(textView)
+        case #selector(NSResponder.moveDown(_:)): return recallNext(textView)
+        default:                                  return false
+        }
+    }
+
+    private func recallPrev(_ tv: NSTextView) -> Bool {
+        guard cursorInFirstLine(tv), cursor > 0 else { return false }  // 非首行 / 已到最旧 → 放行默认上移
+        if cursor == history.count { draft = stringValue }             // 离开「新命令」前存草稿
+        cursor -= 1
+        recall(history[cursor])
+        return true
+    }
+
+    private func recallNext(_ tv: NSTextView) -> Bool {
+        guard cursorInLastLine(tv), cursor < history.count else { return false }
+        cursor += 1
+        recall(cursor == history.count ? draft : history[cursor])      // 回到底部 → 恢复草稿
+        return true
+    }
+
+    /// 填入文本并把光标移到末尾。
+    private func recall(_ text: String) {
+        stringValue = text
+        currentEditor()?.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+    }
+
+    private func cursorInFirstLine(_ tv: NSTextView) -> Bool {
+        let loc = tv.selectedRange().location
+        let s = tv.string as NSString
+        return !s.substring(to: min(loc, s.length)).contains("\n")
+    }
+
+    private func cursorInLastLine(_ tv: NSTextView) -> Bool {
+        let r = tv.selectedRange()
+        let s = tv.string as NSString
+        return !s.substring(from: min(r.location + r.length, s.length)).contains("\n")
     }
 }
 
@@ -836,6 +894,7 @@ class XGhosttyConsoleController: NSWindowController {
         inputField.isBordered = false
         inputField.drawsBackground = false
         inputField.focusRingType = .none
+        inputField.delegate = inputField        // 自己当 delegate：↑/↓ 命令历史（首/末行触发）
         inputBg.wantsLayer = true
         inputBg.layer?.cornerRadius = 6
         inputBg.layer?.borderWidth = 1
@@ -2404,6 +2463,7 @@ class XGhosttyConsoleController: NSWindowController {
         }
         let data = Self.sendBytes(for: cmd)
         for sv in targets { sv.xghosttySendBytes(data) }
+        inputField.recordAndClear(cmd)         // 发送后清空，并计入 ↑/↓ 命令历史
         // 审计：只记真广播（全部/分组），单发当前会话不记（噪音大）。反查命中 tab 取会话名/host。
         if broadcastTarget != .current {
             let hit = tabOrder.compactMap { tabs[$0] }
