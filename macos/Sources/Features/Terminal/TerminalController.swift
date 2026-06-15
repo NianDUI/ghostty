@@ -700,9 +700,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         if let undoManager, let undoState {
             // Register undo action to restore the tab
             undoManager.setActionName("Close Tab")
+            // Surfaces kept alive only so ⌘Z can restore this tab. When the undo
+            // expires they're unreachable and must be freed (see teardownOrphanedSurfaces).
+            let undoViews = Array(undoState.surfaceTree)
             undoManager.registerUndo(
                 withTarget: ghostty,
-                expiresAfter: undoExpiration
+                expiresAfter: undoExpiration,
+                onExpire: { Self.teardownOrphanedSurfaces(undoViews) }
             ) { ghostty in
                 let newController = TerminalController(ghostty, with: undoState)
 
@@ -855,9 +859,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             if let undoState {
                 // Register undo action to restore the window
                 undoManager.setActionName("Close Window")
+                // Surfaces kept alive only so ⌘Z can restore this window — freed on expiry.
+                let undoViews = Array(undoState.surfaceTree)
                 undoManager.registerUndo(
                     withTarget: ghostty,
-                    expiresAfter: undoExpiration) { ghostty in
+                    expiresAfter: undoExpiration,
+                    onExpire: { Self.teardownOrphanedSurfaces(undoViews) }) { ghostty in
                         // Restore the undo state
                         let newController = TerminalController(ghostty, with: undoState)
 
@@ -911,9 +918,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         guard !undoStates.isEmpty else { return }
 
         undoManager.setActionName("Close Window")
+        // All surfaces across every tab, kept alive only for ⌘Z restore — freed on expiry.
+        let undoViews = undoStates.flatMap { Array($0.surfaceTree) }
         undoManager.registerUndo(
             withTarget: ghostty,
-            expiresAfter: undoExpiration
+            expiresAfter: undoExpiration,
+            onExpire: { Self.teardownOrphanedSurfaces(undoViews) }
         ) { ghostty in
             // Restore all windows in the tab group
             let controllers = undoStates.map { undoState in

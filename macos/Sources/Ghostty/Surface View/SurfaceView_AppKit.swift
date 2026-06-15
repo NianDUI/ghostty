@@ -428,33 +428,49 @@ extension Ghostty {
             progressReportTimer?.invalidate()
         }
 
-#if XGHOSTTY
-        /// XGhostty：关闭标签时**显式、确定性地**拆除底层 surface。
+        /// 确定性地拆除本 surface 的底层资源(渲染/IO 线程、CVDisplayLink、pty/ssh)。
         ///
-        /// 背景（实测确诊）：座舱关窗/关标签后,UI 层(控制器/OpenTab/滚动视图)已正常释放,但
-        /// `SurfaceView` 仍被 AppKit 内部观察者(`-[NSView _commonAwake]` 强捕获块 / 通知中心)与
-        /// 运行中的渲染机构(CVDisplayLink)钉住,`deinit` 迟迟不触发 → `Ghostty.Surface.deinit`
-        /// 永不执行 → `ghostty_surface_free` 不调 → Zig surface + 渲染/IO 线程 + CVDisplayLink +
-        /// pty/ssh 全部不释放(CPU 不降、SSH 会话僵尸存活)。
+        /// 背景（实测确诊）：关窗/关标签后,UI 层(控制器/滚动视图)已正常释放,但 `SurfaceView`
+        /// 仍被 AppKit 内部观察者(`-[NSView _commonAwake]` 强捕获块 / 通知中心)与运行中的
+        /// 渲染机构(CVDisplayLink)钉住,`deinit` 迟迟不触发 → `Ghostty.Surface.deinit` 永不执行
+        /// → `ghostty_surface_free` 不调 → Zig surface + 渲染/IO 线程 + CVDisplayLink + pty/ssh
+        /// 全部不释放(CPU 不降、SSH 会话僵尸存活)。
         ///
-        /// 这里主动把该 view 的监听/计时器撤掉、移出视图层级,并置空 `surfaceModel` —— 后者会触发
-        /// `Ghostty.Surface.deinit → ghostty_surface_free`,确定性地停掉线程/CVDisplayLink/pty/ssh,
-        /// 不再依赖那条迟迟不来的 `deinit`。幂等(`deinit` 仍会再跑一遍,重复调用均为空操作)。
-        @MainActor func xghosttyCloseSurface() {
+        /// 调用时机:
+        /// - 主 Ghostty 走 undo-close —— 关掉的 surface 会在 undo 栈里多存活 `undo-timeout` 秒
+        ///   以便 ⌘Z 复活,过期后才应释放。该释放点由 `ExpiringUndoManager` 的 onExpire 回调
+        ///   (经 `BaseTerminalController.teardownOrphanedSurfaces`)触发并调用本方法。
+        /// - XGhostty 座舱无 undo-close,关标签即调本方法立即拆除。
+        ///
+        /// 这里主动撤掉该 view 的监听/计时器/订阅/跟踪区,移出视图层级,并置空 `surfaceModel` ——
+        /// 后者触发 `Ghostty.Surface.deinit → ghostty_surface_free`,不再依赖那条迟迟不来的 `deinit`。
+        /// 幂等:已拆除(`surfaceModel == nil`)则直接返回,重复调用为空操作。
+        @MainActor func teardownSurfaceForClose() {
+            // Already torn down: nothing is holding the expensive resources anymore.
+            guard surfaceModel != nil else { return }
+
+            sessionSharing.prepareForSurfaceShutdown()
+
             NotificationCenter.default.removeObserver(self)
             if let eventMonitor {
                 NSEvent.removeMonitor(eventMonitor)
                 self.eventMonitor = nil
             }
             accessibilitySelectionCancellable = nil
+            searchNeedleCancellable = nil
             progressReportTimer?.invalidate(); progressReportTimer = nil
             titleChangeTimer?.invalidate(); titleChangeTimer = nil
             titleFallbackTimer?.invalidate(); titleFallbackTimer = nil
+            trackingAreas.forEach { removeTrackingArea($0) }
+            SecureInput.shared.removeScoped(ObjectIdentifier(self))
+            invalidateRestorableState()
+            let identifiers = Array(self.notificationIdentifiers)
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: identifiers)
             removeFromSuperview()
+
             // 置空 → 释放 Ghostty.Surface → ghostty_surface_free → 停 renderer/io 线程 + CVDisplayLink + pty/ssh
             surfaceModel = nil
         }
-#endif
 
         func toggleSessionSharing(from parentWindow: NSWindow?) {
             sessionSharing.toggle(from: parentWindow)

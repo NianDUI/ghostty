@@ -1961,7 +1961,7 @@ class XGhosttyConsoleController: NSWindowController {
             bridge.teardown()
         }
         tab.scroll.removeFromSuperview()
-        tab.surface.xghosttyCloseSurface()   // 确定性释放底层 surface(停线程/CVDisplayLink/pty/ssh),不等迟来的 deinit
+        tab.surface.teardownSurfaceForClose()   // 确定性释放底层 surface(停线程/CVDisplayLink/pty/ssh),不等迟来的 deinit
         tabs[tabId] = nil
         tabOrder.removeAll { $0 == tabId }
         if currentTabId == tabId {
@@ -2627,7 +2627,7 @@ extension XGhosttyConsoleController: NSWindowDelegate {
         // 记录当前会话集，供下次「启动恢复上次会话」。
         layoutStore.setLastSessionIds(currentOpenSessionIds())
         // 红灯/菜单直接关窗(不逐个 cmd+w)不会走到 closeTab → 残余标签的 surface 会泄漏。
-        // 这里对全部残余标签走一遍确定性拆除(closeTab 内含 xghosttyCloseSurface)。
+        // 这里对全部残余标签走一遍确定性拆除(closeTab 内含 teardownSurfaceForClose)。
         for id in Array(tabOrder) { closeTab(id) }
         XGhosttyConsoleController.all.removeAll { $0 === self }
     }

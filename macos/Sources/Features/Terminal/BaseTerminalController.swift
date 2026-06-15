@@ -519,9 +519,15 @@ class BaseTerminalController: NSWindowController,
             undoManager.setActionName(undoAction)
         }
 
+        // Surfaces dropped by this operation. If the undo below expires (⌘Z window
+        // passes) they can never be restored, so they must be torn down then —
+        // otherwise the SurfaceView stays pinned by AppKit and leaks its
+        // render/IO threads + CVDisplayLink + pty/ssh. See teardownOrphanedSurfaces.
+        let removedViews = Set(oldTree).subtracting(Set(newTree))
         undoManager.registerUndo(
             withTarget: self,
-            expiresAfter: undoExpiration
+            expiresAfter: undoExpiration,
+            onExpire: { Self.teardownOrphanedSurfaces(removedViews) }
         ) { target in
             target.surfaceTree = oldTree
             if let oldView {
@@ -530,15 +536,48 @@ class BaseTerminalController: NSWindowController,
                 }
             }
 
+            // The undo above restored oldTree; the redo re-applies newTree, dropping
+            // whatever oldTree → newTree added. If the redo expires, those become
+            // unreachable and must be torn down.
+            let addedViews = Set(newTree).subtracting(Set(oldTree))
             undoManager.registerUndo(
                 withTarget: target,
-                expiresAfter: target.undoExpiration
+                expiresAfter: target.undoExpiration,
+                onExpire: { Self.teardownOrphanedSurfaces(addedViews) }
             ) { target in
                 target.replaceSurfaceTree(
                     newTree,
                     moveFocusTo: newView,
                     moveFocusFrom: target.focusedSurface,
                     undoAction: undoAction)
+            }
+        }
+    }
+
+    /// Deterministically tear down surfaces that are no longer reachable from any live
+    /// terminal controller's surface tree — i.e. the undo/redo that was preserving them
+    /// for ⌘Z restoration has expired (or never existed because undo is disabled).
+    ///
+    /// Closing a surface only removes it from the surface tree; the `SurfaceView` itself
+    /// is held by AppKit internals (`-[NSView _commonAwake]` capture blocks, the notification
+    /// center) and a running CVDisplayLink, so its `deinit` never fires, `surfaceModel` is
+    /// never released, and `ghostty_surface_free` is never called — leaking the render/IO
+    /// threads, CVDisplayLink and pty/ssh. We free them explicitly here instead.
+    ///
+    /// The liveness guard keeps this safe even if an expiration somehow races a restoration:
+    /// any surface that is back in a live tree (e.g. restored via ⌘Z) is left untouched.
+    static func teardownOrphanedSurfaces<S: Sequence>(
+        _ views: S
+    ) where S.Element == Ghostty.SurfaceView {
+        let candidates = Array(views)
+        guard !candidates.isEmpty else { return }
+
+        // Always tear down on the main thread; the undo expiration may fire from a
+        // timer, manual expire(), or an ExpiringTarget deinit.
+        DispatchQueue.main.async {
+            let live = TerminalController.all
+            for view in candidates where !live.contains(where: { $0.surfaceTree.contains(view) }) {
+                view.teardownSurfaceForClose()
             }
         }
     }
