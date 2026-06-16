@@ -618,6 +618,18 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 - [x] **selection-word-chars 进座舱设置面板**：`~/.config/xghostty/ghostty.config` 的 `selection-word-chars` 行**即真相源**（不进 layout.json）；面板 `TextField` 是这一行的编辑器（`readSelectionWordChars` 读初值 / `writeSelectionWordChars` 只重写该行、保留其它行）+「填推荐值」按钮（默认集 + `~` + 全角标点）；提交即 `ghostty.reloadConfig()`（hard，重读所有 config 含专属文件、apply 到所有活 surface）**即时生效无需重启**。TextField 内容 = config 字符串语法（`\t` / `\"`），原样读写不转义。
 - 纯 Swift 零 C-ABI（复用 xcframework），`scripts/xghostty-deploy.sh xghostty -y` 部署。
 
+### 第三十八批（2026-06-16，修「启动默认本地 shell 不吃文件传输开关」+ 标签切换快捷键，纯 Swift 已部署）
+
+诉求一：为什么启动软件时默认打开的本地 shell 没用上「本地 shell 文件传输（手动 ssh 后 rz/sz）」开关。
+- **根因**：本地 shell 有**两条**进入路径，trzsz 包裹却只写在其中一条上——① 手动点「+」=`openTab(node: nil)` → 走 `else` 分支（读 `localShellTransferEnabled` ✓）；② **启动默认 / 恢复会话** = `restoreOrOpenInitialSession()` → `openSession(store.allHosts.first)`（`XGhosttyConsole.swift:1552`），传进去的是会话树里的 `SessionNode`，即便它 `isLocalShell`（无 host，`SessionStore.swift:28`），`node != nil` → 走 `if let node` 分支。该分支里 `SessionCommandBuilder.build` 对本地 shell 节点返回 `command: nil`（`SessionCommandBuilder.swift:52`）→ `if let cmd` 整段跳过、`cfg.command` 保持 nil 走原生 shell；而这分支的 trzsz 包裹只认 `transport == .ssh && (trzszEnabled || zmodemEnabled)`，**从不读 `localShellTransferEnabled`**。故会话树本地 shell 节点 tab 接不上 trzsz 全协议包裹（trz/tsz + `~/Downloads` 落点）。注：rz/sz 的 **ZMODEM 兜底** 反而生效——`isLocalShellTab`（`:1912`）已含 `node?.isLocalShell`。失效的只是 trzsz-go 透明包裹。
+- [x] **修**：把本地 shell 的 trzsz 包裹从 `else` 分支**抽到两分支汇合处**，`cfg.command == nil` 守卫（不误碰已构造命令的 ssh 标签）+ `node == nil || node?.isLocalShell` 覆盖两种本地 shell。会话树本地 shell 节点 build 返回 command==nil 走到汇合处时 `cfg.command` 恰为 nil → 命中包裹；`trzszWrapped` 后续照样驱动 `~/Downloads` cwd 与跳过 ZmodemBridge，逻辑一致。
+
+诉求二：同一 XGhostty 窗口内用快捷键切换终端标签。
+- [x] **键位（主 Ghostty 同款）**：`⌘⇧]` 下一标签 / `⌘⇧[` 上一标签；`⌃Tab` / `⌃⇧Tab` 等价；`⌘1`..`⌘8` 跳第 N 个、`⌘9` 跳最后一个。均在 `tabOrder` 内环绕。
+- **实现**：keyMonitor（window-level local monitor，先于 surface 收 keyDown）里判定 → 即便焦点在终端也优先切标签、`return nil` 吞事件。两个 helper：`selectRelativeTab(_:)`（环绕相对移动）、`selectTabAt(_:)`（跳第 N）。
+- **坑**：`⌘⇧]`/`⌘⇧[` 不能靠 `charactersIgnoringModifiers`——shift **不**被它忽略，会把 `]`/`[` 变成 `}`/`{`，故按**物理键位** keyCode 30/33 判定。`⌃Tab` 加 `tabOrder.count > 1` 守卫：单标签时放行给终端，避免抢占 vim/tmux 的 `⌃Tab`。
+- 纯 Swift 零 C-ABI（复用 xcframework），`scripts/xghostty-deploy.sh xghostty -y` 部署。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**

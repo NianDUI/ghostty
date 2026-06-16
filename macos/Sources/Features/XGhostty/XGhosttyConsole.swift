@@ -1810,19 +1810,26 @@ class XGhosttyConsoleController: NSWindowController {
             } else {
                 cfg.environmentVariables = SessionCommandBuilder.baseEnv
                 title = "本地 shell"
-                // 本地 shell 文件传输（独立开关 localShellTransferEnabled，默认关）：装了 trzsz-go 就用
-                // `trzsz -z -d <登录 shell>` 包裹——trzsz 坐在最外层 pty，你随后在 shell 里手动 ssh 几跳，
-                // 远端的 trz/tsz/rz/sz 都在字节流被它接管（trzsz 替代 lrzsz 的核心卖点）。未装 trzsz-go 则
-                // 不包裹、保留原生本地 shell（含 Ghostty shell-integration），由下方 ZmodemBridge 兜底接管
-                // rz/sz。命令封装（`/bin/sh -c 'exec …'`）与 ssh 路径一致（Ghostty 对 .shell 命令按 shell
-                // 词法解析，已真机验证）。下载落点见下方 trzszWrapped → ~/Downloads 分支。
-                if layoutStore.layout.localShellTransferEnabled == true,
-                   let trzsz = Self.trzszPath() {
-                    let inner = "exec " + Self.shellQuote(trzsz) + " -z -d "
-                        + Self.shellQuote(Self.loginShellPath()) + " -l"
-                    cfg.command = "/bin/sh -c " + Self.shellQuote(inner)
-                    trzszWrapped = true
-                }
+            }
+            // 本地 shell 文件传输（独立开关 localShellTransferEnabled，默认关）：装了 trzsz-go 就用
+            // `trzsz -z -d <登录 shell>` 包裹——trzsz 坐在最外层 pty，你随后在 shell 里手动 ssh 几跳，
+            // 远端的 trz/tsz/rz/sz 都在字节流被它接管（trzsz 替代 lrzsz 的核心卖点）。未装 trzsz-go 则
+            // 不包裹、保留原生本地 shell（含 Ghostty shell-integration），由下方 ZmodemBridge 兜底接管
+            // rz/sz。命令封装（`/bin/sh -c 'exec …'`）与 ssh 路径一致（Ghostty 对 .shell 命令按 shell
+            // 词法解析，已真机验证）。下载落点见下方 trzszWrapped → ~/Downloads 分支。
+            //
+            // 两种本地 shell 都要覆盖，统一放在分支汇合处（`cfg.command == nil` 守卫确保不误碰已构造
+            // 命令的 ssh 标签）：① 临时 tab（node==nil，手动点「+」）；② 会话树里的本地 shell 节点
+            // （node.isLocalShell，启动默认/恢复会话经 if-let 分支走来，build 返回 command==nil → cfg.command
+            // 仍为 nil）。早先只写在 else（node==nil）里，导致启动默认打开的本地 shell 节点接不上 trzsz——本次补。
+            if cfg.command == nil,
+               node == nil || (node?.isLocalShell ?? false),
+               layoutStore.layout.localShellTransferEnabled == true,
+               let trzsz = Self.trzszPath() {
+                let inner = "exec " + Self.shellQuote(trzsz) + " -z -d "
+                    + Self.shellQuote(Self.loginShellPath()) + " -l"
+                cfg.command = "/bin/sh -c " + Self.shellQuote(inner)
+                trzszWrapped = true
             }
             if let workingDirectory, !workingDirectory.isEmpty {
                 cfg.workingDirectory = workingDirectory
@@ -2221,6 +2228,20 @@ class XGhosttyConsoleController: NSWindowController {
         updateExitBar()           // 切到的 tab 若是尸体则显横幅，否则隐藏
         // 搜索浮层绑定的是切换前的 surface，切 tab 时关闭它（避免悬挂在错误的终端上）。
         if searchOverlayHosting != nil { closeSearch() }
+    }
+
+    /// 在 tabOrder 内相对当前标签移动（delta>0 向后、<0 向前），首尾环绕。⌘⇧]/⌘⇧[ 与 ⌃Tab/⌃⇧Tab 共用。
+    private func selectRelativeTab(_ delta: Int) {
+        let n = tabOrder.count
+        guard n > 0 else { return }
+        let cur = currentTabId.flatMap { tabOrder.firstIndex(of: $0) } ?? 0
+        select(tabOrder[((cur + delta) % n + n) % n])
+    }
+
+    /// 跳到第 index 个标签（0-based，越界忽略）。⌘1..⌘9 用（⌘9 取最后一个）。
+    private func selectTabAt(_ index: Int) {
+        guard index >= 0, index < tabOrder.count else { return }
+        select(tabOrder[index])
     }
 
     /// 窗口标题 =「当前会话名 — 当前目录（~ 缩写）」，无目录时仅会话名。
@@ -2660,6 +2681,27 @@ class XGhosttyConsoleController: NSWindowController {
                     self.closeTab(id)
                     if self.tabOrder.isEmpty { self.window?.close() }
                 }
+                return nil
+            }
+            // 标签切换（主 Ghostty 同款键位，monitor 先于 surface 收到 → 即便焦点在终端也优先切标签）：
+            // ⌘⇧] 下一标签 / ⌘⇧[ 上一标签（keyCode 30/33，shift 会把字符变成 }/{ 故按物理键位判定，
+            // 不靠 ch）；⌃Tab / ⌃⇧Tab 等价（单标签时放行给终端，避免抢占 vim/tmux 的 ⌃Tab）；
+            // ⌘1..⌘8 跳第 N 个、⌘9 跳最后一个。均在 tabOrder 内环绕。
+            if cmd, event.modifierFlags.contains(.shift), event.keyCode == 30 {  // ⌘⇧] 下一个
+                self.selectRelativeTab(1)
+                return nil
+            }
+            if cmd, event.modifierFlags.contains(.shift), event.keyCode == 33 {  // ⌘⇧[ 上一个
+                self.selectRelativeTab(-1)
+                return nil
+            }
+            if event.modifierFlags.contains(.control), event.keyCode == 48, self.tabOrder.count > 1 {  // ⌃Tab / ⌃⇧Tab
+                self.selectRelativeTab(event.modifierFlags.contains(.shift) ? -1 : 1)
+                return nil
+            }
+            if cmd, !event.modifierFlags.contains(.shift), ch.count == 1,
+               let d = Int(ch), d >= 1, d <= 9 {                                 // ⌘1..⌘9 跳第 N 个
+                self.selectTabAt(d == 9 ? self.tabOrder.count - 1 : d - 1)
                 return nil
             }
             if cmd && ch == "a" {        // ⌘A 全选会话（焦点在终端/文本框时不拦，交给它们）
