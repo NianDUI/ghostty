@@ -2791,6 +2791,23 @@ extension XGhosttyConsoleController: NSMenuItemValidation {
         currentSurface?.toggleSessionSharing(from: window)
     }
 
+    // 显示>增大/减小/重置字体（⌘+ / ⌘- / ⌘0）：对当前 surface 发字体缩放，与主 Ghostty 同实现。
+    // 菜单项 enabled 后，运行时按 keybind 填的 keyEquivalent 自动随之生效（keyMonitor 不拦这三个键）。
+    @IBAction func increaseFontSize(_ sender: Any?) {
+        guard let surface = currentSurface?.surface else { return }
+        ghostty.changeFontSize(surface: surface, .increase(1))
+    }
+
+    @IBAction func decreaseFontSize(_ sender: Any?) {
+        guard let surface = currentSurface?.surface else { return }
+        ghostty.changeFontSize(surface: surface, .decrease(1))
+    }
+
+    @IBAction func resetFontSize(_ sender: Any?) {
+        guard let surface = currentSurface?.surface else { return }
+        ghostty.changeFontSize(surface: surface, .reset)
+    }
+
     /// ⌘W / 关闭标签页共用：有标签则关当前标签（关到空再关窗），无标签直接关窗。
     private func closeCurrentTabOrWindow() {
         if let id = currentTabId {
@@ -2806,7 +2823,8 @@ extension XGhosttyConsoleController: NSMenuItemValidation {
         switch item.action {
         case #selector(menuCloseTab(_:)), #selector(close(_:)):
             return currentTabId != nil
-        case #selector(toggleSessionSharing(_:)):
+        case #selector(toggleSessionSharing(_:)),
+             #selector(increaseFontSize(_:)), #selector(decreaseFontSize(_:)), #selector(resetFontSize(_:)):
             return currentSurface != nil
         default:
             return true

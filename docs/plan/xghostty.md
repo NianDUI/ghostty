@@ -641,6 +641,14 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 - **现状对照**：✅ 本就可用（粘贴/全选/查找/复制[有选区]/更改终端标题/终端只读/快速终端/检查器/最小化缩放/显示隐藏所有/全部到前/关闭所有窗口）；🟩 接通后新亮（新建窗口[座舱]/新建标签/关闭/关闭标签页/关闭窗口/共享此会话）；🟥 保持灰=座舱无此能力（撤销重做/字体缩放/命令面板/更改标签页标题/从组移除窗口/放大分屏/选择上下分屏 ⌘[ ⌘]/切换全屏）；分屏由「亮但无效」改为灰（杜绝误导）。
 - 纯 Swift 零 C-ABI（复用 xcframework），`scripts/xghostty-deploy.sh xghostty -y` 部署。
 
+### 第四十批（2026-06-16，座舱接通字体缩放——增大/减小/重置 + 快捷键，纯 Swift 已部署）
+
+诉求：增大字体 / 减小字体 / 重置字体大小（⌘+ / ⌘- / ⌘0）在座舱也要支持（第三十九批曾归为「🟥 保持灰」，本批订正为接通）。
+- [x] **接通 action**：座舱菜单 extension 加 `increaseFontSize:`/`decreaseFontSize:`/`resetFontSize:`，对 `currentSurface?.surface` 发 `ghostty.changeFontSize(surface:, .increase(1)/.decrease(1)/.reset)`（与主 Ghostty `BaseTerminalController` 同实现，enum `Ghostty.App.FontSizeModification`）。`validateMenuItem`：有 surface 才启用。`SurfaceView` 未实现这三 selector → 响应链落到座舱 `NSWindowController`。
+- [x] **快捷键自动随之生效**：菜单项 enabled 后，运行时按 keybind 填的 `keyEquivalent`（⌘+/⌘-/⌘0）即触发——**无需改 keyMonitor**。已核 keyMonitor 不拦这三键：⌘0 被 `⌘1..⌘9` 的 `d>=1` 排除、⌘+/⌘- 非数字放行。事件顺序：local keyMonitor 先于菜单 `performKeyEquivalent`，放行后由菜单接管 → 落座舱 action。
+- **订正**：第三十九批「现状对照」里字体缩放（⌘0/⌘+/⌘-）由 🟥（保持灰）改为 🟩（接通后可用）。
+- 纯 Swift 零 C-ABI（复用 xcframework），`scripts/xghostty-deploy.sh xghostty -y` 部署。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**
