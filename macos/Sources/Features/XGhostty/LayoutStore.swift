@@ -32,6 +32,16 @@ struct ConsoleLayout: Codable, Equatable {
     /// 是否启用 trzsz(trz/tsz)文件传输（nil/false=关）：把 ssh 命令包成 `trzsz ssh …`，由本机
     /// trzsz 透明拦截 trz/tsz 协议。默认关——需本机装 trzsz；开启后对新打开的 ssh 会话生效。
     var trzszEnabled: Bool?
+    /// 是否对**本地 shell**也启用文件传输（trz/tsz/rz/sz）（nil/false=关）：开启后新开的本地 shell
+    /// 用 `trzsz -z -d <登录 shell>` 包裹（装了 trzsz-go）或挂 ZMODEM 兜底（仅 lrzsz），让你在本地
+    /// shell 里手动 ssh 进服务器后也能 rz/sz。默认关——且独立于 ssh 会话的文件传输开关：包裹会改用
+    /// trzsz 启动本地 shell（丢 Ghostty 原生 shell-integration、起始目录落 ~/Downloads），副作用明确，
+    /// 故单设开关、需显式打开。
+    var localShellTransferEnabled: Bool?
+    /// 终端选中后是否自动复制到剪贴板（nil/false=关）：拖选 / 双击选词 / 三击选行松开鼠标即复制。
+    var copyOnSelect: Bool?
+    /// 终端复制时是否去掉整段首尾空白（nil/false=关）：cmd+C 与「选中自动复制」都生效。
+    var copyTrimWhitespace: Bool?
 
     init(autoSave: Bool = true,
          windowFrame: CGRect? = nil,
@@ -47,7 +57,10 @@ struct ConsoleLayout: Codable, Equatable {
          lastSessionIds: [UUID]? = nil,
          expectAutoLogin: Bool? = nil,
          zmodemEnabled: Bool? = nil,
-         trzszEnabled: Bool? = nil) {
+         trzszEnabled: Bool? = nil,
+         localShellTransferEnabled: Bool? = nil,
+         copyOnSelect: Bool? = nil,
+         copyTrimWhitespace: Bool? = nil) {
         self.autoSave = autoSave
         self.windowFrame = windowFrame
         self.treeWidth = treeWidth
@@ -63,6 +76,9 @@ struct ConsoleLayout: Codable, Equatable {
         self.expectAutoLogin = expectAutoLogin
         self.zmodemEnabled = zmodemEnabled
         self.trzszEnabled = trzszEnabled
+        self.localShellTransferEnabled = localShellTransferEnabled
+        self.copyOnSelect = copyOnSelect
+        self.copyTrimWhitespace = copyTrimWhitespace
     }
 }
 
@@ -144,6 +160,24 @@ final class LayoutStore {
         persist()
     }
 
+    /// 仅改「本地 shell 文件传输」偏好。
+    func setLocalShellTransferEnabled(_ on: Bool) {
+        layout.localShellTransferEnabled = on
+        persist()
+    }
+
+    /// 仅改「选中自动复制」偏好。
+    func setCopyOnSelect(_ on: Bool) {
+        layout.copyOnSelect = on
+        persist()
+    }
+
+    /// 仅改「复制去首尾空白」偏好。
+    func setCopyTrimWhitespace(_ on: Bool) {
+        layout.copyTrimWhitespace = on
+        persist()
+    }
+
     /// 记录上次打开的会话集（关窗口时调用，供下次启动恢复）。
     func setLastSessionIds(_ ids: [UUID]) {
         layout.lastSessionIds = ids
@@ -160,7 +194,10 @@ final class LayoutStore {
                                lastSessionIds: layout.lastSessionIds,
                                expectAutoLogin: layout.expectAutoLogin,
                                zmodemEnabled: layout.zmodemEnabled,
-                               trzszEnabled: layout.trzszEnabled)
+                               trzszEnabled: layout.trzszEnabled,
+                               localShellTransferEnabled: layout.localShellTransferEnabled,
+                               copyOnSelect: layout.copyOnSelect,
+                               copyTrimWhitespace: layout.copyTrimWhitespace)
         persist()
     }
 

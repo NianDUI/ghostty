@@ -13,6 +13,10 @@ struct ConsoleSettingsView: View {
     @State private var expectAutoLogin: Bool
     @State private var zmodemEnabled: Bool
     @State private var trzszEnabled: Bool
+    @State private var localShellTransfer: Bool
+    @State private var copyOnSelect: Bool
+    @State private var copyTrimWhitespace: Bool
+    @State private var selectionWordChars: String
     var onToggleAutoSave: (Bool) -> Void
     var onToggleSort: (Bool) -> Void
     var onToggleCollapseDescendants: (Bool) -> Void
@@ -22,6 +26,10 @@ struct ConsoleSettingsView: View {
     var onToggleExpectAutoLogin: (Bool) -> Void
     var onToggleZmodem: (Bool) -> Void
     var onToggleTrzsz: (Bool) -> Void
+    var onToggleLocalShellTransfer: (Bool) -> Void
+    var onToggleCopyOnSelect: (Bool) -> Void
+    var onToggleCopyTrimWhitespace: (Bool) -> Void
+    var onCommitSelectionWordChars: (String) -> Void
     var onViewLogs: () -> Void
     var onResetLayout: () -> Void
     var onClose: () -> Void
@@ -35,6 +43,10 @@ struct ConsoleSettingsView: View {
          expectAutoLogin: Bool,
          zmodemEnabled: Bool,
          trzszEnabled: Bool,
+         localShellTransfer: Bool,
+         copyOnSelect: Bool,
+         copyTrimWhitespace: Bool,
+         selectionWordChars: String,
          onToggleAutoSave: @escaping (Bool) -> Void,
          onToggleSort: @escaping (Bool) -> Void,
          onToggleCollapseDescendants: @escaping (Bool) -> Void,
@@ -44,6 +56,10 @@ struct ConsoleSettingsView: View {
          onToggleExpectAutoLogin: @escaping (Bool) -> Void,
          onToggleZmodem: @escaping (Bool) -> Void,
          onToggleTrzsz: @escaping (Bool) -> Void,
+         onToggleLocalShellTransfer: @escaping (Bool) -> Void,
+         onToggleCopyOnSelect: @escaping (Bool) -> Void,
+         onToggleCopyTrimWhitespace: @escaping (Bool) -> Void,
+         onCommitSelectionWordChars: @escaping (String) -> Void,
          onViewLogs: @escaping () -> Void,
          onResetLayout: @escaping () -> Void,
          onClose: @escaping () -> Void) {
@@ -56,6 +72,10 @@ struct ConsoleSettingsView: View {
         _expectAutoLogin = State(initialValue: expectAutoLogin)
         _zmodemEnabled = State(initialValue: zmodemEnabled)
         _trzszEnabled = State(initialValue: trzszEnabled)
+        _localShellTransfer = State(initialValue: localShellTransfer)
+        _copyOnSelect = State(initialValue: copyOnSelect)
+        _copyTrimWhitespace = State(initialValue: copyTrimWhitespace)
+        _selectionWordChars = State(initialValue: selectionWordChars)
         self.onToggleAutoSave = onToggleAutoSave
         self.onToggleSort = onToggleSort
         self.onToggleCollapseDescendants = onToggleCollapseDescendants
@@ -65,10 +85,17 @@ struct ConsoleSettingsView: View {
         self.onToggleExpectAutoLogin = onToggleExpectAutoLogin
         self.onToggleZmodem = onToggleZmodem
         self.onToggleTrzsz = onToggleTrzsz
+        self.onToggleLocalShellTransfer = onToggleLocalShellTransfer
+        self.onToggleCopyOnSelect = onToggleCopyOnSelect
+        self.onToggleCopyTrimWhitespace = onToggleCopyTrimWhitespace
+        self.onCommitSelectionWordChars = onCommitSelectionWordChars
         self.onViewLogs = onViewLogs
         self.onResetLayout = onResetLayout
         self.onClose = onClose
     }
+
+    /// 「填推荐值」按钮预填：ghostty 默认边界集 + 波浪号 ~ + 常见全角标点（config 字符串语法，原样写文件）。
+    static let recommendedWordChars = #"\t '\"│`|:;,()[]{}<>$~：，。；！？"#
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -150,6 +177,46 @@ struct ConsoleSettingsView: View {
                 Toggle("ZMODEM 兜底（仅未装 trzsz-go 时）", isOn: $zmodemEnabled)
                     .onChange(of: zmodemEnabled) { onToggleZmodem($0) }
                 Text("仅当本机**没装 trzsz-go**、又想要 rz/sz 时才开：用内置伪终端桥接本机 lrzsz（需 brew install lrzsz）。可靠性不如上面的 trzsz，传输中可按 Esc 取消。装了 trzsz-go 的话开上面那个即可，本项无需开。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("本地 shell 文件传输（手动 ssh 后 rz/sz）", isOn: $localShellTransfer)
+                    .onChange(of: localShellTransfer) { onToggleLocalShellTransfer($0) }
+                Text("默认关。开启后新开的「本地 shell」标签会被 trzsz-go 包裹（装了就走 `trzsz -z -d <登录 shell>`，trz/tsz + rz/sz 全协议；没装则挂 ZMODEM 兜底，仅 rz/sz）——这样你在本地 shell 里**手动 ssh** 进服务器后，远端的 rz/sz · trz/tsz 也能用。代价：包裹会改用 trzsz 启动本地 shell，丢 Ghostty 原生 shell-integration、起始目录落 ~/Downloads，故独立于上面两个会话开关、需单独打开。配置好的 SSH 会话仍用上面两个开关。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("选中自动复制", isOn: $copyOnSelect)
+                    .onChange(of: copyOnSelect) { onToggleCopyOnSelect($0) }
+                Text("默认关。在终端里拖选 / 双击选词 / 三击选行后松开鼠标即把选中内容复制到剪贴板（无需 cmd+C）。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Toggle("复制时去掉首尾空白", isOn: $copyTrimWhitespace)
+                    .onChange(of: copyTrimWhitespace) { onToggleCopyTrimWhitespace($0) }
+                Text("默认关。复制（cmd+C 或「选中自动复制」）时去掉整段内容开头和结尾的空格 / 换行——避免选区多带的首尾空白进剪贴板。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("双击选词边界字符（selection-word-chars · 仅 XGhostty）")
+                    .font(.system(size: 13, weight: .medium))
+                HStack {
+                    TextField("留空 = Ghostty 默认", text: $selectionWordChars)
+                        .font(.system(size: 12, design: .monospaced))
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { onCommitSelectionWordChars(selectionWordChars) }
+                    Button("应用") { onCommitSelectionWordChars(selectionWordChars) }
+                    Button("填推荐值") {
+                        selectionWordChars = Self.recommendedWordChars
+                        onCommitSelectionWordChars(selectionWordChars)
+                    }
+                }
+                Text("双击选词遇到这些字符就停，仅 XGhostty 生效。回车或「应用」写入 ~/.config/xghostty/ghostty.config 并自动 reload，不影响主 Ghostty。内容是 ghostty config 字符串语法（\\t=制表符等）。不熟就点「填推荐值」——默认集 + 波浪号 ~ + 全角标点，让 ID~字段、中文冒号也断词。留空 = 用 Ghostty 默认。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

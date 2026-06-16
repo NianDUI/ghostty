@@ -591,6 +591,33 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 - [x] 四个 undo 注册点挂 onExpire：`replaceSurfaceTree`（关 split 的 undo 拆 `oldTree−newTree` + 内层 redo 拆 `newTree−oldTree`[覆盖「建 split 又撤销」]）、`closeTabImmediately`、`registerUndoForCloseWindow`（单窗口 `undoState.surfaceTree` + 多标签 `undoStates.flatMap`）。
 - [x] 纯 Swift 零 C-ABI 改动，但出生产仍重跑 ReleaseFast zig（主 Ghostty 是日常驱动，不能降 Debug-hybrid）。运行时验证通过（重启后开标签 cmd+w 全关、等 >5s，heap SurfaceView 降到 = 活会话数）。
 
+### 第三十六批（2026-06-16，本地 shell 文件传输[独立开关] + 终端复制三件套[cmd+C 修复 / 选中自动复制 / 复制去首尾空白]，纯 Swift 复用 xcframework 已部署真机验证通过）
+
+**① 本地 shell 文件传输（rz/sz）——补「本地 shell 手动 ssh」盲区**
+- 病根：本地 shell tab（`node==nil`）走 `openTab` 的 `else` 分支，**既不包 trzsz 也不武装 ZmodemBridge**（后者原条件 `!node.isLocalShell` 显式排除）→ 你在本地 shell 里手动 `ssh` 进服务器后，远端 `sz`/`rz` 吐的 ZMODEM 触发头无人接管 → 渲成满屏乱码。SSH 会话节点能用是因为走了 `trzsz -z -d ssh` 包裹那条路。
+- [x] **新独立开关 `localShellTransferEnabled`**（`LayoutStore`，默认关，**独立于** SSH 会话的 trzsz/zmodem 开关——因副作用明确不可隐式联动）。座舱设置「本地 shell 文件传输（手动 ssh 后 rz/sz）」。
+- [x] **包裹路径**：开关开 + 装了 trzsz-go → `cfg.command = /bin/sh -c 'exec <trzsz> -z -d <登录 shell> -l'`（封装同 ssh 路径，Ghostty 对 `.shell` 命令按 shell 词法解析）；`trzszWrapped=true` 复用 `~/Downloads` cwd。trzsz 坐最外层 pty，手动 ssh 几跳后远端 trz/tsz/rz/sz 全在字节流被它接管。登录 shell 读 `getpwuid(getuid()).pw_shell` 兜底 `/bin/zsh`。
+- [x] **兜底路径**：没装 trzsz-go → 放开 ZmodemBridge 武装条件（新增 `isLocalShellTab = node==nil || isLocalShell`，本地 shell 看 `localShellTransferEnabled`、ssh 会话仍看 `zmodemEnabled`，sftp 排除）→ 本地 shell 也能挂 ZMODEM 兜底（仅 rz/sz）。
+- **取舍（已写进开关说明）**：本地 shell 包裹后 cwd=~/Downloads（trzsz-go 下载落进程 cwd、无 output-dir 参数）= zsh 起始目录，**绑死**（ssh 会话无此副作用，因 cwd 只影响本地下载落点、不影响远端目录）；且 argv[0] 变 trzsz → 丢 Ghostty 自动 shell-integration。故默认关、需显式开。用户拍板维持 ~/Downloads 现状（备选「zsh 起在家目录 + 下载仍落 Downloads」需内层 `cd ~`、依赖 trzsz 下载读父进程 cwd，未做）。
+
+**② 终端复制三件套**
+- **cmd+C 失灵根因**：Ghostty surface 的 `performKeyEquivalent` 在 `!focused` 时 `return false`（`SurfaceView_AppKit.swift:1465`）；座舱自定义窗口里 surface 的 `focused` 没正确同步 → cmd+C（performable binding）走不到 keyDown 的 `copy_to_clipboard`，且座舱无 Edit 菜单兜底 → 复制失灵。
+- [x] **cmd+C 修复（无条件，非开关）**：keyMonitor 接管 `cmd+c`——焦点在 `surfaceContainer` 且有选区 → 读 `currentSurface.accessibilitySelectedText()`（Ghostty 原生 NSAccessibility override，同 module 可调）自己写 `NSPasteboard.general`，**绕过 surface focus 链路**；无选区 / 焦点在文本框 → 放行默认。
+- [x] **选中自动复制（开关 `copyOnSelect`）**：`leftMouseUp` local monitor，终端区域内松手 → `DispatchQueue.main.async` 延到选区结算后读选区复制（拖选 / 双击选词 / 三击选行通吃）；不拦事件（return event 让 surface 正常结算选区）。
+- [x] **复制去首尾空白（开关 `copyTrimWhitespace`）**：复制时 `trimmingCharacters(in: .whitespacesAndNewlines)` 去**整段**首尾（cmd+C 与自动复制共用 `copyTerminalSelection(trim:)`）。两开关默认关、座舱设置面板。
+- 真机验证：cmd+C / 自动复制 / 去空格 / 本地 shell 手动 ssh 后 rz/sz **四项全过**。
+
+**③ 纯 Swift 零 C-ABI**：复用现有 ReleaseFast xcframework（跳 zig，只 `xcodebuild XGhostty ReleaseLocal`），`scripts/xghostty-deploy.sh xghostty -y` 一键，48MB / Dev Cert / ReleaseFast。改动集中在 `LayoutStore`（2 字段 +1 / setter / reset）、`ConsoleSettingsView`（3 开关）、`XGhosttyConsole`（本地 shell 包裹 + ZmodemBridge 放开 + `copyTerminalSelection` + cmd+C/mouseUp 两 monitor + `loginShellPath`）。
+
+### 第三十七批（2026-06-16，XGhostty 专属 ghostty 覆盖配置机制 + selection-word-chars 设置面板，纯 Swift 已部署）
+
+诉求：双击日志里 `CdWOQmOGJ9EtbmL6UfI~currentCount：…` 这种串，ID 会连选到 `~currentCount：`，想只给 XGhostty 改双击选词边界、不动主 Ghostty。
+- **根因**：Ghostty 双击选词（`Screen.zig:selectWord`）只把字符**二分**为「边界 / 非边界」（无字母/数字/CJK 细分），连续非边界字符 = 一个词。默认边界集（含 tab 空格 引号 竖线 冒号分号逗号 各种括号 `$` 等，见 `Config.zig:755`）**不含 `~`、不含全角 `：`** → `~` 被当词字符跨选；停在全角 `：` 是因它是宽字符、其占位 cell 终止了向右扩展。Ghostty 有意把 `~` 当词字符（方便选 `~/path`）。
+- **病根（只改 XGhostty 的拦路虎）**：XGhostty 的 `Ghostty.App(configPath: nil)` → `loadConfig(at: nil)` → `ghostty_config_load_default_files` → 读 `~/.config/ghostty/config`，**与主 Ghostty 共享同一文件**，改它两个 app 都变。
+- [x] **通用「XGhostty 专属覆盖配置」机制**：`Ghostty.Config.loadConfig` 的 `#if XGHOSTTY` 分支在 `load_default_files` 之后叠加加载 `~/.config/xghostty/ghostty.config`（存在才加，后加载覆盖先加载）→ XGhostty = 主 config 继承 + 专属覆盖，主 Ghostty 零影响。**首次改共享 `Ghostty.Config.swift`，但纯加法 + `#if XGHOSTTY` 隔离**。以后任何「只给 XGhostty 的 ghostty 设置」都写这个文件。
+- [x] **selection-word-chars 进座舱设置面板**：`~/.config/xghostty/ghostty.config` 的 `selection-word-chars` 行**即真相源**（不进 layout.json）；面板 `TextField` 是这一行的编辑器（`readSelectionWordChars` 读初值 / `writeSelectionWordChars` 只重写该行、保留其它行）+「填推荐值」按钮（默认集 + `~` + 全角标点）；提交即 `ghostty.reloadConfig()`（hard，重读所有 config 含专属文件、apply 到所有活 surface）**即时生效无需重启**。TextField 内容 = config 字符串语法（`\t` / `\"`），原样读写不转义。
+- 纯 Swift 零 C-ABI（复用 xcframework），`scripts/xghostty-deploy.sh xghostty -y` 部署。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**

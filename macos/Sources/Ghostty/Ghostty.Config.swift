@@ -74,6 +74,18 @@ extension Ghostty {
                 ghostty_config_load_default_files(cfg)
             }
 
+#if XGHOSTTY
+            // XGhostty 专属覆盖：在共享的 ~/.config/ghostty/config 之后叠加
+            // ~/.config/xghostty/ghostty.config（存在才加），后加载者覆盖先加载者 →
+            // 只影响 XGhostty，主 Ghostty 共享的 config 不受影响。既是手动编辑入口，
+            // 也是座舱设置面板「双击选词边界（selection-word-chars）」的落地文件。
+            let xgOverride = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".config/xghostty/ghostty.config")
+            if FileManager.default.fileExists(atPath: xgOverride.path) {
+                ghostty_config_load_file(cfg, xgOverride.path)
+            }
+#endif
+
             // We only load CLI args when not running in Xcode because in Xcode we
             // pass some special parameters to control the debugger.
             if !isRunningInXcode() {

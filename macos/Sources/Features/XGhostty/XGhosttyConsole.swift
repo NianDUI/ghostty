@@ -787,6 +787,7 @@ class XGhosttyConsoleController: NSWindowController {
     // 终端搜索（⌘F 唤出，浮在终端右上角）
     private var searchOverlayHosting: NSView?   // Ghostty 原生搜索浮层（⌘F），nil = 未开
     private var keyMonitor: Any?
+    private var mouseMonitor: Any?              // leftMouseUp 监听：选中自动复制（copyOnSelect 开时）
     /// 当前打开的会话编辑 sheet（增删改），由 controller 持有避免 view→sheet 循环引用。
     private var editorSheet: NSWindow?
     /// 会话/分组复制粘贴的剪贴板（深拷贝快照；粘贴时再换新 id）。支持批量。
@@ -870,6 +871,7 @@ class XGhosttyConsoleController: NSWindowController {
 
     deinit {
         if let m = keyMonitor { NSEvent.removeMonitor(m) }
+        if let m = mouseMonitor { NSEvent.removeMonitor(m) }
     }
 
     // MARK: UI
@@ -1407,6 +1409,10 @@ class XGhosttyConsoleController: NSWindowController {
             expectAutoLogin: layoutStore.layout.expectAutoLogin ?? false,
             zmodemEnabled: layoutStore.layout.zmodemEnabled ?? false,
             trzszEnabled: layoutStore.layout.trzszEnabled ?? false,
+            localShellTransfer: layoutStore.layout.localShellTransferEnabled ?? false,
+            copyOnSelect: layoutStore.layout.copyOnSelect ?? false,
+            copyTrimWhitespace: layoutStore.layout.copyTrimWhitespace ?? false,
+            selectionWordChars: Self.readSelectionWordChars(),
             onToggleAutoSave: { [weak self] on in
                 self?.layoutStore.setAutoSave(on)
                 if on { self?.scheduleSaveLayout() }
@@ -1450,6 +1456,31 @@ class XGhosttyConsoleController: NSWindowController {
                     alert.addButton(withTitle: "好")
                     alert.runModal()
                 }
+            },
+            onToggleLocalShellTransfer: { [weak self] on in
+                self?.layoutStore.setLocalShellTransferEnabled(on)
+                // 开了但没装 trzsz-go → 即时引导：会退回 ZMODEM 兜底（仅 rz/sz，需 lrzsz），全协议要 trzsz-go。
+                if on, Self.trzszPath() == nil {
+                    let alert = NSAlert()
+                    alert.messageText = "本地 shell 文件传输：建议装 trzsz-go"
+                    alert.informativeText = """
+                    没装 trzsz-go，本地 shell 会退回 ZMODEM 兜底（仅 rz/sz，需 brew install lrzsz）。
+
+                    想要全协议（trz/tsz + rz/sz）+ 进度条，请装：brew install trzsz-go
+                    （若装过 Python 版 trzsz，需先 brew uninstall trzsz，两者冲突）
+                    """
+                    alert.addButton(withTitle: "好")
+                    alert.runModal()
+                }
+            },
+            onToggleCopyOnSelect: { [weak self] on in
+                self?.layoutStore.setCopyOnSelect(on)
+            },
+            onToggleCopyTrimWhitespace: { [weak self] on in
+                self?.layoutStore.setCopyTrimWhitespace(on)
+            },
+            onCommitSelectionWordChars: { [weak self] v in
+                self?.writeSelectionWordChars(v)
             },
             onViewLogs: { [weak self] in
                 // 关设置 sheet 再开日志查看器（座舱单 editorSheet 槽，不嵌套）。
@@ -1779,6 +1810,19 @@ class XGhosttyConsoleController: NSWindowController {
             } else {
                 cfg.environmentVariables = SessionCommandBuilder.baseEnv
                 title = "本地 shell"
+                // 本地 shell 文件传输（独立开关 localShellTransferEnabled，默认关）：装了 trzsz-go 就用
+                // `trzsz -z -d <登录 shell>` 包裹——trzsz 坐在最外层 pty，你随后在 shell 里手动 ssh 几跳，
+                // 远端的 trz/tsz/rz/sz 都在字节流被它接管（trzsz 替代 lrzsz 的核心卖点）。未装 trzsz-go 则
+                // 不包裹、保留原生本地 shell（含 Ghostty shell-integration），由下方 ZmodemBridge 兜底接管
+                // rz/sz。命令封装（`/bin/sh -c 'exec …'`）与 ssh 路径一致（Ghostty 对 .shell 命令按 shell
+                // 词法解析，已真机验证）。下载落点见下方 trzszWrapped → ~/Downloads 分支。
+                if layoutStore.layout.localShellTransferEnabled == true,
+                   let trzsz = Self.trzszPath() {
+                    let inner = "exec " + Self.shellQuote(trzsz) + " -z -d "
+                        + Self.shellQuote(Self.loginShellPath()) + " -l"
+                    cfg.command = "/bin/sh -c " + Self.shellQuote(inner)
+                    trzszWrapped = true
+                }
             }
             if let workingDirectory, !workingDirectory.isEmpty {
                 cfg.workingDirectory = workingDirectory
@@ -1861,10 +1905,15 @@ class XGhosttyConsoleController: NSWindowController {
                 sv.xghosttyAddOutputSink(key: expect) { [weak expect] data in expect?.feed(data) }
                 tab.expect = expect
             }
-            // ZMODEM(rz/sz)文件传输（opt-in，默认关）：仅 ssh 远端会话武装；侦测到触发头桥接本机 lrzsz。
-            // 与日志/共享/expect 经分发器并存（不互斥）。
-            if let node, !node.isLocalShell, transport == .ssh,
-               layoutStore.layout.zmodemEnabled == true, !trzszWrapped {
+            // 文件传输的 ZMODEM(rz/sz)兜底（opt-in）：未被 trzsz 包裹时，在输出字节流上侦测 ZMODEM 触发头、
+            // 桥接本机 lrzsz。与 transport 无关，故 **ssh 远端会话**（看 zmodemEnabled）**和本地 shell**
+            // （你在里头手动 ssh，看独立的 localShellTransferEnabled）都适用；装了 trzsz-go 的会话已被包裹
+            // （trzszWrapped）→ 跳过。与日志/共享/expect 经分发器并存（不互斥）；sftp 标签不接受 rz/sz，排除。
+            let isLocalShellTab = (node == nil) || (node?.isLocalShell ?? false)
+            let zmodemFallbackOn = isLocalShellTab
+                ? (layoutStore.layout.localShellTransferEnabled == true)
+                : (transport == .ssh && layoutStore.layout.zmodemEnabled == true)
+            if zmodemFallbackOn, !trzszWrapped {
                 let bridge = ZmodemBridge(surface: sv)
                 bridge.onActivity = { [weak self, weak bridge] activity in
                     self?.handleZmodemActivity(activity, bridge: bridge)
@@ -1929,6 +1978,57 @@ class XGhosttyConsoleController: NSWindowController {
             "/usr/bin/trzsz",
         ]
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    /// 用户登录 shell（trzsz 包裹本地 shell 时用）。读 passwd 的 pw_shell，兜底 /bin/zsh。
+    private static func loginShellPath() -> String {
+        if let pw = getpwuid(getuid()), let raw = pw.pointee.pw_shell {
+            let path = String(cString: raw)
+            if !path.isEmpty { return path }
+        }
+        return "/bin/zsh"
+    }
+
+    /// XGhostty 专属 ghostty 覆盖配置文件（~/.config/xghostty/ghostty.config）——在共享的
+    /// ~/.config/ghostty/config 之上叠加、只影响 XGhostty（见 Ghostty.Config.loadConfig 的 #if XGHOSTTY）。
+    private static func xghosttyGhosttyConfigURL() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config/xghostty/ghostty.config")
+    }
+
+    /// 读专属文件里 selection-word-chars 的值（双引号内的 config 字符串形式），供设置面板初值；无则空。
+    private static func readSelectionWordChars() -> String {
+        guard let content = try? String(contentsOf: xghosttyGhosttyConfigURL(), encoding: .utf8) else {
+            return ""
+        }
+        for raw in content.components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard line.hasPrefix("selection-word-chars"), let eq = line.firstIndex(of: "=") else { continue }
+            var v = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
+            if v.count >= 2, v.hasPrefix("\""), v.hasSuffix("\"") { v = String(v.dropFirst().dropLast()) }
+            return v
+        }
+        return ""
+    }
+
+    /// 把 selection-word-chars 写进专属文件（只动这一行、保留其它行）+ 触发 ghostty reload（即时生效）。
+    /// 空值 = 删掉该行（回退 ghostty 默认）。内容是 config 字符串语法，原样写进双引号。
+    private func writeSelectionWordChars(_ value: String) {
+        let url = Self.xghosttyGhosttyConfigURL()
+        var lines: [String] = []
+        if let content = try? String(contentsOf: url, encoding: .utf8) {
+            lines = content.components(separatedBy: "\n")
+                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("selection-word-chars") }
+        }
+        while let last = lines.last, last.trimmingCharacters(in: .whitespaces).isEmpty { lines.removeLast() }
+        if !value.trimmingCharacters(in: .whitespaces).isEmpty {
+            lines.append("selection-word-chars = \"\(value)\"")
+        }
+        let out = lines.isEmpty ? "" : lines.joined(separator: "\n") + "\n"
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        try? out.write(to: url, atomically: true, encoding: .utf8)
+        ghostty.reloadConfig()
     }
 
     /// 命令文本 → 发送字节：多行视为「每行一条命令」逐行执行（\n→\r），末尾补一个 \r。
@@ -2521,6 +2621,19 @@ class XGhosttyConsoleController: NSWindowController {
         if let sv = currentSurface { window?.makeFirstResponder(sv) }
     }
 
+    /// 复制当前终端选区到剪贴板（cmd+C 与「选中自动复制」共用）。trim=true 去掉整段首尾空白。
+    /// 无选区 / 选区为空 → 返回 false（调用方据此决定是否放行默认行为）。
+    @discardableResult
+    private func copyTerminalSelection(trim: Bool) -> Bool {
+        guard let text = currentSurface?.accessibilitySelectedText(), !text.isEmpty else { return false }
+        let out = trim ? text.trimmingCharacters(in: .whitespacesAndNewlines) : text
+        guard !out.isEmpty else { return false }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(out, forType: .string)
+        return true
+    }
+
     private func installKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
@@ -2558,6 +2671,15 @@ class XGhosttyConsoleController: NSWindowController {
                 self.selectAllSessions()
                 return nil
             }
+            if cmd && ch == "c" {        // ⌘C 终端复制（座舱自管，绕过 surface focus 链路导致的 cmd+C 失灵）
+                // 焦点在终端且有选区 → 读选区自己写剪贴板（可选去首尾空白）；否则放行走默认（文本框复制等）。
+                if let r = self.window?.firstResponder as? NSView,
+                   r.isDescendant(of: self.surfaceContainer),
+                   self.copyTerminalSelection(trim: self.layoutStore.layout.copyTrimWhitespace == true) {
+                    return nil
+                }
+                return event
+            }
             if cmd && event.keyCode == 51 && !self.selectedIds.isEmpty {  // ⌘⌫ 删除选中会话
                 self.deleteSelected()
                 return nil
@@ -2574,6 +2696,19 @@ class XGhosttyConsoleController: NSWindowController {
             if event.keyCode == 53, self.searchOverlayHosting != nil {   // Esc 关搜索
                 self.closeSearch()
                 return nil
+            }
+            return event
+        }
+        // 选中自动复制：终端区域内鼠标松开 → 若有选区则复制（异步延到本轮事件处理完、选区结算后读）。
+        // 不拦截事件（return event），让 surface 正常完成选区；开关关时纯放行。
+        mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+            guard let self, self.window?.isKeyWindow == true,
+                  self.layoutStore.layout.copyOnSelect == true else { return event }
+            if let r = self.window?.firstResponder as? NSView,
+               r.isDescendant(of: self.surfaceContainer) {
+                DispatchQueue.main.async {
+                    self.copyTerminalSelection(trim: self.layoutStore.layout.copyTrimWhitespace == true)
+                }
             }
             return event
         }
