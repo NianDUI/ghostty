@@ -32,6 +32,7 @@ struct ConsoleSettingsView: View {
     var onCommitSelectionWordChars: (String) -> Void
     var onViewLogs: () -> Void
     var onResetLayout: () -> Void
+    var onResetToDefaults: () -> Void
     var onClose: () -> Void
 
     init(autoSave: Bool,
@@ -62,6 +63,7 @@ struct ConsoleSettingsView: View {
          onCommitSelectionWordChars: @escaping (String) -> Void,
          onViewLogs: @escaping () -> Void,
          onResetLayout: @escaping () -> Void,
+         onResetToDefaults: @escaping () -> Void,
          onClose: @escaping () -> Void) {
         _autoSave = State(initialValue: autoSave)
         _sortByName = State(initialValue: sortByName)
@@ -91,6 +93,7 @@ struct ConsoleSettingsView: View {
         self.onCommitSelectionWordChars = onCommitSelectionWordChars
         self.onViewLogs = onViewLogs
         self.onResetLayout = onResetLayout
+        self.onResetToDefaults = onResetToDefaults
         self.onClose = onClose
     }
 
@@ -230,6 +233,13 @@ struct ConsoleSettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
+                Button("还原默认设置") { confirmResetToDefaults() }
+                Text("把上面所有开关与「双击选词边界字符」恢复到默认值（文件传输 trzsz / ZMODEM、本地 shell 传输、复制去首尾空白 默认开，选词字符回推荐值，其余默认关）。不影响窗口布局、分隔条、分组展开态与上次会话——那些用上面的「还原默认布局」。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
                 Button("修复钥匙串授权") { repairKeychain() }
                 Text("把密码保险库的钥匙串授权重置到当前构建（清理 ad-hoc 时代遗留的旧授权）。注意：自签证书下每次「重新构建」二进制哈希都会变，仍会重新弹一次授权框——这是固有限制，重建后点一次「始终允许」即可；单纯重开同一版不弹。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -256,6 +266,17 @@ struct ConsoleSettingsView: View {
         }
         .padding(20)
         .frame(width: 420)
+    }
+
+    /// 「还原默认设置」二次确认；确认后回调 console 统一还原（开关 + 选词字符）。
+    private func confirmResetToDefaults() {
+        let alert = NSAlert()
+        alert.messageText = "还原默认设置？"
+        alert.informativeText = "把面板上所有开关与「双击选词边界字符」恢复到默认值。"
+            + "不影响窗口布局、分隔条、分组展开态与上次会话（那些用「还原默认布局」）。"
+        alert.addButton(withTitle: "还原")
+        alert.addButton(withTitle: "取消")
+        if alert.runModal() == .alertFirstButtonReturn { onResetToDefaults() }
     }
 
     /// 打开会话日志目录（不存在则先建一个空目录再打开）。

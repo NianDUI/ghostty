@@ -666,6 +666,25 @@ private final class OpenTab {
 /// 这样 ⌘A 全选才不会被占着 first responder 的终端 surface 吞掉。
 private final class FocusableHostingView<Content: View>: NSHostingView<Content> {
     override var acceptsFirstResponder: Bool { true }
+
+    // 左树是 SwiftUI ScrollView（底层 NSScrollView），默认跟随系统「显示滚动条」设置——
+    // 系统设「始终显示」时会渲染成又宽又占位的 legacy 滚动条，与右侧终端 SurfaceScrollView 的
+    // 细 overlay 滚动条不一致。每次布局后把子树里的 NSScrollView 强制成 overlay 样式（自动隐藏），
+    // 和终端对齐。幂等：SwiftUI 若在更新里重置回系统样式，下次 layout 再纠正回来。
+    override func layout() {
+        super.layout()
+        Self.forceOverlayScrollers(in: self)
+    }
+
+    private static func forceOverlayScrollers(in view: NSView) {
+        for sub in view.subviews {
+            if let sv = sub as? NSScrollView {
+                if sv.scrollerStyle != .overlay { sv.scrollerStyle = .overlay }
+                sv.autohidesScrollers = true
+            }
+            forceOverlayScrollers(in: sub)
+        }
+    }
 }
 
 /// 批量发送指令输入框：
@@ -1488,10 +1507,23 @@ class XGhosttyConsoleController: NSWindowController {
                 DispatchQueue.main.async { self?.presentSessionLogViewer() }
             },
             onResetLayout: { [weak self] in self?.resetLayout() },
+            onResetToDefaults: { [weak self] in self?.resetSettingsToDefaults() },
             onClose: { [weak self] in self?.dismissEditor() })
         let sheet = makeThemedSheet(view)
         editorSheet = sheet
         window?.beginSheet(sheet)
+    }
+
+    /// 「还原默认设置」：所有偏好开关 + 选词边界字符回出厂默认。
+    /// 窗口布局/分隔条/分组展开态/上次会话不动（那归「还原默认布局」）。
+    private func resetSettingsToDefaults() {
+        layoutStore.resetPreferences()
+        // 选词字符默认 = 推荐值（写专属 ghostty.config 并触发 reload）。
+        writeSelectionWordChars(ConsoleSettingsView.recommendedWordChars)
+        refreshTree()   // sortByName / collapseDescendants 变化即时反映到会话树
+        // 关闭再重开设置面板，让开关 UI 反映还原后的值（面板 @State 在 init 一次性赋值）。
+        dismissEditor()
+        DispatchQueue.main.async { [weak self] in self?.presentSettings() }
     }
 
     /// 打开密码库管理 sheet（左下🔑）。

@@ -201,6 +201,41 @@ final class LayoutStore {
         persist()
     }
 
+    /// 偏好开关的出厂默认（即「还原默认设置」恢复到的那套）。窗口布局/分隔条/展开态/上次会话不在此列。
+    enum Defaults {
+        static let autoSave = true
+        static let sortByName = false
+        static let collapseDescendants = true
+        static let collapseAllOnExit = false
+        static let sessionLogging = false
+        static let restoreLastSession = false
+        static let expectAutoLogin = false
+        static let zmodemEnabled = true
+        static let trzszEnabled = true
+        static let localShellTransferEnabled = true
+        static let copyOnSelect = false
+        static let copyTrimWhitespace = true
+    }
+
+    /// 「还原默认设置」：把所有偏好开关写回出厂默认（保留窗口布局/分隔条/展开态/上次会话——那归 resetLayout）。
+    /// 显式写值（而非置 nil）：功能侧多处用 `== true` 判定，写显式 true 才能让 trzsz 等立即生效。
+    /// selection-word-chars 存独立的 ghostty.config，由 XGhosttyConsole 在还原时一并写回，不在此处理。
+    func resetPreferences() {
+        layout.autoSave = Defaults.autoSave
+        layout.sortByName = Defaults.sortByName
+        layout.collapseDescendants = Defaults.collapseDescendants
+        layout.collapseAllOnExit = Defaults.collapseAllOnExit
+        layout.sessionLogging = Defaults.sessionLogging
+        layout.restoreLastSession = Defaults.restoreLastSession
+        layout.expectAutoLogin = Defaults.expectAutoLogin
+        layout.zmodemEnabled = Defaults.zmodemEnabled
+        layout.trzszEnabled = Defaults.trzszEnabled
+        layout.localShellTransferEnabled = Defaults.localShellTransferEnabled
+        layout.copyOnSelect = Defaults.copyOnSelect
+        layout.copyTrimWhitespace = Defaults.copyTrimWhitespace
+        persist()
+    }
+
     private func persist() {
         let dir = fileURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(
