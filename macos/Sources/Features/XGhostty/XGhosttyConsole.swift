@@ -2758,6 +2758,62 @@ class XGhosttyConsoleController: NSWindowController {
 
 }
 
+// MARK: - 主菜单栏 action 接管
+//
+// 顶部菜单栏来自主 Ghostty 的 MainMenu.xib，action 均 target=First Responder 沿响应链派发。座舱用
+// 自管窗口/标签，不在原生 TerminalController/BaseTerminalController 响应链上，故这些项默认落到
+// AppDelegate（点「新建窗口/标签」会开原生终端）或无人响应（灰）。座舱控制器(NSWindowController)在
+// 响应链上、位于 window 之后、AppDelegate 之前，于此重定向/接通到座舱等价操作（与 keyMonitor 的同名
+// 快捷键保持一致）。分屏(splitRight: 等)由 SurfaceView 自己响应，禁用逻辑在 SurfaceView.validateMenuItem。
+extension XGhosttyConsoleController: NSMenuItemValidation {
+    @IBAction func newWindow(_ sender: Any?) {            // 文件>新建窗口：开座舱新窗口（非原生终端）
+        XGhosttyConsoleController.newWindow(ghostty: ghostty)
+    }
+
+    @IBAction func newTab(_ sender: Any?) {               // 文件>新建标签页：=⌘T，复制当前标签并 cd 到当前目录
+        duplicateCurrentTab()
+    }
+
+    // selector 仍是 closeTab:（匹配 MainMenu.xib），但 Swift 名避开类里已有的 closeTab(_ tabId: UUID) 重载歧义。
+    @objc(closeTab:) func menuCloseTab(_ sender: Any?) {  // 文件>关闭标签页：关当前标签，无标签则关窗
+        closeCurrentTabOrWindow()
+    }
+
+    @IBAction func close(_ sender: Any?) {                // 文件>关闭(⌘W)：座舱里等同关当前标签
+        closeCurrentTabOrWindow()
+    }
+
+    @IBAction func closeWindow(_ sender: Any?) {          // 文件>关闭窗口：关整个座舱窗口
+        window?.close()
+    }
+
+    @IBAction func toggleSessionSharing(_ sender: Any?) { // 显示>共享此会话：当前 surface 切换共享
+        currentSurface?.toggleSessionSharing(from: window)
+    }
+
+    /// ⌘W / 关闭标签页共用：有标签则关当前标签（关到空再关窗），无标签直接关窗。
+    private func closeCurrentTabOrWindow() {
+        if let id = currentTabId {
+            closeTab(id)                                  // 解析到 closeTab(_ tabId: UUID)
+            if tabOrder.isEmpty { window?.close() }
+        } else {
+            window?.close()
+        }
+    }
+
+    /// 只校验座舱接管的菜单项（无标签禁关标签、无 surface 禁共享）；其余返回 true，不干预链上其它判定。
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(menuCloseTab(_:)), #selector(close(_:)):
+            return currentTabId != nil
+        case #selector(toggleSessionSharing(_:)):
+            return currentSurface != nil
+        default:
+            return true
+        }
+    }
+}
+
 // MARK: - 分隔条约束（经典 frame 模式下限定最小尺寸 + 缩窗口行为）
 
 extension XGhosttyConsoleController: NSSplitViewDelegate {

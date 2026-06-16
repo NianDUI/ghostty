@@ -1758,6 +1758,8 @@ extension Ghostty {
             }
             menu.addItem(withTitle: LocalizedString.text("Paste"), action: #selector(paste(_:)), keyEquivalent: "")
 
+#if !XGHOSTTY
+            // 座舱不支持分屏（无 SplitTree），整组在 XGhostty 下隐藏。
             menu.addItem(.separator())
             item = menu.addItem(withTitle: LocalizedString.text("Split Right"), action: #selector(splitRight(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "rectangle.righthalf.inset.filled")
@@ -1767,6 +1769,7 @@ extension Ghostty {
             item.setImageIfDesired(systemSymbolName: "rectangle.bottomhalf.inset.filled")
             item = menu.addItem(withTitle: LocalizedString.text("Split Up"), action: #selector(splitUp(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "rectangle.tophalf.inset.filled")
+#endif
 
             menu.addItem(.separator())
             item = menu.addItem(withTitle: LocalizedString.text("Reset Terminal"), action: #selector(resetTerminal(_:)), keyEquivalent: "")
@@ -1777,8 +1780,11 @@ extension Ghostty {
             item.setImageIfDesired(systemSymbolName: "eye.fill")
             item.state = readonly ? .on : .off
             menu.addItem(.separator())
+#if !XGHOSTTY
+            // 「更改标签页标题」是 BaseTerminalController 的，座舱不在其响应链 → 恒灰，隐藏。
             item = menu.addItem(withTitle: LocalizedString.text("Change Tab Title..."), action: #selector(BaseTerminalController.changeTabTitle(_:)), keyEquivalent: "")
             item.setImageIfDesired(systemSymbolName: "pencil.line")
+#endif
             item = menu.addItem(withTitle: LocalizedString.text("Change Terminal Title..."), action: #selector(changeTitle(_:)), keyEquivalent: "")
 
             return menu
@@ -5245,6 +5251,13 @@ extension Ghostty.SurfaceView: NSServicesMenuRequestor {
 extension Ghostty.SurfaceView: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
+#if XGHOSTTY
+        // XGhostty 座舱是单 surface / 标签模型，无 SplitTree 容器接管分屏 → 禁用分屏菜单项，
+        // 避免「菜单亮、点了却无处安放」。座舱用标签（⌘T 新标签 / ⌘⇧[ ⌘⇧] 切换）替代分屏。
+        case #selector(splitRight(_:)), #selector(splitLeft(_:)),
+             #selector(splitDown(_:)), #selector(splitUp(_:)):
+            return false
+#endif
         case #selector(pasteSelection):
             let pb = NSPasteboard.ghosttySelection
             guard let str = pb.getOpinionatedStringContents() else { return false }

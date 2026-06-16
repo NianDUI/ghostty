@@ -630,6 +630,17 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 - **坑**：`⌘⇧]`/`⌘⇧[` 不能靠 `charactersIgnoringModifiers`——shift **不**被它忽略，会把 `]`/`[` 变成 `}`/`{`，故按**物理键位** keyCode 30/33 判定。`⌃Tab` 加 `tabOrder.count > 1` 守卫：单标签时放行给终端，避免抢占 vim/tmux 的 `⌃Tab`。
 - 纯 Swift 零 C-ABI（复用 xcframework），`scripts/xghostty-deploy.sh xghostty -y` 部署。
 
+### 第三十九批（2026-06-16，座舱系统菜单栏整治——重定向/接通/禁用，纯 Swift 已部署）
+
+诉求：座舱里「文件/编辑/显示/窗口」系统菜单大量灰色，问哪些能用、哪些该开、终端右键哪些可用。
+- **根因**：菜单来自主 Ghostty 的 `MainMenu.xib`，action 全是 `target=First Responder` 沿响应链派发。座舱用自管窗口/标签，**不在** 原生 `TerminalController`/`BaseTerminalController` 响应链上 → 依赖原生终端窗口/分屏的项无人响应 = 灰；`newWindow:`/`newTab:` 沿链落到 `AppDelegate` → **点菜单会开原生 Ghostty 终端**（而快捷键 ⌘N/⌘T 被座舱 keyMonitor 拦截走座舱，键与菜单行为不一致）；分屏 `splitRight:` 等由 `SurfaceView` 自己响应 → 座舱里**亮着但无 SplitTree 容器接管 → 点了无效**。
+- [x] **重定向 / 接通**（座舱 `XGhosttyConsoleController: NSWindowController` 在响应链上、位于 window 之后、AppDelegate 之前，于此拦截）：`newWindow:`→座舱新窗口、`newTab:`→`duplicateCurrentTab`、`closeTab:`/`close:`→关当前标签（关到空再关窗）、`closeWindow:`→关座舱窗口、`toggleSessionSharing:`→当前 surface 共享。全部与 keyMonitor 同名快捷键行为一致。
+- [x] **禁用分屏**（座舱不支持）：`SurfaceView.validateMenuItem` 加 `#if XGHOSTTY` 对 `splitRight/Left/Down/Up` 返回 false（菜单灰）；右键 `menu(for:)` 加 `#if !XGHOSTTY` 去掉分屏 4 项 +「更改标签页标题」（`BaseTerminalController.changeTabTitle`，座舱不在链恒灰）。**首次改共享 `SurfaceView_AppKit.swift`，纯 `#if` 隔离、主 Ghostty 零影响**。
+- [x] **`validateMenuItem`**（座舱端 `NSMenuItemValidation`）：无标签禁 `closeTab/close`、无 surface 禁共享；其余 true 不干预链上其它判定。
+- **坑**：`closeTab` 重载歧义——类里已有 `closeTab(_ tabId: UUID)`，新加 `closeTab(_ sender: Any?)` 在 `closeTab(id)` 调用点报 `ambiguous use of 'closeTab'`（且 ObjC selector 只看「方法名+参数 label」不看类型，两个 @objc `closeTab:` 还会 selector 冲突）。解法：Swift 名改 `menuCloseTab(_:)`，用 `@objc(closeTab:)` 保 selector 仍是 `closeTab:` 匹配 xib。
+- **现状对照**：✅ 本就可用（粘贴/全选/查找/复制[有选区]/更改终端标题/终端只读/快速终端/检查器/最小化缩放/显示隐藏所有/全部到前/关闭所有窗口）；🟩 接通后新亮（新建窗口[座舱]/新建标签/关闭/关闭标签页/关闭窗口/共享此会话）；🟥 保持灰=座舱无此能力（撤销重做/字体缩放/命令面板/更改标签页标题/从组移除窗口/放大分屏/选择上下分屏 ⌘[ ⌘]/切换全屏）；分屏由「亮但无效」改为灰（杜绝误导）。
+- 纯 Swift 零 C-ABI（复用 xcframework），`scripts/xghostty-deploy.sh xghostty -y` 部署。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**
