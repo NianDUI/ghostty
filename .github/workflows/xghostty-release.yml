@@ -1,0 +1,156 @@
+# XGhostty 私有发布流水线 —— 跑在 self-hosted(本机 Mac)runner 上。
+#
+# 与上游 ghostty-org 的 release-tag.yml / release-tip.yml / publish-tag.yml
+# 完全独立:不碰 Namespace runner、nix、cachix、Sparkle、R2、公证 secrets。
+# 只做:zig ReleaseFast → xcodebuild XGhostty(构建即用 Ghostty Dev Cert 签好)
+#       → 验证 → zip → 发布到本 fork 的 Releases。
+#
+# 触发:推送形如 `xghostty-v0.1.0` 的 tag(刻意区别于上游 `v0.1.0`,互不触发)。
+#   git tag xghostty-v0.1.0 && git push origin xghostty-v0.1.0
+# 或在 Actions 页手动 workflow_dispatch 指定一个 tag。
+#
+# 前置(一次性):本机注册并常驻一个 self-hosted runner，且必须跑在“登录会话”里
+# (前台 ./run.sh 或 LaunchAgent)——否则 codesign 取不到 login keychain 里的
+# “Ghostty Dev Cert”，签名会失败/挂起。详见 docs/plan/xghostty.md。
+
+name: XGhostty Release
+
+on:
+  push:
+    tags:
+      - "xghostty-v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（如 xghostty-v0.1.0）"
+        required: true
+
+# 创建 Release 必需；不给的话 GITHUB_TOKEN 默认只读，softprops 发布会 403。
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: [self-hosted, macOS, ARM64]
+    # 构建仅 ~4min，但经代理上传 GitHub 极慢(30M dmg 实测可达 30+ 分钟)，留足余量。
+    timeout-minutes: 90
+    env:
+      # zig 默认缓存在 ~/.cache/zig，self-hosted 上跨 run 持久复用，无需显式指定。
+      # (坑:runner context 在 job 级 env 不可用，写 ${{ runner.* }} 会 startup_failure)
+      APP: macos/build/ReleaseLocal/XGhostty.app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # GhosttyKit（Zig 核心）—— 与 xghostty-deploy.sh 同口径的 ReleaseFast。
+      # -Dversion-string 必传:CI checkout 的是 tag,HEAD 落在 tag 上时 ghostty build
+      # 会把它当正式 release,要求 vX.Y.Z 格式否则 panic(xghostty-v* 不符)。显式传
+      # build.zig.zon 的核心版本即跳过该 git 检测(见 src/build/Config.zig:240)。
+      - name: Build GhosttyKit (zig ReleaseFast)
+        run: |
+          ZIG_VER=$(grep -m1 '\.version' build.zig.zon | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "ghostty 核心版本(-Dversion-string)= $ZIG_VER"
+          zig build -Doptimize=ReleaseFast -Demit-macos-app=false -Dversion-string="$ZIG_VER"
+
+      # 从 tag(xghostty-v0.1.0)解析出纯版本号 0.1.0,供构建注入与校验使用。
+      - name: Resolve version
+        id: ver
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#xghostty-v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG → version=$VERSION, build=${{ github.run_number }}"
+
+      # XGhostty.app —— -target 模式产物固定落在 macos/build/ReleaseLocal/。
+      # 版本注入:GENERATE_INFOPLIST_FILE=YES,xcodebuild 把
+      #   MARKETING_VERSION       → CFBundleShortVersionString
+      #   CURRENT_PROJECT_VERSION → CFBundleVersion
+      # 写进生成的 Info.plist 并用 Ghostty Dev Cert 一次签好。
+      # 绝不事后改 plist(那会破坏签名导致 SIGKILL),所以版本必须在构建时传入。
+      - name: Build XGhostty.app
+        run: |
+          cd macos
+          xcodebuild -project Ghostty.xcodeproj \
+            -target XGhostty \
+            -configuration ReleaseLocal \
+            MARKETING_VERSION="${{ steps.ver.outputs.version }}" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            build
+
+      # 三重验证（照搬 deploy 脚本踩坑经验）：
+      #   1) 签名 Authority 必须是 Ghostty Dev Cert（不是 adhoc，不是别的）
+      #   2) +version 退出码 0 —— 签名无效会被 SIGKILL，退出码非 0
+      #   3) build mode 应为 ReleaseFast（否则告警，别把 Debug 混进来）
+      - name: Verify (signature + launchable + ReleaseFast)
+        run: |
+          set -euo pipefail
+          codesign -dvv "$APP" 2>&1 | grep -q "Ghostty Dev Cert" \
+            || { echo "::error::签名非 Ghostty Dev Cert，拒绝发布"; exit 1; }
+          if ! "$APP/Contents/MacOS/ghostty" +version > /tmp/xg_ver.txt 2>&1; then
+            echo "::error::+version 退出码非 0（签名无效会 SIGKILL）"; cat /tmp/xg_ver.txt; exit 1
+          fi
+          grep -i 'build mode' /tmp/xg_ver.txt || true
+          grep -qi 'ReleaseFast' /tmp/xg_ver.txt \
+            || echo "::warning::build mode 非 ReleaseFast，留意是否 Debug 混入"
+          # 版本注入核对:app 内显示版本必须 == tag 解析出的版本
+          PLIST_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist")
+          echo "app 内 CFBundleShortVersionString = $PLIST_VER(期望 ${{ steps.ver.outputs.version }})"
+          [ "$PLIST_VER" = "${{ steps.ver.outputs.version }}" ] \
+            || { echo "::error::app 版本 $PLIST_VER 与 tag 版本 ${{ steps.ver.outputs.version }} 不一致"; exit 1; }
+
+      # 用 hdiutil 做带「拖进 Applications」软链接的压缩 dmg(零依赖)。
+      # 注意:Dev Cert 签名、未公证 —— dmg 不改变 Gatekeeper 行为,下载仍需解隔离。
+      - name: Build DMG
+        run: |
+          VER="${{ steps.ver.outputs.version }}"
+          STAGE="$(mktemp -d)"
+          cp -R macos/build/ReleaseLocal/XGhostty.app "$STAGE/XGhostty.app"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "XGhostty $VER" \
+            -srcfolder "$STAGE" -ov -format UDZO \
+            "$GITHUB_WORKSPACE/XGhostty-${VER}-macos-arm64.dmg"
+          rm -rf "$STAGE"
+
+      # softprops(octokit)上传走 HTTPS_PROXY；self-hosted runner 环境可能只有
+      # HTTP_PROXY 没 HTTPS_PROXY，对 https 请求就不走代理、直连 GitHub 传大文件
+      # 而卡死(实测:补齐后 softprops 走代理,2M/71s 成)。补齐写进 $GITHUB_ENV。
+      - name: Ensure HTTPS_PROXY for upload
+        run: |
+          PX="${HTTPS_PROXY:-${HTTP_PROXY:-http://127.0.0.1:7890}}"
+          echo "HTTPS_PROXY=$PX" >> "$GITHUB_ENV"
+          echo "HTTP_PROXY=${HTTP_PROXY:-$PX}" >> "$GITHUB_ENV"
+          echo "NO_PROXY=localhost,127.0.0.1,::1" >> "$GITHUB_ENV"
+          echo "上传走代理: $PX"
+
+      # 组装 release body:tag 附注信息(本次更新)置顶 + 固定解隔离说明。
+      #   发版写更新信息:git tag -a xghostty-vX.Y.Z -m "更新内容"(可多个 -m 分段)
+      #   lightweight tag(git tag 无 -a)则只有固定说明,不会误取 commit message。
+      # workflow_dispatch 先 fetch 一下确保拿到 tag 对象。
+      - name: Compose release body
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          git fetch origin "refs/tags/$TAG:refs/tags/$TAG" --force 2>/dev/null || true
+          MSG=""
+          # 仅 annotated tag(cat-file 类型为 tag)才取其 message;去掉可能的 PGP 签名段
+          if [ "$(git cat-file -t "$TAG" 2>/dev/null)" = "tag" ]; then
+            MSG=$(git for-each-ref "refs/tags/$TAG" --format='%(contents)' | sed '/-----BEGIN PGP/,$d')
+          fi
+          {
+            if [ -n "$(printf '%s' "$MSG" | tr -d '[:space:]')" ]; then
+              printf '## 本次更新\n\n%s\n\n' "$MSG"
+            fi
+            cat .github/xghostty-release-body.md
+          } > "$RUNNER_TEMP/release-body.md"
+          echo "----- 生成的 release body -----"
+          cat "$RUNNER_TEMP/release-body.md"
+
+      # softprops 上传(实测:补齐 HTTPS_PROXY 后走代理能传,30M 约 18~35min)。
+      # body_path(本次更新 + 解隔离说明)+ generate_release_notes(自动 changelog 链接)。
+      - name: Publish Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          body_path: ${{ runner.temp }}/release-body.md
+          files: XGhostty-${{ steps.ver.outputs.version }}-macos-arm64.dmg
