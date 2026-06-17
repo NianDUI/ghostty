@@ -84,7 +84,10 @@ jobs:
       - name: Verify (signature + launchable + ReleaseFast)
         run: |
           set -euo pipefail
-          codesign -dvv "$APP" 2>&1 | grep -q "Ghostty Dev Cert" \
+          # 先捕获再 grep:`codesign | grep -q` 会让 grep 提前退出、codesign 收 SIGPIPE,
+          # pipefail 下整条管道非 0,偶发误判"签名非 Dev Cert"。
+          CS="$(codesign -dvv "$APP" 2>&1)"
+          printf '%s' "$CS" | grep -q "Ghostty Dev Cert" \
             || { echo "::error::签名非 Ghostty Dev Cert，拒绝发布"; exit 1; }
           if ! "$APP/Contents/MacOS/ghostty" +version > /tmp/xg_ver.txt 2>&1; then
             echo "::error::+version 退出码非 0（签名无效会 SIGKILL）"; cat /tmp/xg_ver.txt; exit 1
@@ -122,35 +125,26 @@ jobs:
           echo "NO_PROXY=localhost,127.0.0.1,::1" >> "$GITHUB_ENV"
           echo "上传走代理: $PX"
 
-      # 组装 release body:tag 附注信息(本次更新)置顶 + 固定解隔离说明。
-      #   发版写更新信息:git tag -a xghostty-vX.Y.Z -m "更新内容"(可多个 -m 分段)
-      #   lightweight tag(git tag 无 -a)则只有固定说明,不会误取 commit message。
-      # workflow_dispatch 先 fetch 一下确保拿到 tag 对象。
+      # 组装 release body —— 调共享脚本(与本地 scripts/xghostty-release.sh 同口径):
+      #   > 基于 ghostty <内核> + ## 本次更新(tag -m) + 解隔离说明 + SHA-256 + Full Changelog
+      # 发版写更新信息:git tag -a xghostty-vX.Y.Z -m "更新内容"(可多个 -m);lightweight
+      # tag 则跳过「本次更新」段。workflow_dispatch 先 fetch 确保拿到 tag 对象。
       - name: Compose release body
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          DMG="XGhostty-${{ steps.ver.outputs.version }}-macos-arm64.dmg"
           git fetch origin "refs/tags/$TAG:refs/tags/$TAG" --force 2>/dev/null || true
-          MSG=""
-          # 仅 annotated tag(cat-file 类型为 tag)才取其 message;去掉可能的 PGP 签名段
-          if [ "$(git cat-file -t "$TAG" 2>/dev/null)" = "tag" ]; then
-            MSG=$(git for-each-ref "refs/tags/$TAG" --format='%(contents)' | sed '/-----BEGIN PGP/,$d')
-          fi
-          {
-            if [ -n "$(printf '%s' "$MSG" | tr -d '[:space:]')" ]; then
-              printf '## 本次更新\n\n%s\n\n' "$MSG"
-            fi
-            cat .github/xghostty-release-body.md
-          } > "$RUNNER_TEMP/release-body.md"
+          bash scripts/xghostty-compose-release-body.sh "$TAG" "$DMG" "$GITHUB_REPOSITORY" \
+            > "$RUNNER_TEMP/release-body.md"
           echo "----- 生成的 release body -----"
           cat "$RUNNER_TEMP/release-body.md"
 
       # softprops 上传(实测:补齐 HTTPS_PROXY 后走代理能传,30M 约 18~35min)。
-      # body_path(本次更新 + 解隔离说明)+ generate_release_notes(自动 changelog 链接)。
+      # body_path = 共享脚本组好的完整 body(已含 Full Changelog,故不用 generate_release_notes)。
       - name: Publish Release
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: ${{ github.event.inputs.tag || github.ref_name }}
-          generate_release_notes: true
           body_path: ${{ runner.temp }}/release-body.md
           files: XGhostty-${{ steps.ver.outputs.version }}-macos-arm64.dmg

@@ -1,13 +1,15 @@
 # XGhostty GitHub Release 自动化
 
 > 把 XGhostty 私有构建发布到本 fork(`NianDUI/ghostty`)的 Releases。
-> 与上游 ghostty-org 的发布流水线**完全独立**,跑在**本机 self-hosted runner**上。
-> 首发:`xghostty-v0.1.0`(2026-06-17)。
+> 与上游 ghostty-org 的发布流水线**完全独立**。两条发版路径(产物/body 完全一致):
+> **本地脚本**(免 runner,推荐日常)或 **CI**(push tag 自动,需 self-hosted runner 常驻)。
 >
 > 实现文件:
-> - `.github/workflows/xghostty-release.yml` —— 流水线
-> - `.github/xghostty-release-body.md` —— release 说明正文(解隔离指引)
-> - 本机 `~/actions-runner/` —— self-hosted runner
+> - `scripts/xghostty-release.sh` —— 本地一键发版(CI 等价物,免 runner 常驻)
+> - `scripts/xghostty-compose-release-body.sh` —— CI 与本地**共用**的 body 组装(DRY)
+> - `.github/workflows/xghostty-release.yml` —— CI 流水线(push tag 自动,需 runner)
+> - `.github/xghostty-release-body.md` —— release body 固定段(解隔离指引)
+> - 本机 `~/actions-runner/` —— self-hosted runner(仅 CI 路径需要)
 
 ---
 
@@ -23,21 +25,22 @@
 
 | 决策 | 取值 | 理由 |
 |---|---|---|
-| Runner | **self-hosted 本机** | Xcode 26 / zig / **Ghostty Dev Cert** 全现成,零 secrets;GitHub 托管 macOS runner 缺 Dev Cert、私有 repo 计费 10x、Xcode/Metal 不确定 |
+| 发版方式 | **本地脚本 + CI 双路径** | 本地脚本免 runner 常驻(日常推荐);CI 适合愿常驻 runner 时 push 即自动。两条 body/产物一致 |
+| Runner | **self-hosted 本机**(仅 CI 路径) | Xcode 26 / zig / **Ghostty Dev Cert** 全现成,零 secrets;**本地脚本路径不需要 runner**;GitHub 托管 macOS runner 缺 Dev Cert、私有 repo 计费 10x、Xcode/Metal 不确定 |
 | tag 前缀 | **`xghostty-v[0-9]+.[0-9]+.[0-9]+`** | 上游触发是纯 `v[0-9]+.[0-9]+.[0-9]+`,加前缀**互不触发** |
 | 构建目标 | **`xcodebuild -target XGhostty`**(非 `-scheme`) | XGhostty scheme 在 xcuserdata、**未提交 git**,CI checkout 后没有;`-target` 绕开,且产物固定落 `macos/build/ReleaseLocal/`(无需 glob DerivedData) |
 | 签名 | 构建即签(`CODE_SIGN_IDENTITY = Ghostty Dev Cert`, Manual) | xcodebuild 一次签好,**绝不事后改 bundle**(改 plist/重签会破坏签名 → SIGKILL) |
 | 版本注入 | 构建时传 build setting | `GENERATE_INFOPLIST_FILE=YES`,`MARKETING_VERSION`→`CFBundleShortVersionString`、`CURRENT_PROJECT_VERSION`→`CFBundleVersion`,签名前写入,版本与 tag 一致且不破签名 |
 | 核心版本 | `-Dversion-string=<build.zig.zon>` | 见踩坑③ |
 | 打包 | `hdiutil` UDZO + `/Applications` 软链接 | 零依赖,带「拖进 Applications」 |
-| 上传 | **softprops**(+ HTTPS_PROXY 补齐) | 见踩坑④⑤ |
+| 上传 | CI **softprops** / 本地 **`gh release create`**(均需 HTTPS_PROXY 补齐) | 见踩坑④⑤ |
 
 **三条版本线**(互相独立,别混):
 1. ghostty 核心 `build.zig.zon` = `1.3.2-dev`(跟随上游)
 2. XGhostty 产品版本 = release tag 解析出的 `0.1.0`(注入 app)
-3. CFBundleVersion = `github.run_number`(单调递增 build 号)
+3. CFBundleVersion = build 号(CI 用 `github.run_number` / 本地用 `git rev-list --count HEAD`,均单调递增)
 
-## 2. 一次性搭建:注册 self-hosted runner
+## 2. 一次性搭建:注册 self-hosted runner(仅 CI 路径需要,本地脚本跳过本节)
 
 1. GitHub → `NianDUI/ghostty` → **Settings → Actions → Runners**(左栏 Actions 是
    折叠分组,要先点开)→ New self-hosted runner → macOS。或用 `gh` 直接拿 token:
@@ -53,20 +56,37 @@
 
 ## 3. 发版流程
 
+打 tag 用 annotated tag 写更新说明(两条路径通用;`-m` 内容进 body 的「## 本次更新」):
 ```bash
-# 带更新说明(推荐):tag 附注信息会作为「## 本次更新」置顶到 release body
 git tag -a xghostty-v0.2.0 -m "新增 xxx" -m "修复 yyy"
-git push origin xghostty-v0.2.0
-# 或不带说明(lightweight tag):body 只有固定解隔离说明
-# git tag xghostty-v0.2.0 && git push origin xghostty-v0.2.0
 ```
 
-runner 自动:`zig ReleaseFast`(传 `-Dversion-string`)→ `xcodebuild XGhostty`(注入版本+
-Dev Cert 签名)→ 四重验证 → `hdiutil` dmg → 组装 body(tag 附注信息 + 固定说明)→
-softprops 上传。**release body = `## 本次更新`(tag `-m` 内容)+ 解隔离说明 + 自动 changelog 链接**。
+**路径 A · 本地脚本(免 runner,推荐日常)**:
+```bash
+git push origin xghostty-v0.2.0                 # 推 tag(让 body 的 Full Changelog 链接可用)
+scripts/xghostty-release.sh xghostty-v0.2.0     # 构建→dmg→组 body→gh release create
+```
 
-- 构建本身 ~4 分钟;**上传 30M dmg 经代理 ~35 分钟**(见踩坑⑤),`timeout-minutes: 90`。
-- 无人值守,跑完产物挂到 Releases。
+**路径 B · CI(push tag 自动,需 runner 在线)**:
+```bash
+git push origin xghostty-v0.2.0                 # runner 在线则自动构建发布
+```
+
+两条同口径:`zig ReleaseFast`(传 `-Dversion-string`)→ `xcodebuild -target XGhostty`
+(注入版本 + Dev Cert 签名)→ 验证 → `hdiutil` dmg → **共享脚本组 body** → 上传。
+**release body 五段**(共享 `scripts/xghostty-compose-release-body.sh`,见 §3.1)。
+
+- 构建 ~4 分钟;**上传 30M 经代理 3~35 分钟**(看实时带宽,见踩坑⑤),CI `timeout-minutes: 90`。
+
+### 3.1 release body 五段结构(CI 与本地共用)
+
+```
+> 基于 ghostty <内核版本>      —— 读 build.zig.zon,零维护跟随上游
+## 本次更新                     —— annotated tag 的 -m(无则跳过,不误取 commit message)
+<固定解隔离说明>                —— .github/xghostty-release-body.md
+## 校验  SHA-256               —— 算 dmg 真实哈希,下载者可校验
+**Full Changelog**            —— commits 链接(手动生成,不依赖 GitHub 自动 notes)
+```
 
 ## 4. 踩坑实录(都是 CI/异机特有,本地 deploy 永远遇不到)
 
@@ -103,8 +123,9 @@ self-hosted runner 环境可能只有 `HTTP_PROXY` 没 `HTTPS_PROXY` → octokit
 不走代理、直连 GitHub 传大文件**卡死**(创建 release 的小请求侥幸通了,传 30M dmg 卡)。
 **修复**:Publish 前一步从 `HTTP_PROXY` 补齐 `HTTPS_PROXY` 写进 `$GITHUB_ENV`。
 **已验证**:独立测试 workflow 推 2M 小文件,补齐后 softprops 走代理 **71s 传成**(success);
-确认根因是缺 proxy、而非 octokit 内部 timeout,故**保留 softprops**(`body_path` +
-自动 `generate_release_notes` 二者兼得),不改 gh。手动应急仍可用 `gh release upload`(见 §5)。
+确认根因是缺 proxy、而非 octokit 内部 timeout,故 CI **保留 softprops**;body 改由共享脚本
+`xghostty-compose-release-body.sh` 组装(含手动 Full Changelog,不再用 `generate_release_notes`)。
+手动应急仍可用 `gh release upload`(见 §5)。
 
 ### ⑤ 经代理上传 GitHub 极慢(30M / 35 分钟)
 本机经代理上传 GitHub 出口带宽 ≈14KB/s,30M dmg 实测 **35 分钟**。这是带宽瓶颈,
@@ -116,7 +137,9 @@ push `xghostty-v*` tag 会连带触发上游 `Test`/`Nix`(它们 on: push 含 ta
 GitHub 上排队等我们没有的 runner,空挂到超时。目前手动 `gh run cancel` 清理。
 **待根治**:给上游 workflow 加 tag 过滤,或在 repo 设置禁用它们。
 
-## 5. 运维 / 排查手册
+## 5. 运维 / 排查手册(CI 路径)
+
+> 本地脚本路径直接看终端输出排查,无需以下 `gh run` 命令。
 
 ```bash
 # 看最近 run(注意 -R 指向 fork,否则 gh 多 remote 会解析到 ghostty-org 上游)
