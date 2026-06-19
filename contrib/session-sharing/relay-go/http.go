@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 )
 
@@ -50,6 +51,16 @@ func writeResponse(w http.ResponseWriter, r *http.Request, status int, body []by
 	h.Set("Connection", "close")
 	for k, v := range extra {
 		h.Set(k, v)
+	}
+	// Advertise the body length so browsers show the download size and
+	// clients can render real progress. body is always a complete []byte
+	// here, so len(body) is exact; without this the explicit WriteHeader
+	// below makes net/http fall back to chunked transfer (no Content-Length),
+	// which is why APK downloads showed "unknown size". Content-Length is a
+	// CORS-safelisted response header, so native cross-origin fetch can read
+	// it too.
+	if h.Get("Content-Length") == "" {
+		h.Set("Content-Length", strconv.Itoa(len(body)))
 	}
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	for k, v := range buildCORSHeaders(origin) {
