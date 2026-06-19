@@ -12,6 +12,11 @@ import {
   isWebUpdateSupported,
   resetToBundled,
 } from "./web-update.js";
+import {
+  APK_NEED_INSTALL_PERMISSION,
+  downloadAndInstallApk,
+  isApkInstallSupported,
+} from "./apk-installer.js";
 
 const DEFAULT_TITLE = "Ghostty Session Sharing";
 const SESSION_QUERY_KEY = "session";
@@ -444,17 +449,76 @@ function resetDownloadApkUI(message) {
   if (message) downloadApkHint.textContent = message;
 }
 
+// Cached labels so the banner / force-modal buttons can be restored after
+// an in-app download finishes (the settings button is restored by
+// resetDownloadApkUI). Captured once at module load from the static HTML.
+const apkUpgradeBannerBtnLabel = apkUpgradeBannerBtn?.textContent ?? "下载";
+const apkForceModalBtnLabel = apkForceModalBtn?.textContent ?? "下载最新 APK";
+
+// Paint download progress on whichever entry point is visible. All three
+// are updated (only one shows at a time) so downloadApk() doesn't need to
+// know which one the user tapped. total <= 0 → no Content-Length, show MB.
+function setApkDownloadProgress(received, total) {
+  const label =
+    total > 0
+      ? `下载中 ${Math.round((received / total) * 100)}%`
+      : `下载中 ${(received / 1024 / 1024).toFixed(1)} MB`;
+  downloadApkButton.textContent = label;
+  if (apkUpgradeBannerBtn) apkUpgradeBannerBtn.textContent = label;
+  if (apkForceModalBtn) apkForceModalBtn.textContent = label;
+  downloadApkHint.textContent = "正在下载并安装新版本，请稍候…";
+}
+
+function restoreApkDownloadButtons() {
+  if (apkUpgradeBannerBtn) apkUpgradeBannerBtn.textContent = apkUpgradeBannerBtnLabel;
+  if (apkForceModalBtn) apkForceModalBtn.textContent = apkForceModalBtnLabel;
+}
+
 async function downloadApk() {
-  // Two-step flow: trade the Bearer user token for a short-lived URL
-  // grant, then navigate the window at /api/app/android?dl=<grant>. The
-  // blob + <a download> approach fails on Huawei/UC/in-app webviews
-  // because they refuse to trigger downloads off object URLs; a direct
-  // navigation lets the browser honour Content-Disposition natively.
   const token = tokenInput.value.trim();
   if (!token) {
     resetDownloadApkUI("请先填写 User Token。");
     return;
   }
+
+  // Native APK build with the ApkInstaller plugin: download inside the app
+  // (Bearer-auth direct download — no grant flow needed since the plugin
+  // can set the Authorization header), show progress, and auto-launch the
+  // system installer. Browsers / older APKs without the plugin fall through
+  // to the grant-flow browser download below.
+  if (isApkInstallSupported()) {
+    downloadApkButton.disabled = true;
+    setApkDownloadProgress(0, 0);
+    try {
+      const url = apiURL("/api/app/android").toString();
+      await downloadAndInstallApk({
+        url,
+        token,
+        onProgress: ({ received, total }) =>
+          setApkDownloadProgress(received, total),
+      });
+      restoreApkDownloadButtons();
+      resetDownloadApkUI("已开始安装，请在系统弹窗中确认。");
+    } catch (err) {
+      restoreApkDownloadButtons();
+      const msg = String(err?.message ?? err);
+      if (msg.includes(APK_NEED_INSTALL_PERMISSION)) {
+        resetDownloadApkUI(
+          "请在系统设置里允许「安装未知应用」，授权后重新点击下载。",
+        );
+      } else {
+        resetDownloadApkUI(`下载失败：${msg}`);
+      }
+    }
+    return;
+  }
+
+  // Two-step grant flow (browser / no-plugin APK): trade the Bearer user
+  // token for a short-lived URL grant, then navigate the window at
+  // /api/app/android?dl=<grant>. The blob + <a download> approach fails on
+  // Huawei/UC/in-app webviews because they refuse to trigger downloads off
+  // object URLs; a direct navigation lets the browser honour
+  // Content-Disposition natively.
   downloadApkButton.disabled = true;
   downloadApkButton.textContent = "准备中…";
   downloadApkHint.textContent = "正在请求下载授权。";
@@ -3730,6 +3794,100 @@ function sendToolbarKeyEvent(name) {
   return true;
 }
 
+// ---- Toolbar auto-repeat (press-and-hold) -------------------------------
+// Holding an arrow / Backspace / etc. repeats it like a physical keyboard.
+// Pointer Events (not touch) so one path covers desktop mouse-hold and
+// touch; setPointerCapture keeps move/up anchored to the button even if the
+// finger drifts off it (otherwise the interval would never stop). The
+// container's capture-phase pointerdown (added further below) already
+// preventDefault()s the focus transfer, so we must NOT preventDefault here.
+const TOOLBAR_REPEAT_DELAY_MS = 400;
+const TOOLBAR_REPEAT_INTERVAL_MS = 90;
+const TOOLBAR_REPEAT_MOVE_TOLERANCE_PX = 12;
+// Timestamp (not a boolean) to swallow the synthesized click trailing a
+// pointer press — same rationale as lastSessionLongPressAt: some WebViews
+// don't emit the trailing click, and a sticky boolean would then swallow
+// the NEXT genuine tap.
+let lastToolbarRepeatAt = 0;
+function toolbarRepeatJustFired() {
+  return Date.now() - lastToolbarRepeatAt < 800;
+}
+
+// Fire one toolbar "seq" button action — identical to the click handler's
+// seq branch. Special keys go through a synthesized keydown; raw character
+// sequences fall back to sendInput with the pending modifiers applied.
+// sendToolbarKeyEvent already re-enables follow-mode (userFollowBottom),
+// so every repeat tick keeps the viewport anchored, same as a single tap.
+function fireToolbarSeqButton(button) {
+  const seq = button.dataset.seq;
+  if (sendToolbarKeyEvent(seq)) {
+    scrollTerminalToBottom();
+    return;
+  }
+  sendInput(applyPendingModifiers(toolbarSequence(seq)));
+}
+
+function attachToolbarRepeat(button) {
+  let delayTimer = null;
+  let intervalTimer = null;
+  let startX = 0;
+  let startY = 0;
+  const stopRepeat = (event) => {
+    if (delayTimer !== null) {
+      window.clearTimeout(delayTimer);
+      delayTimer = null;
+    }
+    if (intervalTimer !== null) {
+      window.clearInterval(intervalTimer);
+      intervalTimer = null;
+    }
+    if (event) {
+      try {
+        button.releasePointerCapture(event.pointerId);
+      } catch {
+        // Capture may not be held (older WebView) — ignore.
+      }
+    }
+  };
+  button.addEventListener("pointerdown", (event) => {
+    // Primary mouse button / touch / pen only.
+    if (event.button !== undefined && event.button !== 0) return;
+    stopRepeat();
+    startX = event.clientX;
+    startY = event.clientY;
+    try {
+      button.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture unsupported — fall back to move/up without anchoring.
+    }
+    // Fire immediately so the press feels instant, and stamp the timestamp
+    // NOW (not only inside the interval) so the trailing synthesized click
+    // is swallowed even for a quick tap that never enters the repeat phase.
+    fireToolbarSeqButton(button);
+    lastToolbarRepeatAt = Date.now();
+    // Repeating ESC is useless and can disturb TUIs (vim) — fire once only.
+    if (button.dataset.seq === "esc") return;
+    delayTimer = window.setTimeout(() => {
+      delayTimer = null;
+      intervalTimer = window.setInterval(() => {
+        lastToolbarRepeatAt = Date.now();
+        fireToolbarSeqButton(button);
+      }, TOOLBAR_REPEAT_INTERVAL_MS);
+    }, TOOLBAR_REPEAT_DELAY_MS);
+  });
+  button.addEventListener("pointermove", (event) => {
+    if (delayTimer === null && intervalTimer === null) return;
+    if (
+      Math.abs(event.clientX - startX) > TOOLBAR_REPEAT_MOVE_TOLERANCE_PX ||
+      Math.abs(event.clientY - startY) > TOOLBAR_REPEAT_MOVE_TOLERANCE_PX
+    ) {
+      stopRepeat(event);
+    }
+  });
+  button.addEventListener("pointerup", stopRepeat);
+  button.addEventListener("pointercancel", stopRepeat);
+}
+
 // Coalesces fit + bottom-scroll into one rAF tick. iOS keyboard show/hide
 // fires `visualViewport.scroll` dozens of times per animation; before this
 // each tick reflowed the terminal and triggered a full re-render that
@@ -4584,14 +4742,18 @@ mobileToolbar.addEventListener("click", (event) => {
     return;
   }
 
-  if (sendToolbarKeyEvent(button.dataset.seq)) {
-    scrollTerminalToBottom();
-    return;
-  }
-
-  const sequence = toolbarSequence(button.dataset.seq);
-  sendInput(applyPendingModifiers(sequence));
+  // A pointer press already fired (and possibly auto-repeated) this seq
+  // button; swallow the trailing synthesized click so desktop mouse taps
+  // (and WebViews that do emit it) don't double-fire.
+  if (toolbarRepeatJustFired()) return;
+  fireToolbarSeqButton(button);
 });
+
+// Wire press-and-hold auto-repeat onto every sequence button. Modifier
+// buttons (Ctrl/Alt) are toggles → stay click-only.
+for (const repeatButton of mobileToolbar.querySelectorAll("button[data-seq]")) {
+  attachToolbarRepeat(repeatButton);
+}
 
 window.addEventListener("resize", () => {
   if (!shouldUseMobileInput()) {
