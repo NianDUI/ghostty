@@ -4471,6 +4471,13 @@ function endTouchScroll() {
   if (wasMovedSwipe && momentumAxis) {
     startPanMomentum(momentumAxis, momentumVelocity);
   }
+  // A long-press that entered selection mode must NOT focus mobileInput
+  // (that would pop the soft keyboard and clear the selection). Swallow
+  // the trailing tap.
+  if (termSelLongPressFired) {
+    termSelLongPressFired = false;
+    return;
+  }
   if (wasTap && shouldUseMobileInput()) {
     focusTerminal();
     return;
@@ -4539,6 +4546,324 @@ terminalMount.addEventListener("touchend", (event) => {
 terminalMount.addEventListener("touchcancel", () => {
   logEvt(`touchcancel`);
   touchScrollState = null;
+});
+
+// ===== Mobile/APP long-press text selection =============================
+// Touch only — desktop keeps dist's native mouse drag-select. The terminal
+// is a canvas, so selection is driven through ghostty-web's select() API
+// and dist renders the highlight itself; we only draw two drag handles + a
+// copy/share bar. Coordinate system pinned to dist's SelectionManager:
+//   select(col, row, len): row is VIEWPORT-relative (0 = top visible row),
+//     dist adds viewportY internally; col 0-based; len = char count (wraps
+//     across rows by cols).
+//   pixel→cell: floor((clientX - canvasRect.left) / charW), same for row.
+//   charW/H = renderer.getMetrics() (CSS px, DPR already handled).
+//   canvasRect via getBoundingClientRect() already reflects the desktop-pan
+//   translate, and scroll offset is dist's viewportY — so NO manual
+//   pan/scroll correction is needed.
+const TERMINAL_LONG_PRESS_MS = 500;
+const TERMINAL_LONG_PRESS_MOVE_PX = 10;
+const SELECTION_WORD_RE = /[\w-]/;
+
+let termSelLongPressTimer = null;
+let termSelLongPressFired = false;
+let termSelActive = false;
+let termSelStartCell = null; // {col,row} in viewport coords
+let termSelEndCell = null;
+let termSelStartX = 0;
+let termSelStartY = 0;
+let termSelHandleStart = null;
+let termSelHandleEnd = null;
+let termSelBar = null;
+
+function clampInt(value, lo, hi) {
+  return Math.max(lo, Math.min(value, hi));
+}
+
+function terminalCanvasEl() {
+  return terminalMount.querySelector("canvas");
+}
+
+function terminalMetrics() {
+  return terminal?.renderer?.getMetrics?.() || null;
+}
+
+// Browser clientX/Y → viewport cell {col,row}, matching dist's pixelToCell.
+function terminalPixelToCell(clientX, clientY) {
+  const canvas = terminalCanvasEl();
+  const m = terminalMetrics();
+  if (!canvas || !m || !terminal) return null;
+  const rect = canvas.getBoundingClientRect();
+  return {
+    col: clampInt(
+      Math.floor((clientX - rect.left) / m.width),
+      0,
+      (terminal.cols || 1) - 1,
+    ),
+    row: clampInt(
+      Math.floor((clientY - rect.top) / m.height),
+      0,
+      (terminal.rows || 1) - 1,
+    ),
+  };
+}
+
+// Viewport cell → fixed-position pixel (top-left of the cell).
+function terminalCellToFixed(col, row) {
+  const canvas = terminalCanvasEl();
+  const m = terminalMetrics();
+  if (!canvas || !m) return null;
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: rect.left + col * m.width,
+    y: rect.top + row * m.height,
+    w: m.width,
+    h: m.height,
+  };
+}
+
+function ensureSelectionDom() {
+  if (termSelBar) return;
+  termSelHandleStart = document.createElement("div");
+  termSelHandleStart.className = "term-sel-handle";
+  termSelHandleStart.dataset.handle = "start";
+  termSelHandleEnd = document.createElement("div");
+  termSelHandleEnd.className = "term-sel-handle";
+  termSelHandleEnd.dataset.handle = "end";
+  termSelBar = document.createElement("div");
+  termSelBar.className = "term-sel-bar";
+  const copyBtn = document.createElement("button");
+  copyBtn.type = "button";
+  copyBtn.textContent = "复制";
+  const shareBtn = document.createElement("button");
+  shareBtn.type = "button";
+  shareBtn.textContent = "分享";
+  termSelBar.append(copyBtn, shareBtn);
+  document.body.append(termSelHandleStart, termSelHandleEnd, termSelBar);
+
+  // Taps on handles/bar must not bubble to terminalMount (which would
+  // dismiss the selection) and must not steal focus.
+  for (const el of [termSelHandleStart, termSelHandleEnd, termSelBar]) {
+    el.addEventListener("pointerdown", (e) => e.stopPropagation(), true);
+    el.addEventListener("touchstart", (e) => e.stopPropagation(), {
+      capture: true,
+      passive: true,
+    });
+  }
+  copyBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    copyTerminalSelection();
+  });
+  shareBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    shareTerminalSelection();
+  });
+  attachHandleDrag(termSelHandleStart);
+  attachHandleDrag(termSelHandleEnd);
+}
+
+// Select the word at (col,row). Pull the whole line first (getSelection
+// trims trailing spaces but keeps leading columns, so col indexing stays
+// valid up to the trimmed length).
+function selectWordAt(col, row) {
+  if (!terminal) return false;
+  terminal.select(0, row, terminal.cols);
+  const line = terminal.getSelection?.() || "";
+  if (col >= line.length || !SELECTION_WORD_RE.test(line[col] || "")) {
+    terminal.select(col, row, 1);
+    termSelStartCell = { col, row };
+    termSelEndCell = { col, row };
+    return true;
+  }
+  let s = col;
+  while (s > 0 && SELECTION_WORD_RE.test(line[s - 1])) s--;
+  let e = col;
+  while (e < line.length - 1 && SELECTION_WORD_RE.test(line[e + 1])) e++;
+  terminal.select(s, row, e - s + 1);
+  termSelStartCell = { col: s, row };
+  termSelEndCell = { col: e, row };
+  return true;
+}
+
+function enterTerminalSelection(clientX, clientY) {
+  if (!terminal || !shouldUseMobileInput()) return;
+  const cell = terminalPixelToCell(clientX, clientY);
+  if (!cell) return;
+  ensureSelectionDom();
+  if (!selectWordAt(cell.col, cell.row)) return;
+  termSelActive = true;
+  refreshSelectionFromDist();
+  schedulePaint();
+  showSelectionUI();
+}
+
+// Re-read the authoritative selection rect from dist (viewport coords).
+function refreshSelectionFromDist() {
+  const pos = terminal?.getSelectionPosition?.();
+  if (!pos) return false;
+  termSelStartCell = { col: pos.start.x, row: pos.start.y };
+  termSelEndCell = { col: pos.end.x, row: pos.end.y };
+  return true;
+}
+
+function showSelectionUI() {
+  if (!termSelActive || !termSelStartCell || !termSelEndCell) return;
+  const startFx = terminalCellToFixed(
+    termSelStartCell.col,
+    termSelStartCell.row,
+  );
+  // End handle anchors to the right edge of the last selected cell.
+  const endFx = terminalCellToFixed(termSelEndCell.col + 1, termSelEndCell.row);
+  if (!startFx || !endFx) return;
+  termSelHandleStart.style.left = `${startFx.x}px`;
+  termSelHandleStart.style.top = `${startFx.y + startFx.h}px`;
+  termSelHandleStart.classList.add("visible");
+  termSelHandleEnd.style.left = `${endFx.x}px`;
+  termSelHandleEnd.style.top = `${endFx.y + endFx.h}px`;
+  termSelHandleEnd.classList.add("visible");
+  // Bar centered above the selection's top; flip below if no room.
+  termSelBar.classList.add("visible");
+  const midX = (startFx.x + endFx.x) / 2;
+  const topY = Math.min(startFx.y, endFx.y);
+  let barTop = topY - termSelBar.offsetHeight - 8;
+  if (barTop < 4) barTop = Math.max(startFx.y, endFx.y) + startFx.h + 14;
+  termSelBar.style.left = `${midX}px`;
+  termSelBar.style.top = `${barTop}px`;
+}
+
+function hideSelectionUI() {
+  termSelHandleStart?.classList.remove("visible");
+  termSelHandleEnd?.classList.remove("visible");
+  termSelBar?.classList.remove("visible");
+}
+
+function exitTerminalSelection() {
+  if (!termSelActive) return;
+  termSelActive = false;
+  termSelStartCell = null;
+  termSelEndCell = null;
+  hideSelectionUI();
+  terminal?.clearSelection?.();
+  schedulePaint();
+}
+
+async function copyTerminalSelection() {
+  const text = terminal?.getSelection?.() || "";
+  if (text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (err) {
+      logEvt(`clipboard write failed ${err?.message || err}`);
+    }
+  }
+  exitTerminalSelection();
+}
+
+async function shareTerminalSelection() {
+  const text = terminal?.getSelection?.() || "";
+  if (!text) {
+    exitTerminalSelection();
+    return;
+  }
+  try {
+    if (navigator.share) {
+      await navigator.share({ text });
+    } else {
+      await navigator.clipboard.writeText(text);
+      logEvt("share unsupported, copied instead");
+    }
+  } catch (err) {
+    // User-cancelled share rejects — ignore.
+    logEvt(`share dismissed/failed ${err?.message || err}`);
+  }
+  exitTerminalSelection();
+}
+
+// Re-apply select() from the cached start/end cells after a handle drag.
+function applySelectionRange() {
+  if (!terminal || !termSelStartCell || !termSelEndCell) return;
+  let a = termSelStartCell;
+  let b = termSelEndCell;
+  if (a.row > b.row || (a.row === b.row && a.col > b.col)) {
+    [a, b] = [b, a];
+  }
+  const cols = terminal.cols || 1;
+  const len = (b.row - a.row) * cols + (b.col - a.col + 1);
+  terminal.select(a.col, a.row, Math.max(1, len));
+  schedulePaint();
+}
+
+function attachHandleDrag(handle) {
+  handle.addEventListener(
+    "touchmove",
+    (event) => {
+      if (!termSelActive) return;
+      const touch = event.touches[0];
+      if (!touch) return;
+      event.preventDefault();
+      const cell = terminalPixelToCell(touch.clientX, touch.clientY);
+      if (!cell) return;
+      if (handle.dataset.handle === "start") termSelStartCell = cell;
+      else termSelEndCell = cell;
+      applySelectionRange();
+      refreshSelectionFromDist();
+      showSelectionUI();
+    },
+    { passive: false },
+  );
+  handle.addEventListener("touchend", (event) => event.stopPropagation());
+}
+
+// Long-press detection on the terminal. Independent of the scroll/pan
+// listeners above — we only read positions and never preventDefault here.
+terminalMount.addEventListener(
+  "touchstart",
+  (event) => {
+    if (!shouldUseMobileInput()) return;
+    // A fresh touch on the terminal dismisses an active selection (handles
+    // and bar stopPropagation, so taps on them never reach here).
+    if (termSelActive) exitTerminalSelection();
+    termSelLongPressFired = false;
+    if (termSelLongPressTimer !== null) clearTimeout(termSelLongPressTimer);
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    termSelStartX = touch.clientX;
+    termSelStartY = touch.clientY;
+    termSelLongPressTimer = window.setTimeout(() => {
+      termSelLongPressTimer = null;
+      termSelLongPressFired = true;
+      enterTerminalSelection(termSelStartX, termSelStartY);
+    }, TERMINAL_LONG_PRESS_MS);
+  },
+  { passive: true },
+);
+terminalMount.addEventListener(
+  "touchmove",
+  (event) => {
+    if (termSelLongPressTimer === null) return;
+    const touch = event.touches[0];
+    if (
+      !touch ||
+      Math.abs(touch.clientX - termSelStartX) > TERMINAL_LONG_PRESS_MOVE_PX ||
+      Math.abs(touch.clientY - termSelStartY) > TERMINAL_LONG_PRESS_MOVE_PX
+    ) {
+      clearTimeout(termSelLongPressTimer);
+      termSelLongPressTimer = null;
+    }
+  },
+  { passive: true },
+);
+const clearTermSelLongPressTimer = () => {
+  if (termSelLongPressTimer !== null) {
+    clearTimeout(termSelLongPressTimer);
+    termSelLongPressTimer = null;
+  }
+};
+terminalMount.addEventListener("touchend", clearTermSelLongPressTimer, {
+  passive: true,
+});
+terminalMount.addEventListener("touchcancel", clearTermSelLongPressTimer, {
+  passive: true,
 });
 
 terminalView.addEventListener("pointerdown", (event) => {

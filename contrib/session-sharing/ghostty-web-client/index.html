@@ -850,6 +850,58 @@
           background: rgba(125, 227, 187, 0.18);
         }
 
+        /* Mobile terminal text-selection: drag handles + copy/share bar.
+           Live on document.body as fixed elements so the terminal's
+           desktop-pan transform doesn't move them. */
+        .term-sel-handle {
+          position: fixed;
+          left: 0;
+          top: 0;
+          width: 20px;
+          height: 20px;
+          margin-left: -10px;
+          border-radius: 50%;
+          background: #7de3bb;
+          border: 2px solid #0c1f18;
+          box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+          z-index: 60;
+          display: none;
+          touch-action: none;
+        }
+        .term-sel-handle.visible {
+          display: block;
+        }
+        .term-sel-bar {
+          position: fixed;
+          left: 0;
+          top: 0;
+          z-index: 61;
+          display: none;
+          gap: 4px;
+          padding: 4px;
+          background: #1b2620;
+          border: 1px solid #3a4a42;
+          border-radius: 8px;
+          box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+          transform: translateX(-50%);
+        }
+        .term-sel-bar.visible {
+          display: flex;
+        }
+        .term-sel-bar button {
+          margin: 0;
+          padding: 6px 14px;
+          border: 0;
+          border-radius: 6px;
+          background: transparent;
+          color: #f5f0e8;
+          font-size: 14px;
+          font-weight: 500;
+        }
+        .term-sel-bar button:active {
+          background: rgba(255, 255, 255, 0.14);
+        }
+
         .terminal-page.desktop-width-mode .terminal-host {
           /* In desktop-width mode the inner #terminal is wider than
              the viewport. We pan it with `transform: translateX(...)`
