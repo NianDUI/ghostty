@@ -827,6 +827,14 @@
           font-weight: 500;
           letter-spacing: 0.02em;
           line-height: 1;
+          /* Press-and-hold (auto-repeat) must not raise the WebView's
+             text-selection / copy-share callout on Android. Disabling text
+             selection + the touch callout stops the long-press menu; the
+             contextmenu preventDefault in main.js is the belt-and-braces
+             second line of defence. */
+          user-select: none;
+          -webkit-user-select: none;
+          -webkit-touch-callout: none;
         }
 
         .mobile-tool:active {

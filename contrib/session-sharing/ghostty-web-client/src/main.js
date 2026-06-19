@@ -4755,6 +4755,15 @@ for (const repeatButton of mobileToolbar.querySelectorAll("button[data-seq]")) {
   attachToolbarRepeat(repeatButton);
 }
 
+// Press-and-hold on Android synthesizes a contextmenu + text-selection
+// menu (copy / share). Suppress it for every toolbar button (seq AND
+// modifier) — same fix as the session list long-press (main.js
+// attachSessionLongPress). CSS user-select:none on .mobile-tool is the
+// primary guard; this covers WebViews that still fire contextmenu.
+mobileToolbar.addEventListener("contextmenu", (event) => {
+  if (event.target.closest(".mobile-tool")) event.preventDefault();
+});
+
 window.addEventListener("resize", () => {
   if (!shouldUseMobileInput()) {
     mobileToolbarToggle.classList.add("hidden");
