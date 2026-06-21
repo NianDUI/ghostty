@@ -1663,6 +1663,11 @@ function schedulePaint(force = false) {
         terminal,
         terminal.scrollbarOpacity,
       );
+      if (termSelActive) {
+        logEvt(
+          `[SEL] render forceAll=${forceAll} vY=${terminal.viewportY} pos=${JSON.stringify(terminal.getSelectionPosition?.() ?? null)}`,
+        );
+      }
     } catch (_) {}
   });
 }
@@ -3587,9 +3592,13 @@ function focusTerminal() {
       window.clearTimeout(mobileFocusTimer);
       mobileFocusTimer = null;
     }
+    logEvt(
+      `[SEL] focusTerminal → mobileInput.focus (selActive=${termSelActive})`,
+    );
     mobileInput.focus({ preventScroll: true });
     return;
   }
+  logEvt(`[SEL] focusTerminal → terminal.focus (desktop)`);
   if (terminal) terminal.focus();
 }
 
@@ -4521,7 +4530,9 @@ function suppressTerminalFollowupClick(event) {
   if (performance.now() < suppressTerminalClickUntil) {
     event.stopPropagation();
     event.preventDefault();
-    logEvt(`SUPPRESS ${event.type} after swipe`);
+    logEvt(`[SEL] SUPPRESS ${event.type}`);
+  } else {
+    logEvt(`[SEL] PASS ${event.type} (no suppress window)`);
   }
 }
 terminalMount.addEventListener("click", suppressTerminalFollowupClick, {
@@ -4545,6 +4556,9 @@ terminalMount.addEventListener("touchend", (event) => {
   // text-selection mode. In both, swallow dist's synthetic click/pointerup
   // so it doesn't focus its hidden textarea and pop the soft keyboard.
   // (A plain tap still wants focus + keyboard, so it's excluded.)
+  logEvt(
+    `[SEL] touchend longPressFired=${termSelLongPressFired} tss=${touchScrollState ? touchScrollState.type + (touchScrollState.moved ? "/moved" : "") : "null"} cancelable=${event.cancelable ? 1 : 0}`,
+  );
   if (
     termSelLongPressFired ||
     (touchScrollState &&
@@ -4553,6 +4567,7 @@ terminalMount.addEventListener("touchend", (event) => {
   ) {
     if (event.cancelable) event.preventDefault();
     suppressTerminalClickUntil = performance.now() + 500;
+    logEvt(`[SEL] touchend → suppress window +500ms`);
   }
   endTouchScroll();
 });
@@ -4729,6 +4744,16 @@ function enterTerminalSelection(clientX, clientY) {
   // highlight never draws — handles/bar show but the text isn't highlighted.
   scheduleFullPaint();
   showSelectionUI();
+  const canvasRect = terminalCanvasEl()?.getBoundingClientRect();
+  const m = terminalMetrics();
+  logEvt(
+    `[SEL] enter cell=${cell.col},${cell.row} start=${termSelStartCell?.col},${termSelStartCell?.row} end=${termSelEndCell?.col},${termSelEndCell?.row} ` +
+      `pos=${JSON.stringify(terminal.getSelectionPosition?.() ?? null)} ` +
+      `text="${(terminal.getSelection?.() || "").slice(0, 24)}" ` +
+      `cols=${terminal.cols} rows=${terminal.rows} vY=${terminal.getViewportY?.()} ` +
+      `m=${m ? `${m.width.toFixed(1)}x${m.height.toFixed(1)}` : "null"} ` +
+      `rect=${canvasRect ? `${canvasRect.left.toFixed(0)},${canvasRect.top.toFixed(0)} ${canvasRect.width.toFixed(0)}x${canvasRect.height.toFixed(0)}` : "null"}`,
+  );
 }
 
 // Re-read the authoritative selection rect from dist (viewport coords).
@@ -4896,6 +4921,7 @@ terminalMount.addEventListener(
     termSelLongPressTimer = window.setTimeout(() => {
       termSelLongPressTimer = null;
       termSelLongPressFired = true;
+      logEvt(`[SEL] longpress fire @${termSelStartX | 0},${termSelStartY | 0}`);
       enterTerminalSelection(termSelStartX, termSelStartY);
     }, TERMINAL_LONG_PRESS_MS);
   },
@@ -5020,7 +5046,24 @@ document.addEventListener("visibilitychange", () => {
 // history-reading state intact across keyboard show/hide.
 mobileInput.addEventListener("focus", () => {
   userFollowBottom = true;
+  logEvt(`[SEL] mobileInput FOCUS event`);
 });
+
+// Diagnostic: capture EVERY focus to learn who pops the soft keyboard
+// after a long-press. mobileInput is ours; a TEXTAREA that isn't
+// mobileInput is dist's hidden helper textarea (the suspected culprit).
+document.addEventListener(
+  "focusin",
+  (event) => {
+    const t = event.target;
+    let who;
+    if (t === mobileInput) who = "mobileInput";
+    else if (t && t.tagName === "TEXTAREA") who = "dist-textarea";
+    else who = `${t?.tagName || "?"}.${(t && t.className) || ""}`.slice(0, 40);
+    logEvt(`[SEL] FOCUSIN ${who} selActive=${termSelActive}`);
+  },
+  true,
+);
 
 // Route pastes through dist's paste() so bracketed-paste mode (DEC 2004)
 // is honoured: when the running program enabled it (bash readline, vim,
