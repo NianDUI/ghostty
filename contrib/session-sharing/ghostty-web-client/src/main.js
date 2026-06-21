@@ -3920,8 +3920,16 @@ const requestViewportFit = createCoalescedScroll(
   },
 );
 
+// Largest visualViewport height seen = the keyboard-DOWN full-screen
+// baseline. innerHeight also shrinks with the keyboard on Android, so it
+// can't serve as the baseline; the running max can. Used by
+// enterTerminalSelection to tell whether the soft keyboard is currently up.
+let maxSeenViewportH = 0;
 function syncMobileViewportInsets() {
   const mobile = shouldUseMobileInput();
+  if (window.visualViewport) {
+    maxSeenViewportH = Math.max(maxSeenViewportH, window.visualViewport.height);
+  }
   const viewportHeight =
     mobile && window.visualViewport
       ? `${window.visualViewport.height}px`
@@ -4776,15 +4784,40 @@ function isWordChar(text) {
 function selectWordAt(col, row) {
   if (!terminal) return false;
   const cols = terminal.cols || 1;
+  // Diagnostic: dump the whole buffer row so we can confirm it actually has
+  // text and in which columns (a press often lands on inter-word padding).
+  setViewportSelection(0, row, cols - 1, row);
+  logEvt(
+    `[SEL] line${row} "${(terminal.getSelection?.() || "").slice(0, 60)}"`,
+  );
+  // Snap to the nearest word when the press lands on whitespace — users tap
+  // slightly off the glyph, and TUIs (Claude Code) have lots of padding, so
+  // a literal single-cell selection on a space copies nothing.
+  let c = col;
   if (!isWordChar(cellChar(col, row))) {
-    if (!setViewportSelection(col, row, col, row)) return false;
-    termSelStartCell = { col, row };
-    termSelEndCell = { col, row };
-    return true;
+    let found = -1;
+    for (let d = 1; d <= 40; d++) {
+      if (col + d < cols && isWordChar(cellChar(col + d, row))) {
+        found = col + d;
+        break;
+      }
+      if (col - d >= 0 && isWordChar(cellChar(col - d, row))) {
+        found = col - d;
+        break;
+      }
+    }
+    if (found < 0) {
+      // Genuinely blank around the press — fall back to the single cell.
+      setViewportSelection(col, row, col, row);
+      termSelStartCell = { col, row };
+      termSelEndCell = { col, row };
+      return true;
+    }
+    c = found;
   }
-  let s = col;
+  let s = c;
   while (s > 0 && isWordChar(cellChar(s - 1, row))) s--;
-  let e = col;
+  let e = c;
   while (e < cols - 1 && isWordChar(cellChar(e + 1, row))) e++;
   setViewportSelection(s, row, e, row);
   termSelStartCell = { col: s, row };
@@ -4799,22 +4832,20 @@ function enterTerminalSelection(clientX, clientY) {
   ensureSelectionDom();
   if (!selectWordAt(cell.col, cell.row)) return;
   termSelActive = true;
-  // Selecting text must not keep the soft keyboard up: it covers the
-  // selection UI, and a still-focused input gets revived by the trailing
-  // touch (Android quirk, see endTouchScroll). At long-press time the
-  // active element is usually dist's canvas-host, not mobileInput, so blur
-  // BOTH the active element and mobileInput. The visualViewport resize that
-  // follows re-pins the handles via reposition.
-  const active = document.activeElement;
-  if (active && active !== document.body && typeof active.blur === "function") {
-    active.blur();
+  // Long-press must NOT change the keyboard's visible state (user request):
+  // visible stays visible, hidden stays hidden. Only blur when the keyboard
+  // is already HIDDEN but mobileInput is still focused — that blur is
+  // invisible (keyboard already down) yet stops the trailing touch from
+  // reviving it. maxSeenViewportH is the full-screen height baseline; when
+  // the current viewport is (near) full height the keyboard is down.
+  const vv = window.visualViewport;
+  const kbHidden =
+    !vv || maxSeenViewportH <= 0 || vv.height >= maxSeenViewportH - 80;
+  if (kbHidden && document.activeElement === mobileInput) {
+    mobileInput.blur();
   }
-  mobileInput.blur();
   logEvt(
-    `[SEL] enter blur active=${active?.tagName || "?"}.${(active && active.className) || ""}`.slice(
-      0,
-      60,
-    ),
+    `[SEL] enter kbHidden=${kbHidden} vvh=${vv ? Math.round(vv.height) : "-"} max=${Math.round(maxSeenViewportH)}`,
   );
   refreshSelectionFromDist();
   // Must be a FULL paint: dist's select() API sets the selection but does
