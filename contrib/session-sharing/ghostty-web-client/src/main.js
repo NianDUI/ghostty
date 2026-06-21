@@ -4790,6 +4790,10 @@ function selectWordAt(col, row) {
   logEvt(
     `[SEL] line${row} "${(terminal.getSelection?.() || "").slice(0, 60)}"`,
   );
+  const wt = terminal.wasmTerm;
+  logEvt(
+    `[SEL] state alt=${wt?.isAlternateScreen?.() ? 1 : 0} sbLen=${wt?.getScrollbackLength?.() ?? "?"} cur=${JSON.stringify(wt?.getCursor?.() ?? null)}`,
+  );
   // Snap to the nearest word when the press lands on whitespace — users tap
   // slightly off the glyph, and TUIs (Claude Code) have lots of padding, so
   // a literal single-cell selection on a space copies nothing.
@@ -4832,21 +4836,9 @@ function enterTerminalSelection(clientX, clientY) {
   ensureSelectionDom();
   if (!selectWordAt(cell.col, cell.row)) return;
   termSelActive = true;
-  // Long-press must NOT change the keyboard's visible state (user request):
-  // visible stays visible, hidden stays hidden. Only blur when the keyboard
-  // is already HIDDEN but mobileInput is still focused — that blur is
-  // invisible (keyboard already down) yet stops the trailing touch from
-  // reviving it. maxSeenViewportH is the full-screen height baseline; when
-  // the current viewport is (near) full height the keyboard is down.
-  const vv = window.visualViewport;
-  const kbHidden =
-    !vv || maxSeenViewportH <= 0 || vv.height >= maxSeenViewportH - 80;
-  if (kbHidden && document.activeElement === mobileInput) {
-    mobileInput.blur();
-  }
-  logEvt(
-    `[SEL] enter kbHidden=${kbHidden} vvh=${vv ? Math.round(vv.height) : "-"} max=${Math.round(maxSeenViewportH)}`,
-  );
+  // Keyboard state is handled at touchstart (see the long-press listener),
+  // not here — doing it at enter (long-press fire, 500ms in) is too late and
+  // the keyboard flashes up first. enter must not touch focus.
   refreshSelectionFromDist();
   // Must be a FULL paint: dist's select() API sets the selection but does
   // NOT mark the selected rows dirty (only mouse-drag selection and
@@ -5106,6 +5098,19 @@ terminalMount.addEventListener(
   "touchstart",
   (event) => {
     if (!shouldUseMobileInput()) return;
+    // Keep the keyboard's VISIBLE state stable across this touch. If it's
+    // already hidden but mobileInput is still focused, blur NOW (at
+    // touchstart, before the long-press fires) so this touch can't revive
+    // it — blur is invisible since the keyboard is already down. A real tap
+    // re-focuses afterwards via endTouchScroll → focusTerminal. When the
+    // keyboard is visible (vv.height well below the full-screen baseline) we
+    // leave focus alone so it stays up.
+    const vv = window.visualViewport;
+    const kbDown =
+      !vv || maxSeenViewportH <= 0 || vv.height >= maxSeenViewportH - 80;
+    if (kbDown && document.activeElement === mobileInput) {
+      mobileInput.blur();
+    }
     // A fresh touch on the terminal dismisses an active selection (handles
     // and bar stopPropagation, so taps on them never reach here).
     if (termSelActive) exitTerminalSelection();
