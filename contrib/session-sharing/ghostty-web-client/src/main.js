@@ -4764,10 +4764,22 @@ function enterTerminalSelection(clientX, clientY) {
   if (!selectWordAt(cell.col, cell.row)) return;
   termSelActive = true;
   // Selecting text must not keep the soft keyboard up: it covers the
-  // selection UI, and a still-focused mobileInput gets revived by the
-  // trailing touch (Android quirk, see endTouchScroll). Blur it; the
-  // visualViewport resize that follows re-pins the handles via reposition.
-  if (document.activeElement === mobileInput) mobileInput.blur();
+  // selection UI, and a still-focused input gets revived by the trailing
+  // touch (Android quirk, see endTouchScroll). At long-press time the
+  // active element is usually dist's canvas-host, not mobileInput, so blur
+  // BOTH the active element and mobileInput. The visualViewport resize that
+  // follows re-pins the handles via reposition.
+  const active = document.activeElement;
+  if (active && active !== document.body && typeof active.blur === "function") {
+    active.blur();
+  }
+  mobileInput.blur();
+  logEvt(
+    `[SEL] enter blur active=${active?.tagName || "?"}.${(active && active.className) || ""}`.slice(
+      0,
+      60,
+    ),
+  );
   refreshSelectionFromDist();
   // Must be a FULL paint: dist's select() API sets the selection but does
   // NOT mark the selected rows dirty (only mouse-drag selection and
@@ -4857,16 +4869,55 @@ function exitTerminalSelection() {
   schedulePaint();
 }
 
+// Synchronous execCommand copy. HarmonyOS / Android WebViews deny
+// navigator.clipboard.writeText ("Write permission denied"), so this is the
+// reliable path. Notes:
+//   - readonly: stops the textarea from popping the soft keyboard on focus.
+//   - appended to <body> (NOT inside terminalView): the focusin guard that
+//     blurs stray textareas only polices terminalView, so this one survives
+//     long enough to be selected + copied.
+//   - must run inside the click gesture (no await before it).
+function execCommandCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText =
+    "position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;";
+  document.body.appendChild(ta);
+  let ok = false;
+  try {
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    ok = document.execCommand("copy");
+  } catch (_) {
+    ok = false;
+  }
+  ta.remove();
+  return ok;
+}
+
+// Copy text, preferring the gesture-synchronous execCommand path (works on
+// the HarmonyOS WebView that denies the async Clipboard API). Falls back to
+// navigator.clipboard only if execCommand is unavailable/failed.
+async function copyTextRobust(text) {
+  if (!text) return false;
+  if (execCommandCopy(text)) return true;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (err) {
+    logEvt(`[SEL] clipboard write failed ${err?.message || err}`);
+    return false;
+  }
+}
+
 async function copyTerminalSelection() {
   const text = terminal?.getSelection?.() || "";
   if (text) {
-    try {
-      await navigator.clipboard.writeText(text);
-      showSessionActionToast("已复制");
-    } catch (err) {
-      logEvt(`clipboard write failed ${err?.message || err}`);
-      showSessionActionToast("复制失败");
-    }
+    const ok = await copyTextRobust(text);
+    showSessionActionToast(ok ? "已复制" : "复制失败");
+    logEvt(`[SEL] copy ok=${ok} len=${text.length}`);
   }
   exitTerminalSelection();
 }
@@ -4877,17 +4928,17 @@ async function shareTerminalSelection() {
     exitTerminalSelection();
     return;
   }
-  try {
-    if (navigator.share) {
+  if (navigator.share) {
+    try {
       await navigator.share({ text });
-    } else {
-      await navigator.clipboard.writeText(text);
-      logEvt("share unsupported, copied instead");
-      showSessionActionToast("已复制");
+    } catch (err) {
+      // User-cancelled share rejects — ignore.
+      logEvt(`[SEL] share dismissed/failed ${err?.message || err}`);
     }
-  } catch (err) {
-    // User-cancelled share rejects — ignore.
-    logEvt(`share dismissed/failed ${err?.message || err}`);
+  } else {
+    const ok = await copyTextRobust(text);
+    logEvt(`[SEL] share unsupported, copied instead ok=${ok}`);
+    showSessionActionToast(ok ? "已复制" : "复制失败");
   }
   exitTerminalSelection();
 }
