@@ -48,6 +48,7 @@ const lowResRenderSelect = document.querySelector("#lowResRender");
 const liveMirrorModeInput = document.querySelector("#liveMirrorMode");
 const debugModeInput = document.querySelector("#debugMode");
 const mobileUploadLauncher = document.querySelector("#mobileUploadLauncher");
+const mobileKillLine = document.querySelector("#mobileKillLine");
 const sessionActionsModal = document.querySelector("#sessionActionsModal");
 const sessionActionsTargetEl = document.querySelector("#sessionActionsTarget");
 const sessionCloseBtn = document.querySelector("#sessionCloseBtn");
@@ -2581,6 +2582,11 @@ function refreshUploadLauncherVisibility() {
   const visible = connected && !mobileToolbarCollapsed;
   mobileUploadLauncher.classList.toggle("hidden", !visible);
   mobileUploadLauncher.disabled = !visible;
+  // 清行 pill shares the same pill row + gating as the upload launcher.
+  if (mobileKillLine) {
+    mobileKillLine.classList.toggle("hidden", !visible);
+    mobileKillLine.disabled = !visible;
+  }
 }
 
 // File-picker grace window for the APP-mode visibilitychange handler.
@@ -4646,7 +4652,8 @@ terminalMount.addEventListener("touchcancel", () => {
 //   pan/scroll correction is needed.
 const TERMINAL_LONG_PRESS_MS = 500;
 const TERMINAL_LONG_PRESS_MOVE_PX = 10;
-const SELECTION_WORD_RE = /[\w-]/;
+const SELECTION_BREAK_RE =
+  /[\s\u0021-\u002c\u002e\u002f\u003a-\u0040\u005b-\u005e\u0060\u007b-\u007e\u3000-\u303f\uff00-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65]/;
 
 let termSelLongPressTimer = null;
 let termSelLongPressFired = false;
@@ -4876,40 +4883,38 @@ function captureSelectionText() {
   termSelText = buildSelectionText();
 }
 
-// Read one cell's text by probing a single-cell selection then getSelection
-// (which correctly handles the scrollback/screen split). Per-cell probing
-// keeps the column aligned for ASCII, CJK, emoji and grapheme clusters alike
-// (a string index would drift past wide glyphs).
-function cellChar(col, row) {
-  if (!setViewportSelection(col, row, col, row)) return "";
-  return terminal.getSelection?.() || "";
-}
-
-function isWordChar(text) {
-  return text.length > 0 && SELECTION_WORD_RE.test(text);
-}
-
 function selectWordAt(col, row) {
   if (!terminal) return false;
   const cols = terminal.cols || 1;
-  // Snap to the nearest word when the press lands on whitespace — users tap
-  // slightly off the glyph, and TUIs (Claude Code) have lots of padding, so
-  // a literal single-cell selection on a space copies nothing.
+  const line = terminal.wasmTerm?.getLine?.(row);
+  // Word-ness of a cell column, read straight from the live buffer. getLine is
+  // reliable; the old per-cell dist getSelection probe mis-read CJK and even
+  // ASCII, so word-expand only ever grabbed a single char. A wide-char spacer
+  // (width 0) inherits the owning glyph in the previous column, so a CJK run
+  // scans as one word; SELECTION_BREAK_RE bounds words at whitespace and
+  // ASCII/CJK punctuation.
+  const isWord = (c) => {
+    if (!line || c < 0 || c >= cols) return false;
+    let cell = line[c];
+    if (cell && cell.width === 0 && c > 0) cell = line[c - 1];
+    if (!cell || !cell.codepoint || cell.codepoint === 0) return false;
+    return !SELECTION_BREAK_RE.test(String.fromCodePoint(cell.codepoint));
+  };
   let c = col;
-  if (!isWordChar(cellChar(col, row))) {
+  if (!isWord(c)) {
+    // Press landed on whitespace / padding — snap to the nearest word column.
     let found = -1;
     for (let d = 1; d <= 40; d++) {
-      if (col + d < cols && isWordChar(cellChar(col + d, row))) {
+      if (isWord(col + d)) {
         found = col + d;
         break;
       }
-      if (col - d >= 0 && isWordChar(cellChar(col - d, row))) {
+      if (isWord(col - d)) {
         found = col - d;
         break;
       }
     }
     if (found < 0) {
-      // Genuinely blank around the press — fall back to the single cell.
       setViewportSelection(col, row, col, row);
       termSelStartCell = { col, row };
       termSelEndCell = { col, row };
@@ -4919,9 +4924,9 @@ function selectWordAt(col, row) {
     c = found;
   }
   let s = c;
-  while (s > 0 && isWordChar(cellChar(s - 1, row))) s--;
+  while (isWord(s - 1)) s--;
   let e = c;
-  while (e < cols - 1 && isWordChar(cellChar(e + 1, row))) e++;
+  while (isWord(e + 1)) e++;
   setViewportSelection(s, row, e, row);
   termSelStartCell = { col: s, row };
   termSelEndCell = { col: e, row };
@@ -5429,16 +5434,40 @@ mobileInput.addEventListener("input", () => {
   scheduleMobileRefocus();
 });
 
-// Diagnostic: capture what the soft keyboard's "delete key swipe = clear all"
-// gesture actually fires on this device. Our proxy textarea is kept empty, so
-// such a gesture has nothing to delete locally — it surfaces as a beforeinput
-// with a delete inputType (deleteHardLineBackward / deleteEntireSoftLine / …)
-// or a burst of Backspace keydowns. Log it so we can map it to a terminal
-// sequence (whole-line delete ≈ Ctrl+U \x15). No behaviour change yet.
+// Soft-keyboard delete gestures — a single backspace AND the "swipe the
+// delete key = clear N chars" gesture — fire beforeinput with a delete*
+// inputType, often with NO keydown event. Our proxy textarea is kept empty,
+// so these can't delete anything locally; forward them to the terminal as
+// control bytes. Insertions are handled by the input/compositionend handlers
+// (they read the textarea value), so we only act on delete* here. This is the
+// authoritative delete path — keydown no longer sends Backspace (would double).
 mobileInput.addEventListener("beforeinput", (event) => {
-  logEvt(
-    `mobileInput beforeinput type=${event.inputType} data=${JSON.stringify(event.data)} vlen=${mobileInput.value.length}`,
-  );
+  const t = event.inputType || "";
+  if (!t.startsWith("delete")) return;
+  if (isMobileComposing) return; // composition edits its own pending text
+  let seq;
+  switch (t) {
+    case "deleteWordBackward":
+      seq = "\u0017"; // Ctrl+W — delete previous word
+      break;
+    case "deleteSoftLineBackward":
+    case "deleteHardLineBackward":
+    case "deleteEntireSoftLine":
+      seq = "\u0015"; // Ctrl+U — kill line back to start
+      break;
+    case "deleteContentForward":
+    case "deleteWordForward":
+      seq = "\u001b[3~"; // forward Delete
+      break;
+    default:
+      // deleteContentBackward (incl. the swipe-clear burst) → Backspace.
+      seq = "\u007f";
+      break;
+  }
+  event.preventDefault();
+  sendInput(applyPendingModifiers(seq));
+  requestMobileBottomScroll();
+  scheduleMobileRefocus();
 });
 
 mobileInput.addEventListener("compositionstart", () => {
@@ -5470,13 +5499,10 @@ mobileInput.addEventListener("keydown", (event) => {
       requestMobileBottomScroll();
       scheduleMobileRefocus();
       break;
-    case "Backspace":
-      if (mobileInput.value.length === 0) {
-        sendInput(applyPendingModifiers("\u007f"));
-      }
-      requestMobileBottomScroll();
-      scheduleMobileRefocus();
-      break;
+    // Backspace is handled in the beforeinput listener (deleteContentBackward)
+    // — that path also catches the soft-keyboard "swipe delete key = clear"
+    // gesture, which fires beforeinput but NO keydown. Handling it here too
+    // would double-send the DEL.
     default:
       break;
   }
@@ -5503,7 +5529,13 @@ mobileToolbarToggle.addEventListener("click", toggleMobileToolbar);
 // default focus transfer without affecting the subsequent click. The
 // listener is delegated on the toolbar container so future
 // .mobile-tool additions are covered automatically.
-for (const el of [mobileToolbar, mobileToolbarToggle, mobileUploadLauncher]) {
+for (const el of [
+  mobileToolbar,
+  mobileToolbarToggle,
+  mobileUploadLauncher,
+  mobileKillLine,
+]) {
+  if (!el) continue;
   el.addEventListener(
     "pointerdown",
     (event) => {
@@ -5515,6 +5547,16 @@ for (const el of [mobileToolbar, mobileToolbarToggle, mobileUploadLauncher]) {
     { capture: true },
   );
 }
+
+// 清行 pill: one tap sends Ctrl+U to clear the whole input line. Reliable
+// replacement for the soft-keyboard long-press/swipe clear (unreliable on our
+// always-empty proxy textarea). Keep the keyboard up so the user can keep
+// typing right after clearing.
+mobileKillLine?.addEventListener("click", () => {
+  sendInput("\u0015");
+  scrollTerminalToBottom();
+  focusTerminal();
+});
 
 mobileToolbar.addEventListener("click", (event) => {
   const button = event.target.closest(".mobile-tool");

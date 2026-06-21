@@ -752,6 +752,31 @@ POST //api/upload/init HTTP/2.0  404 9
   (`cell.width === 0`, `codepoint 0`)。`buildSelectionText` 里
   `if (cell.width === 0) continue;`,否则每个宽字符后多一个空格(「你 选 中」)。
 
+- **`selectWordAt` 选词必须读 `getLine`,不能 per-cell `getSelection` 探测**:
+  老实现 `cellChar()` 逐格 `setViewportSelection`+`getSelection`,被宽字符 spacer
+  打断 → **连英文单词都只选到一个字母**。重写成一次性 `getLine(row)` 读整行,按
+  cell 的 `codepoint`/`width` 走词边界(spacer 归属前一格的字)。词的字符类用
+  `SELECTION_BREAK_RE`(空白 + ASCII/CJK 标点为边界):中文/英文/数字/`-`/`_` 都算
+  词,中文标点 `，。、！（` 正确断词。
+
+## 移动端删除键走 `beforeinput`,「清行」按钮兜底
+
+`mobileInput` 是**始终保持空**的代理 textarea(每输入即 `value=""`)。软键盘删除——
+单个退格、长按删除键连发——只发 `beforeinput`(`inputType` 以 `delete` 开头),
+**常常不发 keydown**。老代码退格只挂 keydown + `input` 在空框 return,导致删除全漏。
+改挂 `beforeinput`,按 `inputType` 映射:`deleteContentBackward` → 退格(`\x7f`);
+`deleteWordBackward` → Ctrl+W(`\x17`);`delete*LineBackward`/`deleteEntireSoftLine`
+→ Ctrl+U(`\x15`);`deleteContentForward` → `\x1b[3~`。composition 中
+(`isMobileComposing`)return 交给 IME。**keydown 不再发 Backspace**(只留 Enter/Tab),
+否则双发。控制字节源码里**用可见转义**(`\u0017` 等),裸控制字符会被 Edit 工具/
+prettier 弄坏,改这些行用 Python 或 `\\u00xx`。
+
+**长按删除 / 上滑清空靠不住**:它们依赖输入法对字段内容计数,代理框恒空 → 长按连发
+删几下就判定"到头了"停(真机时多时少不可控),上滑清空在空框上**零 `beforeinput`
+事件**(没法 hook)。所以加独立 **「清行」药丸**(`#mobileKillLine`,在工具栏开关与
+上传药丸之间),点一下 `sendInput("\x15")`(Ctrl+U)一键清整行,与输入法无关;显隐/
+不抢焦点跟上传药丸同款(`refreshUploadLauncherVisibility` + pointerdown 列表)。
+
 ## 移动端长按时键盘必须「冻结」
 
 需求:**长按前后 + 点复制/粘贴/分享前后,软键盘的显示/隐藏状态绝不能变**。
