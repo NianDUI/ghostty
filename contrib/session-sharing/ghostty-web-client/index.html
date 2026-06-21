@@ -868,6 +868,16 @@
           display: none;
           touch-action: none;
         }
+        /* The visible dot is only 20px, too small to grab reliably on a
+           touch screen. This transparent pseudo-element enlarges the hit
+           target to ~44px (Apple/Material minimum) without changing the
+           dot's appearance — touches on it still resolve to the host
+           handle, so attachHandleDrag's listeners fire. */
+        .term-sel-handle::after {
+          content: "";
+          position: absolute;
+          inset: -12px;
+        }
         .term-sel-handle.visible {
           display: block;
         }

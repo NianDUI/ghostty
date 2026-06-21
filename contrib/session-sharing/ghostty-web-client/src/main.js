@@ -1766,9 +1766,19 @@ function installOnDemandRender(t) {
   //     selectionChangeEmitter (no inline render)
   //   - resize already paints inline; onResize subscription is
   //     idempotent (rAF dedupes the second schedule away)
-  t.onScroll(() => schedulePaint());
+  t.onScroll(() => {
+    schedulePaint();
+    // Keep the mobile selection handles glued to the live highlight when
+    // terminal output scrolls the buffer under an active selection. No-op
+    // (early return) unless a selection is active, so the hot scroll path
+    // stays cheap.
+    repositionActiveSelection();
+  });
   t.onSelectionChange(() => schedulePaint());
-  t.onResize(() => schedulePaint());
+  t.onResize(() => {
+    schedulePaint();
+    repositionActiveSelection();
+  });
 
   // (5) Apply the low-res DPR cap immediately so the very first
   // post-open paint already runs at the chosen resolution. Without
@@ -4665,20 +4675,37 @@ function ensureSelectionDom() {
 // Select the word at (col,row). Pull the whole line first (getSelection
 // trims trailing spaces but keeps leading columns, so col indexing stays
 // valid up to the trimmed length).
+// Read the text of a single cell by its column. We deliberately probe one
+// cell at a time (select(col,row,1) → getSelection) instead of pulling the
+// whole line and indexing the string by column: a string index is a JS
+// char offset, which only equals the column for plain BMP characters. An
+// emoji or a combining-mark grapheme occupies one column but several UTF-16
+// code units, so `line[col]` drifts after the first such glyph and the word
+// boundaries come out wrong. Per-cell probing uses the column directly, so
+// it's correct for ASCII, CJK, emoji and grapheme clusters alike.
+function cellChar(col, row) {
+  if (!terminal) return "";
+  terminal.select(col, row, 1);
+  return terminal.getSelection?.() || "";
+}
+
+function isWordChar(text) {
+  return text.length > 0 && SELECTION_WORD_RE.test(text);
+}
+
 function selectWordAt(col, row) {
   if (!terminal) return false;
-  terminal.select(0, row, terminal.cols);
-  const line = terminal.getSelection?.() || "";
-  if (col >= line.length || !SELECTION_WORD_RE.test(line[col] || "")) {
+  const cols = terminal.cols || 1;
+  if (!isWordChar(cellChar(col, row))) {
     terminal.select(col, row, 1);
     termSelStartCell = { col, row };
     termSelEndCell = { col, row };
     return true;
   }
   let s = col;
-  while (s > 0 && SELECTION_WORD_RE.test(line[s - 1])) s--;
+  while (s > 0 && isWordChar(cellChar(s - 1, row))) s--;
   let e = col;
-  while (e < line.length - 1 && SELECTION_WORD_RE.test(line[e + 1])) e++;
+  while (e < cols - 1 && isWordChar(cellChar(e + 1, row))) e++;
   terminal.select(s, row, e - s + 1);
   termSelStartCell = { col: s, row };
   termSelEndCell = { col: e, row };
@@ -4704,6 +4731,20 @@ function refreshSelectionFromDist() {
   termSelStartCell = { col: pos.start.x, row: pos.start.y };
   termSelEndCell = { col: pos.end.x, row: pos.end.y };
   return true;
+}
+
+// Keep the handles/bar pinned to the live selection when the viewport
+// moves under it — terminal output scrolling the buffer, the soft keyboard
+// resizing the view, or device rotation. dist anchors the highlight to the
+// absolute buffer row, so its viewport projection shifts; getSelectionPosition
+// returns that fresh projection (clamped to the visible range), which we
+// re-read and redraw. If the selection scrolled fully out of view, hide the
+// UI; it reappears when it scrolls back. Handle-drag uses raw finger cells,
+// not this path, so the two never fight (you can't drag while it scrolls).
+function repositionActiveSelection() {
+  if (!termSelActive) return;
+  if (refreshSelectionFromDist()) showSelectionUI();
+  else hideSelectionUI();
 }
 
 function showSelectionUI() {
@@ -4752,8 +4793,10 @@ async function copyTerminalSelection() {
   if (text) {
     try {
       await navigator.clipboard.writeText(text);
+      showSessionActionToast("已复制");
     } catch (err) {
       logEvt(`clipboard write failed ${err?.message || err}`);
+      showSessionActionToast("复制失败");
     }
   }
   exitTerminalSelection();
@@ -4771,6 +4814,7 @@ async function shareTerminalSelection() {
     } else {
       await navigator.clipboard.writeText(text);
       logEvt("share unsupported, copied instead");
+      showSessionActionToast("已复制");
     }
   } catch (err) {
     // User-cancelled share rejects — ignore.
@@ -4806,7 +4850,12 @@ function attachHandleDrag(handle) {
       if (handle.dataset.handle === "start") termSelStartCell = cell;
       else termSelEndCell = cell;
       applySelectionRange();
-      refreshSelectionFromDist();
+      // Do NOT refreshSelectionFromDist() here. applySelectionRange already
+      // normalises (swaps) the range for dist's highlight, but we keep the
+      // raw start/end cells tied to their physical handle so dragging one
+      // handle past the other doesn't swap which handle the finger controls
+      // (that caused a visible jump). showSelectionUI draws each handle from
+      // its own cell, so the handles simply cross — matching the finger.
       showSelectionUI();
     },
     { passive: false },
@@ -4958,6 +5007,29 @@ mobileInput.addEventListener("focus", () => {
   userFollowBottom = true;
 });
 
+// Route pastes through dist's paste() so bracketed-paste mode (DEC 2004)
+// is honoured: when the running program enabled it (bash readline, vim,
+// tmux…), dist wraps the text in ESC[200~ … ESC[201~ so a multi-line
+// paste arrives as ONE chunk instead of being executed line-by-line; when
+// it's off, dist sends the raw text. The data flows out via onData →
+// socket.send like everything else. preventDefault stops the textarea
+// insert, so the trailing `input` event sees an empty value and no-ops.
+// Modifiers are intentionally NOT applied — a paste is literal text.
+mobileInput.addEventListener("paste", (event) => {
+  const text = event.clipboardData?.getData("text") ?? "";
+  if (!text || !terminal) return;
+  event.preventDefault();
+  userFollowBottom = true;
+  try {
+    terminal.paste(text);
+  } catch (err) {
+    logEvt(`paste failed ${err?.message || err}`);
+  }
+  mobileInput.value = "";
+  requestMobileBottomScroll();
+  scheduleMobileRefocus();
+});
+
 mobileInput.addEventListener("input", () => {
   if (isMobileComposing) return;
   if (!mobileInput.value) return;
@@ -5098,6 +5170,10 @@ window.addEventListener("resize", () => {
   }
   mobileToolbarToggle.classList.remove("hidden");
   syncMobileViewportInsets();
+  // Canvas may have moved/resized without a grid (cols/rows) change — e.g.
+  // rotation or the URL bar collapsing — so the terminal.onResize hook
+  // wouldn't fire. Re-pin any active selection's handles to the new layout.
+  repositionActiveSelection();
 });
 
 if (window.visualViewport) {
