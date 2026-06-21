@@ -4663,10 +4663,13 @@ function ensureSelectionDom() {
   const copyBtn = document.createElement("button");
   copyBtn.type = "button";
   copyBtn.textContent = "复制";
+  const pasteBtn = document.createElement("button");
+  pasteBtn.type = "button";
+  pasteBtn.textContent = "粘贴";
   const shareBtn = document.createElement("button");
   shareBtn.type = "button";
   shareBtn.textContent = "分享";
-  termSelBar.append(copyBtn, shareBtn);
+  termSelBar.append(copyBtn, pasteBtn, shareBtn);
   document.body.append(termSelHandleStart, termSelHandleEnd, termSelBar);
 
   // Taps on handles/bar must not bubble to terminalMount (which would
@@ -4681,6 +4684,10 @@ function ensureSelectionDom() {
   copyBtn.addEventListener("click", (e) => {
     e.preventDefault();
     copyTerminalSelection();
+  });
+  pasteBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    pasteFromClipboard();
   });
   shareBtn.addEventListener("click", (e) => {
     e.preventDefault();
@@ -4897,11 +4904,23 @@ function execCommandCopy(text) {
   return ok;
 }
 
-// Copy text, preferring the gesture-synchronous execCommand path (works on
-// the HarmonyOS WebView that denies the async Clipboard API). Falls back to
-// navigator.clipboard only if execCommand is unavailable/failed.
+// Copy text. On the APP (Capacitor native) the HarmonyOS WebView denies the
+// async Clipboard API AND execCommand silently no-ops (returns true but
+// writes nothing), so the ONLY reliable path is the native @capacitor/clipboard
+// plugin (Android ClipboardManager). Web/desktop keep execCommand + Clipboard
+// API. Dynamic import mirrors the @capacitor/app pattern so browser builds
+// (window.Capacitor undefined) never load the plugin.
 async function copyTextRobust(text) {
   if (!text) return false;
+  if (window.Capacitor?.isNativePlatform?.()) {
+    try {
+      const { Clipboard } = await import("@capacitor/clipboard");
+      await Clipboard.write({ string: text });
+      return true;
+    } catch (err) {
+      logEvt(`[SEL] native clipboard write failed ${err?.message || err}`);
+    }
+  }
   if (execCommandCopy(text)) return true;
   try {
     await navigator.clipboard.writeText(text);
@@ -4910,6 +4929,39 @@ async function copyTextRobust(text) {
     logEvt(`[SEL] clipboard write failed ${err?.message || err}`);
     return false;
   }
+}
+
+// Read the clipboard and paste into the terminal. Native plugin first (same
+// reasons as copyTextRobust), then navigator.clipboard for web/desktop. The
+// text goes through terminal.paste() so bracketed-paste mode is honoured.
+async function pasteFromClipboard() {
+  let text = "";
+  if (window.Capacitor?.isNativePlatform?.()) {
+    try {
+      const { Clipboard } = await import("@capacitor/clipboard");
+      const res = await Clipboard.read();
+      text = res?.value || "";
+    } catch (err) {
+      logEvt(`[SEL] native clipboard read failed ${err?.message || err}`);
+    }
+  }
+  if (!text) {
+    try {
+      text = (await navigator.clipboard.readText()) || "";
+    } catch (err) {
+      logEvt(`[SEL] clipboard read failed ${err?.message || err}`);
+    }
+  }
+  if (text && terminal) {
+    userFollowBottom = true;
+    try {
+      terminal.paste(text);
+    } catch (err) {
+      logEvt(`[SEL] paste failed ${err?.message || err}`);
+    }
+  }
+  logEvt(`[SEL] paste len=${text.length}`);
+  exitTerminalSelection();
 }
 
 async function copyTerminalSelection() {
