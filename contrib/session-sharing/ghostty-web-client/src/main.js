@@ -4540,13 +4540,16 @@ terminalMount.addEventListener("touchend", (event) => {
   } else {
     logEvt(`touchend fires no-scroller cancelable=${event.cancelable ? 1 : 0}`);
   }
-  // A moved swipe is the only case where ghostty-web could re-raise
-  // the keyboard against the user's intent — for a tap we still want
-  // the focus + keyboard.
+  // Two cases where ghostty-web would re-raise the keyboard against the
+  // user's intent: (1) a moved swipe, (2) a long-press that just entered
+  // text-selection mode. In both, swallow dist's synthetic click/pointerup
+  // so it doesn't focus its hidden textarea and pop the soft keyboard.
+  // (A plain tap still wants focus + keyboard, so it's excluded.)
   if (
-    touchScrollState &&
-    touchScrollState.type === "swipe" &&
-    touchScrollState.moved
+    termSelLongPressFired ||
+    (touchScrollState &&
+      touchScrollState.type === "swipe" &&
+      touchScrollState.moved)
   ) {
     if (event.cancelable) event.preventDefault();
     suppressTerminalClickUntil = performance.now() + 500;
@@ -4720,7 +4723,11 @@ function enterTerminalSelection(clientX, clientY) {
   if (!selectWordAt(cell.col, cell.row)) return;
   termSelActive = true;
   refreshSelectionFromDist();
-  schedulePaint();
+  // Must be a FULL paint: dist's select() API sets the selection but does
+  // NOT mark the selected rows dirty (only mouse-drag selection and
+  // clearSelection do). A dirty-only paint would skip those rows and the
+  // highlight never draws — handles/bar show but the text isn't highlighted.
+  scheduleFullPaint();
   showSelectionUI();
 }
 
@@ -4743,8 +4750,14 @@ function refreshSelectionFromDist() {
 // not this path, so the two never fight (you can't drag while it scrolls).
 function repositionActiveSelection() {
   if (!termSelActive) return;
-  if (refreshSelectionFromDist()) showSelectionUI();
-  else hideSelectionUI();
+  if (refreshSelectionFromDist()) {
+    // Full paint so the highlight survives the viewport move (select()
+    // rows aren't marked dirty — see enterTerminalSelection).
+    scheduleFullPaint();
+    showSelectionUI();
+  } else {
+    hideSelectionUI();
+  }
 }
 
 function showSelectionUI() {
@@ -4834,7 +4847,9 @@ function applySelectionRange() {
   const cols = terminal.cols || 1;
   const len = (b.row - a.row) * cols + (b.col - a.col + 1);
   terminal.select(a.col, a.row, Math.max(1, len));
-  schedulePaint();
+  // Full paint: select() doesn't dirty the selection rows (see
+  // enterTerminalSelection), so dirty-only wouldn't redraw the highlight.
+  scheduleFullPaint();
 }
 
 function attachHandleDrag(handle) {
