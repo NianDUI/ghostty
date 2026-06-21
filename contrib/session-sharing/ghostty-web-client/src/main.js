@@ -4693,17 +4693,43 @@ function ensureSelectionDom() {
 // Select the word at (col,row). Pull the whole line first (getSelection
 // trims trailing spaces but keeps leading columns, so col indexing stays
 // valid up to the trimmed length).
-// Read the text of a single cell by its column. We deliberately probe one
-// cell at a time (select(col,row,1) → getSelection) instead of pulling the
-// whole line and indexing the string by column: a string index is a JS
-// char offset, which only equals the column for plain BMP characters. An
-// emoji or a combining-mark grapheme occupies one column but several UTF-16
-// code units, so `line[col]` drifts after the first such glyph and the word
-// boundaries come out wrong. Per-cell probing uses the column directly, so
-// it's correct for ASCII, CJK, emoji and grapheme clusters alike.
+function selManager() {
+  return terminal?.selectionManager || null;
+}
+
+// Set the selection from VIEWPORT coordinates, driving the SelectionManager
+// directly. We CANNOT use dist's public select()/selectLines(): they compute
+// the absolute buffer row as `viewportY + row`, which is wrong whenever
+// scrollback exists — the correct mapping is `scrollbackLen + row - viewportY`
+// (viewportRowToAbsolute). With scrollback, select() lands the selection on
+// off-screen scrollback rows: getSelection() returns "", normalizeSelection()
+// returns null, and no highlight draws (observed on real devices). Setting
+// selectionStart/End ourselves with viewportRowToAbsolute fixes all of that.
+// NOTE: dist internals (TS-private but present at runtime) — re-verify on any
+// ghostty-web upgrade: selectionManager, viewportRowToAbsolute,
+// selectionStart/End, requestRender, selectionChangedEmitter.
+function setViewportSelection(startCol, startRow, endCol, endRow) {
+  const sm = selManager();
+  if (!sm || typeof sm.viewportRowToAbsolute !== "function") return false;
+  sm.selectionStart = {
+    col: startCol,
+    absoluteRow: sm.viewportRowToAbsolute(startRow),
+  };
+  sm.selectionEnd = {
+    col: endCol,
+    absoluteRow: sm.viewportRowToAbsolute(endRow),
+  };
+  sm.requestRender?.();
+  sm.selectionChangedEmitter?.fire?.();
+  return true;
+}
+
+// Read one cell's text by probing a single-cell selection then getSelection
+// (which correctly handles the scrollback/screen split). Per-cell probing
+// keeps the column aligned for ASCII, CJK, emoji and grapheme clusters alike
+// (a string index would drift past wide glyphs).
 function cellChar(col, row) {
-  if (!terminal) return "";
-  terminal.select(col, row, 1);
+  if (!setViewportSelection(col, row, col, row)) return "";
   return terminal.getSelection?.() || "";
 }
 
@@ -4715,7 +4741,7 @@ function selectWordAt(col, row) {
   if (!terminal) return false;
   const cols = terminal.cols || 1;
   if (!isWordChar(cellChar(col, row))) {
-    terminal.select(col, row, 1);
+    if (!setViewportSelection(col, row, col, row)) return false;
     termSelStartCell = { col, row };
     termSelEndCell = { col, row };
     return true;
@@ -4724,7 +4750,7 @@ function selectWordAt(col, row) {
   while (s > 0 && isWordChar(cellChar(s - 1, row))) s--;
   let e = col;
   while (e < cols - 1 && isWordChar(cellChar(e + 1, row))) e++;
-  terminal.select(s, row, e - s + 1);
+  setViewportSelection(s, row, e, row);
   termSelStartCell = { col: s, row };
   termSelEndCell = { col: e, row };
   return true;
@@ -4737,6 +4763,11 @@ function enterTerminalSelection(clientX, clientY) {
   ensureSelectionDom();
   if (!selectWordAt(cell.col, cell.row)) return;
   termSelActive = true;
+  // Selecting text must not keep the soft keyboard up: it covers the
+  // selection UI, and a still-focused mobileInput gets revived by the
+  // trailing touch (Android quirk, see endTouchScroll). Blur it; the
+  // visualViewport resize that follows re-pins the handles via reposition.
+  if (document.activeElement === mobileInput) mobileInput.blur();
   refreshSelectionFromDist();
   // Must be a FULL paint: dist's select() API sets the selection but does
   // NOT mark the selected rows dirty (only mouse-drag selection and
@@ -4861,7 +4892,7 @@ async function shareTerminalSelection() {
   exitTerminalSelection();
 }
 
-// Re-apply select() from the cached start/end cells after a handle drag.
+// Re-apply the selection from the cached start/end cells after a handle drag.
 function applySelectionRange() {
   if (!terminal || !termSelStartCell || !termSelEndCell) return;
   let a = termSelStartCell;
@@ -4869,10 +4900,8 @@ function applySelectionRange() {
   if (a.row > b.row || (a.row === b.row && a.col > b.col)) {
     [a, b] = [b, a];
   }
-  const cols = terminal.cols || 1;
-  const len = (b.row - a.row) * cols + (b.col - a.col + 1);
-  terminal.select(a.col, a.row, Math.max(1, len));
-  // Full paint: select() doesn't dirty the selection rows (see
+  setViewportSelection(a.col, a.row, b.col, b.row);
+  // Full paint: setting the selection doesn't mark the rows dirty (see
   // enterTerminalSelection), so dirty-only wouldn't redraw the highlight.
   scheduleFullPaint();
 }
