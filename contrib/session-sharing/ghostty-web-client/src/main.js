@@ -3992,21 +3992,26 @@ if (debugEnabled) {
   debugBar.style.cssText =
     "position:fixed;top:0;left:0;right:0;z-index:9999;font:11px/1.3 ui-monospace,monospace;background:rgba(0,0,0,0.82);color:#7de3bb;padding:3px 8px;white-space:nowrap;overflow:hidden;display:flex;gap:6px;align-items:center;";
   const debugText = document.createElement("span");
+  // min-width:0 lets the text actually shrink (flex items default to
+  // min-width:auto) so the buttons always have room and never get clipped
+  // by the bar's overflow:hidden.
   debugText.style.cssText =
-    "flex:1;overflow:hidden;text-overflow:ellipsis;pointer-events:none;";
+    "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;pointer-events:none;";
   debugText.textContent = "(waiting for touch)";
+  // All three buttons must set width:auto + flex:0 0 auto to override the
+  // global `button { width: 100% }`; otherwise each wants full width and a
+  // third button pushes the others off-screen (clipped by overflow:hidden).
+  const debugBtnCss =
+    "font:11px ui-monospace,monospace;border:0;border-radius:3px;padding:2px 8px;width:auto;flex:0 0 auto;";
   const debugDlBtn = document.createElement("button");
   debugDlBtn.textContent = "DL";
-  debugDlBtn.style.cssText =
-    "font:11px ui-monospace,monospace;background:#7de3bb;color:#000;border:0;border-radius:3px;padding:2px 8px;";
+  debugDlBtn.style.cssText = debugBtnCss + "background:#7de3bb;color:#000;";
   const debugClrBtn = document.createElement("button");
   debugClrBtn.textContent = "CLR";
-  debugClrBtn.style.cssText =
-    "font:11px ui-monospace,monospace;background:#444;color:#fff;border:0;border-radius:3px;padding:2px 8px;";
+  debugClrBtn.style.cssText = debugBtnCss + "background:#444;color:#fff;";
   const debugUpBtn = document.createElement("button");
   debugUpBtn.textContent = "UP";
-  debugUpBtn.style.cssText =
-    "font:11px ui-monospace,monospace;background:#5ab0ff;color:#000;border:0;border-radius:3px;padding:2px 8px;flex:0 0 auto;";
+  debugUpBtn.style.cssText = debugBtnCss + "background:#5ab0ff;color:#000;";
   debugBar.append(debugText, debugUpBtn, debugDlBtn, debugClrBtn);
   document.body.appendChild(debugBar);
   setDebugBar = (text) => {
