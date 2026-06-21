@@ -897,8 +897,14 @@
         }
         .term-sel-bar.visible {
           display: flex;
+          flex-wrap: nowrap;
         }
         .term-sel-bar button {
+          /* Override the global `button { width: 100% }` — otherwise the
+             three buttons (复制/粘贴/分享) each want full width and stack
+             vertically instead of sitting in a row. */
+          width: auto;
+          flex: 0 0 auto;
           margin: 0;
           padding: 6px 14px;
           border: 0;

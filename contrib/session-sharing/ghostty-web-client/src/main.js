@@ -4003,7 +4003,11 @@ if (debugEnabled) {
   debugClrBtn.textContent = "CLR";
   debugClrBtn.style.cssText =
     "font:11px ui-monospace,monospace;background:#444;color:#fff;border:0;border-radius:3px;padding:2px 8px;";
-  debugBar.append(debugText, debugDlBtn, debugClrBtn);
+  const debugUpBtn = document.createElement("button");
+  debugUpBtn.textContent = "UP";
+  debugUpBtn.style.cssText =
+    "font:11px ui-monospace,monospace;background:#5ab0ff;color:#000;border:0;border-radius:3px;padding:2px 8px;flex:0 0 auto;";
+  debugBar.append(debugText, debugUpBtn, debugDlBtn, debugClrBtn);
   document.body.appendChild(debugBar);
   setDebugBar = (text) => {
     debugText.textContent = text;
@@ -4055,6 +4059,26 @@ if (debugEnabled) {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
+  });
+  // One-tap log upload: turn the in-memory log into a .txt File and push it
+  // through the EXISTING file-upload path. It lands on the Mac agent at
+  // ~/Library/Application Support/com.mitchellh.ghostty/uploads/<session>/,
+  // which Claude Code can read directly — no copy/paste, no share sheet,
+  // no relay changes. Needs an active session; if the socket is down,
+  // enqueueUploads queues it and flushes on reconnect.
+  debugUpBtn.addEventListener("click", () => {
+    const body = debugLogs.join("\n") + "\n";
+    const fname = `ghostty-log-${new Date().toISOString().replace(/[:.]/g, "-")}.txt`;
+    let file;
+    try {
+      file = new File([body], fname, { type: "text/plain" });
+    } catch (_) {
+      // Older engines without the File constructor: tag a Blob with a name.
+      file = new Blob([body], { type: "text/plain" });
+      file.name = fname;
+    }
+    enqueueUploads([file]);
+    setDebugBar(`UP ${fname} (${body.length}B)`);
   });
   debugClrBtn.addEventListener("click", () => {
     debugLogs.length = 0;
@@ -4969,7 +4993,12 @@ async function copyTerminalSelection() {
   if (text) {
     const ok = await copyTextRobust(text);
     showSessionActionToast(ok ? "已复制" : "复制失败");
-    logEvt(`[SEL] copy ok=${ok} len=${text.length}`);
+    logEvt(
+      `[SEL] copy ok=${ok} len=${text.length} preview="${text.slice(0, 16)}"`,
+    );
+  } else {
+    showSessionActionToast("未选中文字");
+    logEvt(`[SEL] copy SKIP empty selection`);
   }
   exitTerminalSelection();
 }
