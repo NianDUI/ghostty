@@ -1664,11 +1664,6 @@ function schedulePaint(force = false) {
         terminal,
         terminal.scrollbarOpacity,
       );
-      if (termSelActive) {
-        logEvt(
-          `[SEL] render forceAll=${forceAll} vY=${terminal.viewportY} pos=${JSON.stringify(terminal.getSelectionPosition?.() ?? null)}`,
-        );
-      }
     } catch (_) {}
   });
 }
@@ -4777,18 +4772,10 @@ function ensureSelectionDom() {
   attachHandleDrag(termSelHandleEnd);
 }
 
-// Select the word at (col,row). Pull the whole line first (getSelection
-// trims trailing spaces but keeps leading columns, so col indexing stays
-// valid up to the trimmed length).
+// The dist SelectionManager (TS-private but present at runtime) drives the
+// selection / scrollback-aware row mapping we rely on.
 function selManager() {
   return terminal?.selectionManager || null;
-}
-
-// Is the Android soft keyboard currently shown? In resize mode the visual
-// viewport shrinks well below its running max when the keyboard is up.
-function isKeyboardVisible() {
-  const vv = window.visualViewport;
-  return !!vv && maxSeenViewportH > 0 && vv.height < maxSeenViewportH - 80;
 }
 
 // Force the keyboard back to the state it had when the selection started, so
@@ -4883,10 +4870,24 @@ function captureSelectionText() {
   termSelText = buildSelectionText();
 }
 
+// Read a VIEWPORT row's cells scrollback-aware. getLine() indexes the active
+// screen, so a raw getLine(viewportRow) reads the wrong line whenever the user
+// has scrolled into history (viewportY > 0) — the visible row then maps to a
+// scrollback line. Mirror buildSelectionText: map viewport row → absolute row
+// via the SelectionManager, then split scrollback vs screen.
+function viewportRowCells(row) {
+  const wt = terminal?.wasmTerm;
+  if (!wt) return null;
+  const abs = selManager()?.viewportRowToAbsolute?.(row);
+  if (abs == null) return wt.getLine?.(row) ?? null;
+  const sbLen = wt.getScrollbackLength?.() ?? 0;
+  return abs < sbLen ? wt.getScrollbackLine?.(abs) : wt.getLine?.(abs - sbLen);
+}
+
 function selectWordAt(col, row) {
   if (!terminal) return false;
   const cols = terminal.cols || 1;
-  const line = terminal.wasmTerm?.getLine?.(row);
+  const line = viewportRowCells(row);
   // Word-ness of a cell column, read straight from the live buffer. getLine is
   // reliable; the old per-cell dist getSelection probe mis-read CJK and even
   // ASCII, so word-expand only ever grabbed a single char. A wide-char spacer

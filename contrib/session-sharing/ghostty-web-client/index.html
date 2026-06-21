@@ -773,6 +773,10 @@
         .mobile-killline:not(.hidden) {
           display: inline-flex;
         }
+        .mobile-killline[disabled] {
+          opacity: 0.45;
+          pointer-events: none;
+        }
         .mobile-killline:active {
           background: rgba(125, 227, 187, 0.28);
         }
