@@ -2001,14 +2001,32 @@ async function ensureTerminal() {
         // page legitimately wants its backend / token inputs to take
         // focus when the user taps them.
         if (!terminalView.contains(target)) return;
-        if (
+        const isField =
           target instanceof HTMLTextAreaElement ||
-          target instanceof HTMLInputElement
-        ) {
-          if (typeof target.blur === "function") {
+          target instanceof HTMLInputElement;
+        // During a long-press selection (timer pending OR active) freeze the
+        // keyboard at the state it had when the gesture started. dist's
+        // terminal.focus() focuses the .terminal-canvas-host DIV
+        // (canvas.parentElement) on touch, which on HarmonyOS flips the soft
+        // keyboard ~190ms later. So:
+        //   - started HIDDEN  → blur the intruder so the keyboard stays down
+        //   - started VISIBLE → re-assert mobileInput focus so it stays up
+        const duringSelect = termSelLongPressTimer !== null || termSelActive;
+        if (duringSelect) {
+          if (kbVisibleOnSelect) {
+            if (document.activeElement !== mobileInput) {
+              mobileInput.focus({ preventScroll: true });
+            }
+          } else if (typeof target.blur === "function") {
             target.blur();
-            logEvt(`blur stolen ${target.tagName.toLowerCase()}`);
           }
+          return;
+        }
+        // Outside a selection: dist's hidden helper textarea must never hold
+        // focus on mobile (it re-raises the keyboard after a swipe).
+        if (isField && typeof target.blur === "function") {
+          target.blur();
+          logEvt(`blur stolen ${target.tagName.toLowerCase()}`);
         }
       },
       { capture: true },
@@ -4635,6 +4653,17 @@ let termSelLongPressFired = false;
 let termSelActive = false;
 let termSelStartCell = null; // {col,row} in viewport coords
 let termSelEndCell = null;
+// Text captured at SELECTION time (press + every handle drag), read straight
+// from the live buffer via getLine. dist's getSelection() reads the buffer at
+// COPY time, which on HarmonyOS WebView is often already empty (the canvas
+// shows stale GPU-cached pixels while the buffer rows have been cleared) —
+// so copy must use this cached snapshot, not a fresh getSelection().
+let termSelText = "";
+// Soft-keyboard visible/hidden state captured at the START of the gesture that
+// may become a selection. The whole long-press → copy/paste/share flow must
+// NOT change the keyboard's shown/hidden state, so we record it up front and
+// restore it on exit (exitTerminalSelection → restoreKeyboardState).
+let kbVisibleOnSelect = false;
 let termSelStartX = 0;
 let termSelStartY = 0;
 let termSelHandleStart = null;
@@ -4718,6 +4747,13 @@ function ensureSelectionDom() {
       passive: true,
     });
   }
+  // The action buttons must NOT steal focus from mobileInput — taking focus
+  // blurs the soft keyboard and changes its shown/hidden state, which the
+  // long-press → copy/paste/share flow must never do. preventDefault on
+  // mousedown is the canonical "keep focus where it is" trick: it stops the
+  // focus transfer while leaving the click event intact. (capture so it runs
+  // before the synthesized focus.)
+  termSelBar.addEventListener("mousedown", (e) => e.preventDefault(), true);
   copyBtn.addEventListener("click", (e) => {
     e.preventDefault();
     copyTerminalSelection();
@@ -4739,6 +4775,27 @@ function ensureSelectionDom() {
 // valid up to the trimmed length).
 function selManager() {
   return terminal?.selectionManager || null;
+}
+
+// Is the Android soft keyboard currently shown? In resize mode the visual
+// viewport shrinks well below its running max when the keyboard is up.
+function isKeyboardVisible() {
+  const vv = window.visualViewport;
+  return !!vv && maxSeenViewportH > 0 && vv.height < maxSeenViewportH - 80;
+}
+
+// Force the keyboard back to the state it had when the selection started, so
+// the long-press → copy/paste/share flow never changes shown/hidden. Driven
+// purely by mobileInput focus (focused ⇒ keyboard up, blurred ⇒ down).
+function restoreKeyboardState() {
+  if (!shouldUseMobileInput() || !mobileInput) return;
+  if (kbVisibleOnSelect) {
+    if (document.activeElement !== mobileInput) {
+      mobileInput.focus({ preventScroll: true });
+    }
+  } else if (document.activeElement === mobileInput) {
+    mobileInput.blur();
+  }
 }
 
 // Set the selection from VIEWPORT coordinates, driving the SelectionManager
@@ -4768,6 +4825,57 @@ function setViewportSelection(startCol, startRow, endCol, endRow) {
   return true;
 }
 
+// Build the selected text ourselves from the live buffer, replicating dist's
+// getSelection() scrollback/screen split but under OUR control so we can call
+// it at SELECTION time (when the buffer rows are guaranteed live) and cache
+// the result. Reads selectionStart/End (absolute buffer rows) from the
+// SelectionManager. Returns "" if there's no selection.
+function buildSelectionText() {
+  const sm = selManager();
+  const wt = terminal?.wasmTerm;
+  if (!sm || !sm.selectionStart || !sm.selectionEnd || !wt) return "";
+  let aCol = sm.selectionStart.col;
+  let aRow = sm.selectionStart.absoluteRow;
+  let bCol = sm.selectionEnd.col;
+  let bRow = sm.selectionEnd.absoluteRow;
+  if (aRow > bRow || (aRow === bRow && aCol > bCol)) {
+    [aCol, bCol] = [bCol, aCol];
+    [aRow, bRow] = [bRow, aRow];
+  }
+  const sbLen = wt.getScrollbackLength?.() ?? 0;
+  const lines = [];
+  for (let D = aRow; D <= bRow; D++) {
+    const line =
+      D < sbLen ? wt.getScrollbackLine?.(D) : wt.getLine?.(D - sbLen);
+    if (!line) {
+      lines.push("");
+      continue;
+    }
+    const sCol = D === aRow ? aCol : 0;
+    const eCol = D === bRow ? bCol : line.length - 1;
+    let s = "";
+    for (let c = sCol; c <= eCol && c < line.length; c++) {
+      const cell = line[c];
+      // Wide-char (CJK/emoji) spacer cell: width 0, codepoint 0. The glyph
+      // was already emitted by the preceding cell, so skip it — otherwise
+      // every wide char gets a spurious trailing space ("你 选 中").
+      if (cell && cell.width === 0) continue;
+      s +=
+        cell && cell.codepoint && cell.codepoint !== 0
+          ? String.fromCodePoint(cell.codepoint)
+          : " ";
+    }
+    lines.push(s.replace(/\s+$/, ""));
+  }
+  return lines.join("\n");
+}
+
+// Recompute the cached selection text from the live buffer. Call after every
+// change to the selection (initial word select + each handle drag).
+function captureSelectionText() {
+  termSelText = buildSelectionText();
+}
+
 // Read one cell's text by probing a single-cell selection then getSelection
 // (which correctly handles the scrollback/screen split). Per-cell probing
 // keeps the column aligned for ASCII, CJK, emoji and grapheme clusters alike
@@ -4784,16 +4892,6 @@ function isWordChar(text) {
 function selectWordAt(col, row) {
   if (!terminal) return false;
   const cols = terminal.cols || 1;
-  // Diagnostic: dump the whole buffer row so we can confirm it actually has
-  // text and in which columns (a press often lands on inter-word padding).
-  setViewportSelection(0, row, cols - 1, row);
-  logEvt(
-    `[SEL] line${row} "${(terminal.getSelection?.() || "").slice(0, 60)}"`,
-  );
-  const wt = terminal.wasmTerm;
-  logEvt(
-    `[SEL] state alt=${wt?.isAlternateScreen?.() ? 1 : 0} sbLen=${wt?.getScrollbackLength?.() ?? "?"} cur=${JSON.stringify(wt?.getCursor?.() ?? null)}`,
-  );
   // Snap to the nearest word when the press lands on whitespace — users tap
   // slightly off the glyph, and TUIs (Claude Code) have lots of padding, so
   // a literal single-cell selection on a space copies nothing.
@@ -4815,6 +4913,7 @@ function selectWordAt(col, row) {
       setViewportSelection(col, row, col, row);
       termSelStartCell = { col, row };
       termSelEndCell = { col, row };
+      captureSelectionText();
       return true;
     }
     c = found;
@@ -4826,6 +4925,7 @@ function selectWordAt(col, row) {
   setViewportSelection(s, row, e, row);
   termSelStartCell = { col: s, row };
   termSelEndCell = { col: e, row };
+  captureSelectionText();
   return true;
 }
 
@@ -4918,14 +5018,20 @@ function hideSelectionUI() {
   termSelBar?.classList.remove("visible");
 }
 
-function exitTerminalSelection() {
+function exitTerminalSelection(restoreKb = true) {
   if (!termSelActive) return;
   termSelActive = false;
   termSelStartCell = null;
   termSelEndCell = null;
+  termSelText = "";
   hideSelectionUI();
   terminal?.clearSelection?.();
   schedulePaint();
+  // Preserve the keyboard's shown/hidden state across the whole long-press →
+  // copy/paste/share flow. The touchstart-dismiss path opts out
+  // (restoreKb=false): a fresh tap on the terminal follows the normal
+  // tap-to-focus behaviour instead.
+  if (restoreKb) restoreKeyboardState();
 }
 
 // Synchronous execCommand copy. HarmonyOS / Android WebViews deny
@@ -5016,8 +5122,18 @@ async function pasteFromClipboard() {
   exitTerminalSelection();
 }
 
+// Pick the best available selection text: the snapshot captured at selection
+// time (buffer guaranteed live) first, then a fresh live re-read, then dist's
+// own getSelection() as a last resort. On HarmonyOS the cached one is usually
+// the only non-empty source (buffer cleared by copy time, canvas stale).
+function resolveSelectionText() {
+  return (
+    termSelText || buildSelectionText() || terminal?.getSelection?.() || ""
+  );
+}
+
 async function copyTerminalSelection() {
-  const text = terminal?.getSelection?.() || "";
+  const text = resolveSelectionText();
   if (text) {
     const ok = await copyTextRobust(text);
     showSessionActionToast(ok ? "已复制" : "复制失败");
@@ -5032,7 +5148,7 @@ async function copyTerminalSelection() {
 }
 
 async function shareTerminalSelection() {
-  const text = terminal?.getSelection?.() || "";
+  const text = resolveSelectionText();
   if (!text) {
     exitTerminalSelection();
     return;
@@ -5061,6 +5177,9 @@ function applySelectionRange() {
     [a, b] = [b, a];
   }
   setViewportSelection(a.col, a.row, b.col, b.row);
+  // Re-capture the text from the live buffer on every drag step — the buffer
+  // rows are guaranteed live while the user is actively selecting.
+  captureSelectionText();
   // Full paint: setting the selection doesn't mark the rows dirty (see
   // enterTerminalSelection), so dirty-only wouldn't redraw the highlight.
   scheduleFullPaint();
@@ -5108,12 +5227,16 @@ terminalMount.addEventListener(
     const vv = window.visualViewport;
     const kbDown =
       !vv || maxSeenViewportH <= 0 || vv.height >= maxSeenViewportH - 80;
+    // Record the keyboard's state at the START of this gesture — if it becomes
+    // a long-press selection, exitTerminalSelection restores exactly this.
+    kbVisibleOnSelect = !kbDown;
     if (kbDown && document.activeElement === mobileInput) {
       mobileInput.blur();
     }
     // A fresh touch on the terminal dismisses an active selection (handles
-    // and bar stopPropagation, so taps on them never reach here).
-    if (termSelActive) exitTerminalSelection();
+    // and bar stopPropagation, so taps on them never reach here). Don't force
+    // the keyboard here — the normal tap-to-focus path handles it.
+    if (termSelActive) exitTerminalSelection(false);
     termSelLongPressFired = false;
     if (termSelLongPressTimer !== null) clearTimeout(termSelLongPressTimer);
     if (event.touches.length !== 1) return;
@@ -5156,6 +5279,13 @@ terminalMount.addEventListener("touchend", clearTermSelLongPressTimer, {
 });
 terminalMount.addEventListener("touchcancel", clearTermSelLongPressTimer, {
   passive: true,
+});
+// Belt-and-braces for the native long-press menu: even with user-select:none
+// on body.terminal-mode, some Android WebViews still synthesize a contextmenu
+// on press-and-hold. Swallow it so the WebView's "复制/全选" callout never
+// appears over our own selection bar.
+terminalMount.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
 });
 
 terminalView.addEventListener("pointerdown", (event) => {
@@ -5297,6 +5427,18 @@ mobileInput.addEventListener("input", () => {
   mobileInput.value = "";
   requestMobileBottomScroll();
   scheduleMobileRefocus();
+});
+
+// Diagnostic: capture what the soft keyboard's "delete key swipe = clear all"
+// gesture actually fires on this device. Our proxy textarea is kept empty, so
+// such a gesture has nothing to delete locally — it surfaces as a beforeinput
+// with a delete inputType (deleteHardLineBackward / deleteEntireSoftLine / …)
+// or a burst of Backspace keydowns. Log it so we can map it to a terminal
+// sequence (whole-line delete ≈ Ctrl+U \x15). No behaviour change yet.
+mobileInput.addEventListener("beforeinput", (event) => {
+  logEvt(
+    `mobileInput beforeinput type=${event.inputType} data=${JSON.stringify(event.data)} vlen=${mobileInput.value.length}`,
+  );
 });
 
 mobileInput.addEventListener("compositionstart", () => {

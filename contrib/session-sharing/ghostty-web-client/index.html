@@ -40,6 +40,15 @@
         background: #171412;
         color: #f5f0e8;
         overflow: hidden;
+        /* This is a canvas terminal with a CUSTOM (canvas-drawn) selection —
+           no DOM text needs native selection here. Disabling user-select +
+           the touch callout app-wide in terminal mode stops the WebView's
+           long-press "复制/全选" menu from appearing over our own copy bar and
+           selecting the debug bar / toolbar text. Our highlight/handles/copy
+           are unaffected (they don't use DOM text selection). */
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
       }
 
       .shell {

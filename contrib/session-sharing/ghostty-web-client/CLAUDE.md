@@ -727,6 +727,59 @@ POST //api/upload/init HTTP/2.0  404 9
   虽然 backendBase 一般不带 query,但 `apiURL` 也清,保持一致避免
   reviewer 困惑。
 
+## 移动端长按选择 / 复制(dist 选区一堆坑)
+
+`src/main.js` 的 `enterTerminalSelection` / `selectWordAt` / `setViewportSelection` /
+`buildSelectionText` / `copyTerminalSelection` 是**自绘**的移动端长按选词 + 手柄 +
+复制/粘贴/分享。不能直接用 dist 的 `select()` / `getSelection()`,真机
+(HarmonyOS / ICL-AL20)趟出来的坑:
+
+- **`select()` 的 scrollback 偏移 bug**:dist `select()`/`selectLines()` 把绝对行
+  算成 `viewportY + row`,有 scrollback 时落到屏幕外的历史行 → `getSelection()`
+  返空、`normalizeSelection()` 返 null、不画高亮。改用 `setViewportSelection`
+  直接写 `selectionManager.selectionStart/End`,行号走
+  `viewportRowToAbsolute(row)`(= `scrollbackLen + row - viewportY`)。
+- **`select()` 不标脏行**:只有鼠标拖选 / clearSelection 才标。设完选区必须
+  `scheduleFullPaint()`(forceAll),否则高亮不画(手柄/bar 出来了但文字没高亮)。
+- **`getSelection()` 在「点复制那一刻」才读 buffer**:HarmonyOS 上那几行此刻常
+  已被清空(canvas 显示的是 stale GPU 缓存的旧像素,见「Stale canvas backing」),
+  读出来全是换行。而且 dist 对 **CJK 宽字符走 grapheme 路径基本读不出**
+  (实测 `dist=14` vs 实际几百字)。**修法**:`captureSelectionText()` 在
+  **选中那一刻**(`selectWordAt` 末尾 + 每次 `applySelectionRange` 拖手柄)就用
+  自写的 `buildSelectionText()`(直读 `wasmTerm.getLine`/`getScrollbackLine`)把
+  文本缓存进 `termSelText`,复制时优先用缓存,`getSelection()` 只作最后兜底。
+- **宽字符 spacer 要跳过**:CJK/emoji 占 2 格,第二格是 spacer
+  (`cell.width === 0`, `codepoint 0`)。`buildSelectionText` 里
+  `if (cell.width === 0) continue;`,否则每个宽字符后多一个空格(「你 选 中」)。
+
+## 移动端长按时键盘必须「冻结」
+
+需求:**长按前后 + 点复制/粘贴/分享前后,软键盘的显示/隐藏状态绝不能变**。
+Android resize 模式下键盘显隐 = `mobileInput` 是否 focused。坑与对策:
+
+- **dist `terminal.focus()` focus 的是 `.terminal-canvas-host` 这个 DIV**
+  (`canvas.parentElement.focus()`),触屏时被调用,HarmonyOS 对它 ~190ms 后弹/收
+  软键盘 → 长按把键盘顶出来。focusin 守卫(`document` capture)原本只 blur
+  textarea/input,**放过了这个 div**。
+- **三道防线**(都在 `src/main.js`):
+  1. touchstart 用 `kbVisibleOnSelect = !kbDown` 记下手势开始时键盘真实显隐
+     (`kbDown` 看 `visualViewport.height` vs `maxSeenViewportH`)。
+  2. focusin 守卫:**长按期间**(`termSelLongPressTimer !== null || termSelActive`)
+     起始隐藏 → blur 入侵者保持隐藏;起始显示 → 重新 `mobileInput.focus()` 保持显示。
+  3. 复制/粘贴/分享按钮 `mousedown` preventDefault(不抢焦点)+ 退出选择时
+     `restoreKeyboardState()` 按 `kbVisibleOnSelect` 兜底还原。
+- **`exitTerminalSelection(restoreKb=true)`**:复制/粘贴/分享走 restore;**touchstart
+  点掉选区**走 `false`(那是用户点终端想打字,交给正常 tap-to-focus)。
+
+## 长按系统「复制/全选」菜单:`user-select:none`
+
+WebView 原生文本选择会作用到我们的 UI(debug 栏、复制条按钮文字被蓝色选中,
+长按弹系统「复制/全选」,全选把整个可选 DOM 都选了)。`body.terminal-mode`
+设 `user-select:none` + `-webkit-touch-callout:none`(canvas 终端 + 自绘选区,
+不需要 DOM 原生选择),terminalMount 再加 `contextmenu` preventDefault 兜底。
+**反模式**:只给个别按钮加 user-select:none(像早期 `.mobile-tool` 那样)——
+debug 栏/复制条会漏。终端模式整屏禁才彻底。
+
 ## 远端是 Linux 的小坑
 
 - 校验文件 sha 用 `sha256sum`,不是 macOS 的 `shasum`。
