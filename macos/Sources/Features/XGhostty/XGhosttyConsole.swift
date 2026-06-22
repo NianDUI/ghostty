@@ -48,6 +48,7 @@ private struct SessionTreeActions {
     var onAddChild: (SessionNode, Bool) -> Void   // (父分组, 新建的是否为分组)
     var onAddRoot: (Bool) -> Void                 // 根级新建（是否为分组）
     var onCopy: (SessionNode) -> Void             // 复制到剪贴板
+    var onCopyPlainText: (String) -> Void         // 复制纯文本到系统剪贴板（会话→主机 IP；分组→名称）
     var onPasteInto: (SessionNode) -> Void        // 分组→粘进内部；会话→粘为同级
     var onPasteRoot: () -> Void                   // 工具条：粘到根
     var onClick: (SessionNode, NSEvent.ModifierFlags) -> Void  // 单击选中（读修饰键多选）
@@ -202,6 +203,7 @@ private struct SessionRowView: View {
                     .disabled(!canPaste)
                 Divider()
                 Button("复制分组") { actions.onCopy(node) }
+                Button("复制名称") { actions.onCopyPlainText(node.name) }
                 Button("重命名分组…") { actions.onEdit(node) }
                 Button("删除分组", role: .destructive) { actions.onDelete(node) }
             } else {
@@ -213,6 +215,9 @@ private struct SessionRowView: View {
                 if isOpen { Button("关闭会话", role: .destructive) { actions.onClose(node) } }
                 Divider()
                 Button("复制会话") { actions.onCopy(node) }
+                if let host = node.host, !host.isEmpty {
+                    Button("复制 IP") { actions.onCopyPlainText(host) }
+                }
                 Button("粘贴为同级") { actions.onPasteInto(node) }
                     .disabled(!canPaste)
                 Button("编辑…") { actions.onEdit(node) }
@@ -395,22 +400,42 @@ private struct SessionTreeView: View {
 
 /// 顶部会话 Tab 栏：每个已开会话一个 tab（终端图标 + 名称 + 关闭✕）；空白处双击新建本地 shell。
 private struct SessionTabBar: View {
-    enum State { case connecting, connected, exited }
-    struct Tab: Identifiable { let id: UUID; let name: String; let state: State }
+    // 命名为 TabState 而非 State：避免嵌套 enum 遮蔽 SwiftUI 的 @State 属性包装器。
+    enum TabState: Equatable { case connecting, connected, exited }
+    struct Tab: Identifiable, Equatable { let id: UUID; let name: String; let state: TabState }
     let tabs: [Tab]
     let currentId: UUID?
     var onSelect: (UUID) -> Void
     var onClose: (UUID) -> Void
     var onNewTab: () -> Void
+    var onReorder: ([UUID]) -> Void   // 拖动重排提交：按新顺序回写 tabOrder
 
-    private func tabIcon(_ s: State) -> String {
+    // 本地可变顺序：拖拽时实时重排做动画；tabs 变化（开/关/切）经 onChange 同步。
+    @State private var ordered: [Tab]
+    @State private var dragging: Tab?
+
+    init(tabs: [Tab], currentId: UUID?,
+         onSelect: @escaping (UUID) -> Void,
+         onClose: @escaping (UUID) -> Void,
+         onNewTab: @escaping () -> Void,
+         onReorder: @escaping ([UUID]) -> Void) {
+        self.tabs = tabs
+        self.currentId = currentId
+        self.onSelect = onSelect
+        self.onClose = onClose
+        self.onNewTab = onNewTab
+        self.onReorder = onReorder
+        _ordered = State(initialValue: tabs)
+    }
+
+    private func tabIcon(_ s: TabState) -> String {
         switch s {
         case .connecting: return "terminal"
         case .connected: return "terminal.fill"
         case .exited: return "exclamationmark.triangle.fill"
         }
     }
-    private func tabIconColor(_ s: State) -> Color {
+    private func tabIconColor(_ s: TabState) -> Color {
         switch s {
         case .connecting: return .secondary
         case .connected: return .green
@@ -423,7 +448,7 @@ private struct SessionTabBar: View {
             ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 3) {
-                    ForEach(tabs) { tab in
+                    ForEach(ordered) { tab in
                         ZStack(alignment: .trailing) {
                             // 底层：点整条 tab → 选中。
                             Button { onSelect(tab.id) } label: {
@@ -458,6 +483,19 @@ private struct SessionTabBar: View {
                             }
                         }
                         .id(tab.id)   // 供 ScrollViewReader 定位（标签多时滚到当前）
+                        // 标题拖动重排：手柄 onDrag 设 dragging，落点 tab onDrop 实时移动；松手提交回写 tabOrder。
+                        .onDrag {
+                            dragging = tab
+                            return NSItemProvider(object: tab.id.uuidString as NSString)
+                        } preview: {
+                            // 透明 drag 预览：drop 后系统对默认 drag image 的淡出不可见 → 无尾影。
+                            // 拖拽反馈完全靠相邻 tab 的实时 move 动画（跟手）。同会话树做法。
+                            Color.clear.frame(width: 1, height: 1)
+                        }
+                        .onDrop(of: [.text],
+                                delegate: TabReorderDelegate(
+                                    item: tab, items: $ordered, dragging: $dragging,
+                                    onCommit: onReorder))
                     }
                     // tab 右侧空白：双击新建本地 shell。
                     Color.clear
@@ -478,6 +516,34 @@ private struct SessionTabBar: View {
             }
             }
         }
+        // tabs 增删改（开/关/重排提交后回流）时同步本地顺序。
+        .onChange(of: tabs) { newValue in ordered = newValue }
+    }
+}
+
+/// 终端标题拖动重排：手柄 onDrag 设 `dragging`，落点 tab onDrop 实时移动；松手提交新 id 顺序。
+private struct TabReorderDelegate: DropDelegate {
+    let item: SessionTabBar.Tab
+    @Binding var items: [SessionTabBar.Tab]
+    @Binding var dragging: SessionTabBar.Tab?
+    let onCommit: ([UUID]) -> Void
+
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging, dragging.id != item.id,
+              let from = items.firstIndex(where: { $0.id == dragging.id }),
+              let to = items.firstIndex(where: { $0.id == item.id }) else { return }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            items.move(fromOffsets: IndexSet(integer: from),
+                       toOffset: to > from ? to + 1 : to)
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        onCommit(items.map(\.id))
+        return true
     }
 }
 
@@ -1043,6 +1109,7 @@ class XGhosttyConsoleController: NSWindowController {
                 onAddRoot: { [weak self] isGroup in
                     self?.presentEditor(forNew: isGroup, parentId: nil) },
                 onCopy: { [weak self] in self?.copyOne($0) },
+                onCopyPlainText: { [weak self] in self?.copyTextToClipboard($0) },
                 onPasteInto: { [weak self] in self?.pasteRelativeTo($0) },
                 onPasteRoot: { [weak self] in self?.paste(intoParent: nil) },
                 onClick: { [weak self] node, mods in self?.handleClick(node, mods) },
@@ -1217,7 +1284,7 @@ class XGhosttyConsoleController: NSWindowController {
     private func makeTabBar() -> SessionTabBar {
         let bars = tabOrder.compactMap { id -> SessionTabBar.Tab? in
             guard let t = tabs[id] else { return nil }
-            let state: SessionTabBar.State = t.exited ? .exited : (t.connected ? .connected : .connecting)
+            let state: SessionTabBar.TabState = t.exited ? .exited : (t.connected ? .connected : .connecting)
             return SessionTabBar.Tab(id: id, name: t.title, state: state)
         }
         return SessionTabBar(
@@ -1225,7 +1292,17 @@ class XGhosttyConsoleController: NSWindowController {
             currentId: currentTabId,
             onSelect: { [weak self] in self?.select($0) },
             onClose: { [weak self] in self?.closeTab($0) },
-            onNewTab: { [weak self] in self?.newLocalShellTab() })
+            onNewTab: { [weak self] in self?.newLocalShellTab() },
+            onReorder: { [weak self] in self?.reorderTabs($0) })
+    }
+
+    /// 终端标题拖动重排：按新顺序重置 tabOrder（过滤已不存在的 id，补回拖拽期间新开的 tab），刷新标题栏。
+    /// 顺序在 windowWillClose 时随 currentOpenSessionIds 持久化，「恢复上次会话」保序。
+    private func reorderTabs(_ newOrder: [UUID]) {
+        let valid = newOrder.filter { tabs[$0] != nil }
+        let missing = tabOrder.filter { !valid.contains($0) }
+        tabOrder = valid + missing
+        refreshTabBar()
     }
 
     private func refreshTabBar() {
@@ -1757,7 +1834,8 @@ class XGhosttyConsoleController: NSWindowController {
     @discardableResult
     private func openTab(node: SessionNode?,
                          workingDirectory: String? = nil,
-                         transport: TabTransport = .ssh) -> UUID? {
+                         transport: TabTransport = .ssh,
+                         insertAfter: UUID? = nil) -> UUID? {
         guard let app = ghostty.app else { return nil }
         do {
             var cfg = Ghostty.SurfaceConfiguration()
@@ -1932,7 +2010,12 @@ class XGhosttyConsoleController: NSWindowController {
                     }
             }
             tabs[tabId] = tab
-            tabOrder.append(tabId)
+            // 默认追加到末尾；⌘T 复制时插到当前标签右侧（insertAfter）。
+            if let after = insertAfter, let idx = tabOrder.firstIndex(of: after) {
+                tabOrder.insert(tabId, at: idx + 1)
+            } else {
+                tabOrder.append(tabId)
+            }
             // 会话日志：仅对远端（ssh）会话挂输出落盘（本地 shell 不记）；开关在座舱设置，默认关。
             if let node, !node.isLocalShell {
                 SessionLogStore.shared.start(tabId: tabId, title: title, surface: sv)
@@ -1978,16 +2061,16 @@ class XGhosttyConsoleController: NSWindowController {
         guard let id = currentTabId, let tab = tabs[id] else { return }
         let pwd = tab.surface.pwd
         guard let nodeId = tab.nodeId, let node = store.find(nodeId) else {
-            openTab(node: nil, workingDirectory: pwd)   // 临时本地 shell
+            openTab(node: nil, workingDirectory: pwd, insertAfter: id)   // 临时本地 shell
             return
         }
         if node.isLocalShell {
-            openTab(node: node, workingDirectory: pwd)
+            openTab(node: node, workingDirectory: pwd, insertAfter: id)
         } else {
             // ssh：本地 shell 立即就绪可用 workingDirectory，但 ssh 要等登录完成。
             // 故在新会话「登录就绪」（远端首次上报目录 OSC7）后才发 cd —— 避免 cd 在
             // ssh 认证阶段被吞；远端不上报目录则读不到目标、自然不 cd。
-            guard let newId = openTab(node: node), let newTab = tabs[newId],
+            guard let newId = openTab(node: node, insertAfter: id), let newTab = tabs[newId],
                   let pwd, !pwd.isEmpty else { return }
             newTab.pendingCancellable = newTab.surface.$pwd
                 .compactMap { $0 }
@@ -2413,6 +2496,24 @@ class XGhosttyConsoleController: NSWindowController {
         paste(intoParent: parent)
     }
 
+    /// 会话树是否持有键盘焦点（点行后 handleClick 会 makeFirstResponder(treeHosting)）。
+    /// 树内搜索框等文本编辑（field editor 是 NSText）不算——让 ⌘C/⌘V 交给文本框。
+    private func treeHasFocus() -> Bool {
+        guard let r = window?.firstResponder as? NSView, !(r is NSText),
+              let tree = treeHosting else { return false }
+        return r === tree || r.isDescendant(of: tree)
+    }
+
+    /// ⌘V：会话树聚焦时粘贴剪贴板。有选中→粘到锚点（分组内 / 会话同级）；无选中→粘到根。
+    private func pasteFromKeyboard() {
+        guard !clipboard.isEmpty else { return }
+        if let id = selectionAnchor ?? selectedIds.first, let node = store.find(id) {
+            pasteRelativeTo(node)
+        } else {
+            paste(intoParent: nil)
+        }
+    }
+
     /// 把剪贴板内容（可批量）深拷贝（换新 id）后粘到指定分组（nil=根）。
     private func paste(intoParent parentId: UUID?) {
         guard !clipboard.isEmpty else { return }
@@ -2487,6 +2588,13 @@ class XGhosttyConsoleController: NSWindowController {
     private func copyOne(_ node: SessionNode) {
         clipboard = [node]
         refreshTree()
+    }
+
+    /// 复制纯文本（会话主机 IP / 分组名称）到系统剪贴板，供粘贴到别处。
+    private func copyTextToClipboard(_ text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
     }
 
     /// 批量复制：取选中的顶层节点（祖先已选中的子节点跳过，避免重复）存入剪贴板。
@@ -2746,10 +2854,22 @@ class XGhosttyConsoleController: NSWindowController {
                 return nil
             }
             if cmd && ch == "c" {        // ⌘C 终端复制（座舱自管，绕过 surface focus 链路导致的 cmd+C 失灵）
-                // 焦点在终端且有选区 → 读选区自己写剪贴板（可选去首尾空白）；否则放行走默认（文本框复制等）。
+                // 焦点在终端且有选区 → 读选区自己写剪贴板（可选去首尾空白）。
                 if let r = self.window?.firstResponder as? NSView,
                    r.isDescendant(of: self.surfaceContainer),
                    self.copyTerminalSelection(trim: self.layoutStore.layout.copyTrimWhitespace == true) {
+                    return nil
+                }
+                // 焦点在会话树且有选中 → 复制选中的会话/分组到座舱内部剪贴板（供 ⌘V 粘贴）。
+                if self.treeHasFocus(), !self.selectedIds.isEmpty {
+                    self.copySelected()
+                    return nil
+                }
+                return event             // 否则放行走默认（文本框复制等）
+            }
+            if cmd && ch == "v" {        // ⌘V 会话树聚焦 → 粘贴会话/分组；终端/文本框走默认粘贴
+                if self.treeHasFocus(), !self.clipboard.isEmpty {
+                    self.pasteFromKeyboard()
                     return nil
                 }
                 return event
