@@ -701,7 +701,7 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 **F. 增量可回退迁移（4 步，关键：Step 1/2 不碰共享文件、可安全停手）**：
 - **Step 0**：`git tag` 基线锚点 + 方案 C 全功能基线手测。
 - **Step 1**：console 新建终端格 SwiftUI 视图（先**只含** `SurfaceRepresentable`、不含浮层），hosting 替换裸 `SurfaceScrollView` 直挂（`:1957-1968`）。**不改 `SurfaceView.swift`**。验证渲染/缩放/滚动/cmd+C/focus/拖分隔条/多 tab 照旧 + 探针确认 `sizeDidChange` 仍调。**这一步就会正面撞墙 1/2/3**——过不了即停手回滚，零共享文件改动。
-- **Step 2**：浮层并入同一 ZStack（先仍传 `onBarFrameChange` 双保险），删 console `SearchOverlayHostingView` 挂载（`:2782-2807`）。验证 ⌘F 自动获焦（`@FocusState` 跨 hosting 是否工作）、条内按钮可点、点终端切回焦点（原生穿透）、拖动后命中。**仍不改共享文件，不如预期可停手。**
+- **Step 2**：浮层并入同一 ZStack（先仍传 `onBarFrameChange` 双保险），删 console `SearchOverlayHostingView` 挂载（`:2782-2807`）。验证 ⌘F 自动获焦（`@FocusState` 跨 hosting 是否工作）、条内按钮可点、点终端切回焦点（原生穿透）、拖动后命中。**仍不改共享文件，不如预期可停手。**（连带：Esc 关搜索现判 `searchOverlayHosting != nil`（`:2956`），删该字段后须改判 `searchState`，否则 Esc 关不掉浮层——验证 spike 实读确认。）
 - **Step 3**：**仅 Step 2 运行时验证通过后**——`SurfaceView.swift` 删 8 处侵入还原上游，`git diff <upstream-base> -- SurfaceView.swift` 应为零。收益落地。
 - **Step 4**：清 console 死代码（`SearchOverlayHostingView`/`searchBarFrame`/`focusSearchField` DFS 兜底等）。
 - 收益与功能解耦、可分别 `git revert`。
