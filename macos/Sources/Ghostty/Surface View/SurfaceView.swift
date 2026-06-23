@@ -647,6 +647,13 @@ extension Ghostty {
         /// 拖动 onEnded 用 withAnimation 让 dragOffset 归零把条弹回角落，这一步是渲染层动画，
         /// GeometryReader.frame(in:) 不会再上报，XGhostty 的 hitTest 会一直用拖动最后一帧的过时 frame
         /// 导致松手后点不动；故 onEnded 里按落位角调用本函数显式上报。公式与初始布局一致。
+        ///
+        /// ⚠️ 上游耦合（合上游必读）：本函数是对**上游**搜索条落位的**手算镜像**——上游用
+        /// `.frame(maxWidth:.infinity,maxHeight:.infinity,alignment:corner.alignment)` + `padding` 定位，
+        /// 这里手算同样的 x/y。合上游时若上游改了 snap 落位（改 padding / 改对齐 / 加边界 clamp），
+        /// 本函数会**静默算错**、致 XGhostty 座舱 ⌘F 搜索框「拖动后又点不准」复发（不一定产生 merge 冲突）。
+        /// 改上游落位 → 必须回核本函数仍与之一致。仅 XGhostty 用（onBarFrameChange 默认 nil，主 app 零影响）。
+        /// 选型依据 / 彻底解（方案 A）见 docs/plan/xghostty.md 第四十二批「方案选型」。
         private func snappedFrame(for corner: Corner, in containerSize: CGSize, barSize: CGSize) -> CGRect {
             let x = (corner == .topLeft || corner == .bottomLeft)
                 ? padding

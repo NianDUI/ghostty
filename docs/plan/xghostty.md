@@ -670,6 +670,48 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 - **坑：辅助方法名 `barFrame` 撞局部变量** `let barFrame = barGeo.frame(...)` → Swift 把方法调用当成对 CGRect 变量调用、类型推断爆炸（`unable to type-check this expression in reasonable time`，报在 body 起始行误导）。改名 `snappedFrame` 解决。
 - **调试技法（强化 D）**：这次**双文件双向探针**——`SurfaceView`(上报侧：`APPEAR / ONCHANGE measured+report+drag / ENDED snap`) + `XGhosttyConsole`(接收侧：`RECV` + `HIT local/bar/cl/super`) 写**同一** `/tmp/xgsearch.log`，时序交错一眼看穿「上报什么→收到什么→点击命中什么」（`super=_SystemTextFieldFieldEditor` 证实点中真实输入框）。**纯推理在 SwiftUI 微妙几何（offset / 动画 / 坐标系）上连错两轮，写文件探针实测一轮定位**——座舱调试别赌行为，插桩取真值。
 
+#### 方案选型（命中架构，2026-06-23 复盘定调）
+
+本 bug 暴露的是**座舱跨 AppKit↔SwiftUI 边界、两个「搜索条在哪」事实来源失同步**的结构问题。根因背景：两边终端 surface 都是 NSView（`SurfaceView_AppKit.swift:13` `class SurfaceView: OSSurfaceView`），分界在「包 surface 的外层容器」——主 app 用 SwiftUI `ZStack`（`SurfaceWrapper`，`SurfaceView.swift:36`，搜索浮层是 ZStack 兄弟层，SwiftUI 原生命中、单一事实来源）；座舱用纯 AppKit（`NSSplitView`/`ConsoleSplitView`，要 IDE 式多窗格可拖布局），没有 SwiftUI 父树，只能把浮层塞独立全屏 `NSHostingView`（`XGhosttyConsole.swift:2755`）靠上报 frame 手动重建命中 → 两个事实来源。三个候选：
+
+- **方案 B（已证伪，勿再试）**：让 `SearchOverlayHostingView.hitTest` 委托 `super.hitTest` + `hit === self ? nil` 穿透、删 `searchBarFrame`。**死路**——`SurfaceSearchOverlay` 的 ‹›✕ 是 SwiftUI 纯绘制（无 backing NSView），`super.hitTest` 对按钮区也返回 hosting `self`，`hit===self?nil` 把按钮点击当透明区吞掉（现象「框能输入、按钮点不动」，本文件「自定义 hitTest 穿透会误杀 SwiftUI Button」一条已记）。当前 `searchBarFrame.contains` 方案正是被「占满 hosting 吃掉终端点击」⊕「纯绘制按钮无 backing view」两头夹出来的合理解。
+- **方案 C（现状，已部署）**：保留两个事实来源，但上报从「动画终点稳定值」拿（`snappedFrame`）。**治标**。唯一长期债务：`snappedFrame` 是对上游 `corner.alignment + padding` 落位的**手算镜像**，与上游实现隐性耦合——上游改搜索框 snap 落位算法时会静默算错、又 desync。
+- **方案 A（彻底解，暂不做）**：把座舱「终端格」重构成 SwiftUI 复合视图（仿 `SurfaceWrapper`：`ZStack{ SurfaceRepresentable; SurfaceSearchOverlay }` 用 NSHostingView 托管挂进 NSSplitView），命中回归 SwiftUI 原生，删除全部 fork 侵入。**结构性根治**两个事实来源，但要动座舱最核心、反复踩坑才稳定的终端格挂载（resize/`SurfaceScrollView`、focus、cmd+C monitor、拖分隔条、undo 拆 surface 全挂在它上面），成本/风险大。
+- **结论：维持 C，不上 A。** 依据：① fork 侵入实测小——搜索条拖动/snap **全是上游的**（`git blame`：`b87d57f029` Mitchell + `cbcd52846c` Lukas），我们只**搭车**加了 `onBarFrameChange` 可选回调（默认 nil、主 app `?.` 短路零影响）+ `snappedFrame`（`bc3fce4e93`/`36e2d3e137`）；② 上游搜索框拖动是 2025-11 才进的边角功能、变动低频，C 的债务触发概率低、后果可控（最坏「拖动后又点不准」，可感知可修，不崩）；③ A 的成本/风险与「边角浮层命中精度」收益严重不成比例。
+- **方案 A 触发条件**：当搜索浮层交互显著变复杂（多个可拖浮层 / 浮层可缩放 / 浮层内更多需精确命中的控件）使手算镜像维护成本 > 重构成本时，再启动 A，一次性回到「画在哪点在哪」单一事实来源。**详细可落地执行方案见下「方案 A 执行预案（多角度评审）」。**
+- **护栏（已落地，零运行时风险）**：① `snappedFrame` 注释补「上游耦合警示」；② 根 `CLAUDE.md` 合上游清单加一条——合上游若 `SurfaceSearchOverlay` 拖动/snap 落位被动过，必须回核 `snappedFrame` 是否还对得上。把隐性耦合从「埋着」变「合并时必检」。
+
+#### 方案 A 执行预案（多角度评审，2026-06-23，暂不实施）
+
+四个 agent 并行评审（resize 路径 / SwiftUI 环境依赖 / 回归风险红队 / 迁移与收益）综合产出。**一句话定调**：方案 A 收益明确（共享文件 fork 侵入清零、隐性耦合消除），但它**不是简单重构**——承重墙集中在三处「项目历史上已踩坑写过血泪注释」的 AppKit 交界，三道墙缺一项就**回归已修复的 bug**。故定为「预案」：满足触发条件再启动，且必须先在不碰共享文件的前提下验证三道墙可破。
+
+**A. 目标架构**：把座舱终端格从「`surfaceContainer`(NSView) + 裸挂 `SurfaceScrollView`」重构为单个 `NSHostingView<ZStack{ SurfaceRepresentable(view:sv,size:geo.size); if searchState { SurfaceSearchOverlay(...) } }>` 作为 `rSplit` 的 pane 0。**直接复用上游** `Ghostty.SurfaceRepresentable`（`SurfaceView.swift:693`，其 `makeOSView` 内部就 `new SurfaceScrollView` → scrollback 滚动条 + resize 全白送、零自研）与 `SurfaceSearchOverlay`（零 `Ghostty.App` 依赖，lite ZStack **无需** `.environmentObject` 注入）。命中回归 SwiftUI 原生 Z 序穿透。
+
+**B. 收益（量化）**：共享文件 `SurfaceView.swift` 的 **8 处 fork 侵入 / ~41 行代码 + 16 行注释 → 0**（回归纯上游，此文件未来合上游零冲突面）；消除 2 类隐性耦合（`snappedFrame` 手算镜像 = 静默偏移源、`barSize` 测量块结构依赖）；console 侧删 ~80 行 hack（`SearchOverlayHostingView` 子类 + 自定义 hitTest + DFS 聚焦 + frame 回填）。
+
+**C. 三道承重墙（前置必解，缺一不可上）——核心难点**：
+- **墙 1｜firstResponder 必须下放到内层 surface**：`Ghostty.SurfaceView.focused` 只由 NSView `becomeFirstResponder` 驱动（`SurfaceView_AppKit.swift:968-982/579`）。包进 hosting 后若 `makeFirstResponder(hosting)` 会卡在容器、内层 surface `focused` 恒 false → `performKeyEquivalent`（`:1465` `if !focused return false`）全 false → **cmd+C 失灵（`docs:604` 复发）、终端可能收不到键盘**。项目已在搜索浮层踩过同一坑（`XGhosttyConsole.swift:2808-2811` 注释原话）。解：representable 让内层 surface 真正成 first responder，座舱 `makeFirstResponder(内层 sv)` 而非 hosting；或 hosting override `becomeFirstResponder` forward 给内层 surface。
+- **墙 2｜三个 event monitor 命中锚点**：cmd+C / leftMouseUp / ⌘A 用同一谓词 `(firstResponder as? NSView)?.isDescendant(of: surfaceContainer)`（`:2914/2924/2967`）。换容器 + 墙 1 未解 → 复制三件套 + ⌘A **静默失效**（不崩不报、点了没反应，极易蒙混过测）。解：谓词锚点统一改指新 hosting 容器（建议固化一个 `terminalPaneView` 引用集中这 3 处），且依赖墙 1 让内层 surface 是该容器子孙。
+- **墙 3｜NSSplitView 经典 frame 模式 vs NSHostingView 固有尺寸顶牛**：`ConsoleSplitView` 注释（`:8-10`）正是为规避这个才用裸 NSView 做 pane。pane 0 换 hosting 正面撞禁忌 → 拖分隔条回弹/抖动、终端格被 SwiftUI 内容尺寸反推、`captureLayout`（`:1477`）存错 frame、重启布局漂移。解：新 hosting pane `translatesAutoresizingMaskIntoConstraints=true`（对齐 `:1032`）+ 压制 intrinsic（`.frame(maxWidth/maxHeight:.infinity)` + representable `intrinsicContentSize=.noIntrinsicMetric`）+ delegate 身份判断（`:3079/3085`）与 `captureLayout` subview 引用统一改指新容器。
+
+**D. 中风险项**：① **teardown/泄漏回归**——`teardownSurfaceForClose` 的 `removeFromSuperview`（`:469`）与 SwiftUI `dismantleNSView` 可能双重 remove / 持有竞争 → 第三十四/三十五批 surface 泄漏回归。解：拆前先解 representable 绑定、明确所有权、**复用同一 `Ghostty.SurfaceView` 实例不 new**；关 N 标签后按第三十四批 `heap` 计数复测。② **exitBar / zmodemOverlay**：搬进 ZStack 用 z-index 重表层序，或先留 AppKit 兄弟（改动最小，推荐先留）。
+
+**E. 零风险项（确认无需动，前提=复用同一 surface 实例）**：输出订阅（SessionLog/expect/sftp/zmodem）以 C `ghostty_surface_t` 指针为键（`OutputDispatch.swift:28`），与视图层级正交；broadcast/readonly/passwordInput 过滤读 surface model；`applyTitlebarTheme`/`applyColors` 走 window/contentView。**澄清**：座舱**无 undo-close**（`docs:443`），`closeTab` 即时 teardown；undo 感知那套是主 Ghostty 的 SplitTree 路径，座舱不进——红队报告纠正了任务里「undo 拆 surface」的概念混淆。
+
+**F. 增量可回退迁移（4 步，关键：Step 1/2 不碰共享文件、可安全停手）**：
+- **Step 0**：`git tag` 基线锚点 + 方案 C 全功能基线手测。
+- **Step 1**：console 新建终端格 SwiftUI 视图（先**只含** `SurfaceRepresentable`、不含浮层），hosting 替换裸 `SurfaceScrollView` 直挂（`:1957-1968`）。**不改 `SurfaceView.swift`**。验证渲染/缩放/滚动/cmd+C/focus/拖分隔条/多 tab 照旧 + 探针确认 `sizeDidChange` 仍调。**这一步就会正面撞墙 1/2/3**——过不了即停手回滚，零共享文件改动。
+- **Step 2**：浮层并入同一 ZStack（先仍传 `onBarFrameChange` 双保险），删 console `SearchOverlayHostingView` 挂载（`:2782-2807`）。验证 ⌘F 自动获焦（`@FocusState` 跨 hosting 是否工作）、条内按钮可点、点终端切回焦点（原生穿透）、拖动后命中。**仍不改共享文件，不如预期可停手。**
+- **Step 3**：**仅 Step 2 运行时验证通过后**——`SurfaceView.swift` 删 8 处侵入还原上游，`git diff <upstream-base> -- SurfaceView.swift` 应为零。收益落地。
+- **Step 4**：清 console 死代码（`SearchOverlayHostingView`/`searchBarFrame`/`focusSearchField` DFS 兜底等）。
+- 收益与功能解耦、可分别 `git revert`。
+
+**G. 手测清单**：拖动后命中 / 点终端切回焦点 / ⌘F 自动获焦 / scrollback 滚动 / cmd+C 复制（浮层开关各一次）/ focus 基线 / 拖三条分隔条 + 缩放 + 重启恢复布局 / 多 tab 切换 searchState / 关 tab 重开后再 ⌘F（座舱无 undo，等价复活）/ Esc 行为 / 翻页 Enter·Shift+Enter。座舱不进 unified log → 凡需观测内部状态配 `/tmp` 文件探针。
+
+**H. 约束**：文件探针调试；`scripts/xghostty-deploy.sh xghostty --skip-core -y`（纯 Swift 复用 ReleaseFast xcframework、自动 kill+重启）；XGhostty Dev Cert **绝不 `--deep` 重签**；泄漏用 `heap` 计数复测。
+
+**结论重申**：维持 C。方案 A 工时中等但回归风险集中且隐蔽（墙 2 静默失效极易漏测），**承重墙是三处历史血泪坑的正面放大**。触发条件（上游改落位 / 浮层变复杂 / 合上游连续冲突 / 终端格本就要 SwiftUI 化）满足任一再启动，且**必须 Step 1/2 先验证三道墙可破，方可推进 Step 3 清零共享文件**。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**
