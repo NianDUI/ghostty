@@ -649,6 +649,16 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 - **订正**：第三十九批「现状对照」里字体缩放（⌘0/⌘+/⌘-）由 🟥（保持灰）改为 🟩（接通后可用）。
 - 纯 Swift 零 C-ABI（复用 xcframework），`scripts/xghostty-deploy.sh xghostty -y` 部署。
 
+### 第四十一批（2026-06-23，⌘F 搜索框焦点对齐主 Ghostty——聚焦 + 点终端切回 + 按钮可点，纯 Swift 已部署）
+
+诉求：座舱 ⌘F 与主 Ghostty 行为对齐——打开即聚焦搜索框、点终端能立刻切回输入（搜索栏保留）、搜索条按钮可点。复用主 app 的 `Ghostty.SurfaceSearchOverlay`，但座舱把它单独塞进**全屏 `NSHostingView`** 挂在 `surfaceContainer` 上（≠ 主 app「在 SwiftUI 大树内」），由此引出三个叠加 bug，逐个解开：
+
+- **bug1 焦点不进搜索框**：独立 `NSHostingView` 里 SwiftUI `@FocusState`（`onAppear isSearchFieldFocused=true`）不会把 first responder 下放到底层文本框；而 `makeFirstResponder(hosting)` 会卡在容器上（容器不处理键盘 → 终端+搜索框都哑）。→ `focusSearchField(in:)` 绕过 SwiftUI focus，DFS 找浮层里第一个可成 first responder 的文本控件（优先 `NSTextField/NSTextView`）直接 `makeFirstResponder`，下一帧 layout 后找、找不到再兜一帧。
+- **bug2 搜索开着点终端切不回**：浮层 `.gesture(DragGesture())` 加在占满终端的 `.frame(maxWidth:.infinity,maxHeight:.infinity)` 上（`SurfaceView.swift`），让独立 `NSHostingView.hitTest` 把整块（含搜索条以外透明区）都返回自己 → 主 app「点终端切回」依赖的 `SurfaceView` 鼠标 monitor（`localEventLeftMouseDown` 判 `window.contentView.hitTest==self`，`SurfaceView_AppKit.swift:798`）永不成立。又因现代 SwiftUI 按钮也扁平渲染、`hitTest` 同返回 hosting 自己，按返回值分不清「条外透明」与「条上按钮」（直接穿透会误杀按钮，原注释踩过这坑）。→ 共享浮层加可选 `onBarFrameChange`（默认 `nil`、主 app 零影响）经命名坐标系上报搜索条 frame；座舱 `SearchOverlayHostingView` 子类据此**只放行条内点击、条外返回 nil 穿透**到终端。
+- **bug3 点搜索框/按钮没反应（坐标系坑）**：`NSView.hitTest(point)` 的 `point` 在**父视图 `surfaceContainer`（非 flipped、y 从底）** 坐标系，而上报 frame 是 SwiftUI（y 从顶）→ y 反了恒判条外，条内点击全被穿透。→ 改 `convert(point, from: superview)` 转本视图局部坐标再比对（实测点 TextField `pt.y=890 → 34`，落在条 `y 8~52` 内 ✓；点终端 `459 → 465` 在条外穿透 ✓）。
+- **调试技法（呼应踩坑 D）**：XGhostty 进程**完全不进 unified log**（`log show --predicate 'processImagePath CONTAINS "XGhostty"'` 0 行）→ `NSLog`/`log stream` 探针全废。改**写文件**（`/tmp/xgsearch_debug.txt`，`FileHandle.seekToEnd` append）一次拿到 `searchBarFrame` 实测值 + 命中判定，立即定位坐标系反向。**座舱内调试一律写文件，别指望 unified log / NSLog。**
+- 改动：`SurfaceView.swift`（共享浮层 `onBarFrameChange` + 命名坐标系上报，主 Ghostty scheme 已验证编译通过、零行为变化）、`XGhosttyConsole.swift`（`focusSearchField` + `SearchOverlayHostingView` 子类 + `openSearch`）。纯 Swift 零 C-ABI（复用 xcframework），`scripts/xghostty-deploy.sh xghostty --skip-core -y` 部署，真机验证：⌘F 聚焦 / 点搜索框输入 / 按钮可点 / 点终端切回 / 翻页 全通。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**

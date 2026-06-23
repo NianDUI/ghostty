@@ -433,12 +433,21 @@ extension Ghostty {
         let surfaceView: SurfaceView
         @ObservedObject var searchState: SurfaceView.SearchState
         let onClose: () -> Void
+        /// XGhostty 专用：上报搜索条本体在 coordinateSpaceName 坐标系中的 frame。
+        /// XGhostty 把本浮层塞进独立的全屏 NSHostingView，其内部「占满 frame + 拖动手势」会让
+        /// hitTest 把整块（含搜索条以外的透明区）都拦下，使「点终端切回焦点」失效；又因现代 SwiftUI
+        /// 按钮也是扁平渲染、hitTest 同样返回 hosting 自己，按返回值无法区分「条外透明区」与「条上
+        /// 按钮」。故由本浮层上报搜索条 frame，XGhostty 在 hosting 子类里据此只放行条内点击、条外
+        /// 穿透到终端。主 app 在 SwiftUI 树内渲染、命中天然穿透，默认 nil 不传、零行为变化。
+        var onBarFrameChange: ((CGRect) -> Void)? = nil
         @State private var corner: Corner = .topRight
         @State private var dragOffset: CGSize = .zero
         @State private var barSize: CGSize = .zero
         @FocusState private var isSearchFieldFocused: Bool
 
         private let padding: CGFloat = 8
+        /// 上报搜索条 frame 用的命名坐标系（原点对齐 NSHostingView bounds 左上）。
+        private let coordinateSpaceName = "ghosttySearchOverlayBar"
 
         var body: some View {
             GeometryReader { geo in
@@ -539,14 +548,22 @@ extension Ghostty {
                 }
                 .background(
                     GeometryReader { barGeo in
-                        Color.clear.onAppear {
-                            barSize = barGeo.size
-                        }
+                        let barFrame = barGeo.frame(in: .named(coordinateSpaceName))
+                        Color.clear
+                            .onAppear {
+                                barSize = barGeo.size
+                                onBarFrameChange?(barFrame)
+                            }
+                            .onChange(of: barFrame) { _ in
+                                // 拖动 / 切角 / 容器尺寸变化时同步上报最新 frame。
+                                onBarFrameChange?(barFrame)
+                            }
                     }
                 )
                 .padding(padding)
                 .offset(dragOffset)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: corner.alignment)
+                .coordinateSpace(name: coordinateSpaceName)
                 .gesture(
                     DragGesture()
                         .onChanged { value in

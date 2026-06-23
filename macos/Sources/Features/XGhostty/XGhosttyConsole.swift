@@ -2746,6 +2746,34 @@ class XGhosttyConsoleController: NSWindowController {
 
     // MARK: 终端搜索（复用 Ghostty 原生 SurfaceSearchOverlay）
 
+    /// XGhostty 搜索浮层专用 NSHostingView。
+    /// 浮层用占满约束 + 内部拖动手势，普通 NSHostingView 的 hitTest 会把整块（含搜索条以外的透明区）
+    /// 全部拦下，导致点终端无法穿透、切不回焦点（主 app 浮层在 SwiftUI 树内不存在此问题）。这里用
+    /// SwiftUI 持续上报的搜索条 frame（searchBarFrame）：条内点击交给 SwiftUI（输入框/上下/关闭按钮
+    /// 交互正常），条外一律返回 nil 穿透到下层终端，从而触发 SurfaceView 的鼠标 monitor 把 first
+    /// responder 切回终端，复刻主 app「点终端立刻切回」。
+    private final class SearchOverlayHostingView: NSHostingView<Ghostty.SurfaceSearchOverlay> {
+        /// 搜索条本体在本视图局部坐标系（左上原点、y 向下，由 SwiftUI 命名坐标系上报）的 frame。
+        var searchBarFrame: CGRect = .zero
+
+        required init(rootView: Ghostty.SurfaceSearchOverlay) {
+            super.init(rootView: rootView)
+        }
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            // NSView.hitTest 的 point 在父视图（surfaceContainer，非 flipped、y 从底）坐标系，必须先
+            // convert 到本视图局部坐标（isFlipped 下 y 从顶，与 SwiftUI 上报的 searchBarFrame 同坐标
+            // 系）——直接拿 point 比对会因 y 方向相反而恒判为条外。只放行落在搜索条上的点击，条外穿透
+            // 到终端（让 SurfaceView 的鼠标 monitor 命中终端、把 first responder 切回，复刻主 app
+            // 「点终端立刻切回」）。
+            let local = convert(point, from: superview)
+            guard searchBarFrame.contains(local) else { return nil }   // 条外：穿透
+            return super.hitTest(point) ?? self                        // 条内：交给搜索条本体
+        }
+    }
+
     /// ⌘F 切换：未开则给当前 surface 建 searchState 并挂原生搜索浮层；已开则关闭。
     @objc private func toggleSearch() {
         if searchOverlayHosting != nil { closeSearch() } else { openSearch() }
@@ -2756,13 +2784,18 @@ class XGhosttyConsoleController: NSWindowController {
         sv.xghosttyStartSearch()
         guard let ss = sv.searchState else { return }
         // Ghostty 原生搜索浮层：needle 输入 / 计数 / 上下翻页 / Esc 全由它处理，样式与主 app 一致。
+        // 弱引用 hosting，供浮层的 frame 上报回调回填（boxed weak，不形成 hosting↔rootView 闭包循环）。
+        weak var weakHosting: SearchOverlayHostingView?
         let overlay = Ghostty.SurfaceSearchOverlay(
             surfaceView: sv,
             searchState: ss,
-            onClose: { [weak self] in self?.closeSearch() })
-        // 普通 NSHostingView：SwiftUI 自身的命中测试会让搜索条本体拦截、透明区返回 nil 穿透到终端，
-        // 按钮（SwiftUI 绘制）也由 SwiftUI 内部正确分发——不能自行 override hitTest（会误杀按钮）。
-        let hosting = NSHostingView(rootView: overlay)
+            onClose: { [weak self] in self?.closeSearch() },
+            onBarFrameChange: { frame in weakHosting?.searchBarFrame = frame })
+        // 自定义 NSHostingView：浮层占满终端 + 内含拖动手势，会让默认 hitTest 把整块（含搜索条以外的
+        // 透明区）都拦下，点终端切不回焦点。SearchOverlayHostingView 用上报的搜索条 frame，只放行条内
+        // 点击、条外穿透到终端，复刻主 app「点终端立刻切回」（详见该类注释）。
+        let hosting = SearchOverlayHostingView(rootView: overlay)
+        weakHosting = hosting
         hosting.translatesAutoresizingMaskIntoConstraints = false
         surfaceContainer.addSubview(hosting)   // 叠在终端最上层
         NSLayoutConstraint.activate([
@@ -2772,7 +2805,40 @@ class XGhosttyConsoleController: NSWindowController {
             hosting.bottomAnchor.constraint(equalTo: surfaceContainer.bottomAnchor),
         ])
         searchOverlayHosting = hosting
-        // overlay 内部 @FocusState 在 onAppear 自动聚焦搜索框。
+        // 主 app 的浮层在 SwiftUI 原生层级里，@FocusState 自动驱动输入框获焦；这里隔了一层
+        // NSHostingView 独立挂载，SwiftUI 的 @FocusState 不会把 first responder 下放到底层文本框
+        // （只 makeFirstResponder(hosting) 会卡在容器上：它不处理键盘，终端和搜索框都收不到输入）。
+        // 绕过 SwiftUI focus，用 AppKit 直接定位浮层里真正的文本控件聚焦它（对称于 closeSearch 还给
+        // 终端那步）。SwiftUI 内容首次构建是异步的，下一帧 layout 后再找；当帧找不到再兜一帧。
+        DispatchQueue.main.async { [weak self, weak hosting] in
+            guard let self, let hosting, hosting.window != nil else { return }
+            hosting.layoutSubtreeIfNeeded()
+            if self.focusSearchField(in: hosting) { return }
+            DispatchQueue.main.async { [weak self, weak hosting] in
+                guard let self, let hosting else { return }
+                _ = self.focusSearchField(in: hosting)
+            }
+        }
+    }
+
+    /// 在浮层子树里找到第一个可成为 first responder 的文本输入控件并聚焦。
+    /// 优先精确匹配 NSTextField/NSTextView（SwiftUI TextField 底层），找不到再退化为任意可聚焦控件，
+    /// 后者按 DFS 顺序命中（搜索框在 HStack 最前，先于上下翻页/关闭按钮）。
+    @discardableResult
+    private func focusSearchField(in hosting: NSView) -> Bool {
+        func find(_ v: NSView, textOnly: Bool) -> NSView? {
+            for sub in v.subviews {
+                if sub.acceptsFirstResponder, !textOnly || sub is NSTextField || sub is NSTextView {
+                    return sub
+                }
+                if let f = find(sub, textOnly: textOnly) { return f }
+            }
+            return nil
+        }
+        guard let target = find(hosting, textOnly: true) ?? find(hosting, textOnly: false) else {
+            return false
+        }
+        return window?.makeFirstResponder(target) ?? false
     }
 
     @objc private func closeSearch() {
