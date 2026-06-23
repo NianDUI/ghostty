@@ -555,8 +555,14 @@ extension Ghostty {
                                 onBarFrameChange?(barFrame)
                             }
                             .onChange(of: barFrame) { _ in
-                                // 拖动 / 切角 / 容器尺寸变化时同步上报最新 frame。
-                                onBarFrameChange?(barFrame)
+                                // 拖动中（dragOffset≠0）跟手上报测量值；松手回弹动画期间 dragOffset 的
+                                // @State 已归零、但测量值仍含动画残留 offset、会与最终视觉位置偏差，故按
+                                // corner 上报 snap 落位（= 动画终点视觉位置）——无论动画哪一帧触发都是同
+                                // 一稳定值，消除「bar 停在动画中间帧」导致的命中错位。
+                                let report = dragOffset == .zero
+                                    ? snappedFrame(for: corner, in: geo.size, barSize: barSize)
+                                    : barFrame
+                                onBarFrameChange?(report)
                             }
                     }
                 )
@@ -580,6 +586,10 @@ extension Ghostty {
                                 corner = newCorner
                                 dragOffset = .zero
                             }
+                            // 回弹（dragOffset 动画归零）是渲染层动画，GeometryReader 不再上报最终
+                            // frame，XGhostty 的 hitTest 会用拖动最后一帧的过时位置、松手后点不动。按
+                            // 落位角显式上报 snap 后 frame（仅 XGhostty 传回调；主 app 为 nil，?. 短路）。
+                            onBarFrameChange?(snappedFrame(for: newCorner, in: geo.size, barSize: barSize))
                         }
                 )
             }
@@ -631,6 +641,20 @@ extension Ghostty {
             } else {
                 return point.y < midY ? .topRight : .bottomRight
             }
+        }
+
+        /// snap 落位后搜索条本体在命名坐标系（容器左上原点）中的 frame：贴 corner 角、离容器边 padding。
+        /// 拖动 onEnded 用 withAnimation 让 dragOffset 归零把条弹回角落，这一步是渲染层动画，
+        /// GeometryReader.frame(in:) 不会再上报，XGhostty 的 hitTest 会一直用拖动最后一帧的过时 frame
+        /// 导致松手后点不动；故 onEnded 里按落位角调用本函数显式上报。公式与初始布局一致。
+        private func snappedFrame(for corner: Corner, in containerSize: CGSize, barSize: CGSize) -> CGRect {
+            let x = (corner == .topLeft || corner == .bottomLeft)
+                ? padding
+                : containerSize.width - padding - barSize.width
+            let y = (corner == .topLeft || corner == .topRight)
+                ? padding
+                : containerSize.height - padding - barSize.height
+            return CGRect(x: x, y: y, width: barSize.width, height: barSize.height)
         }
 
         struct SearchButtonStyle: ButtonStyle {

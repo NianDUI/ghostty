@@ -659,6 +659,17 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 - **调试技法（呼应踩坑 D）**：XGhostty 进程**完全不进 unified log**（`log show --predicate 'processImagePath CONTAINS "XGhostty"'` 0 行）→ `NSLog`/`log stream` 探针全废。改**写文件**（`/tmp/xgsearch_debug.txt`，`FileHandle.seekToEnd` append）一次拿到 `searchBarFrame` 实测值 + 命中判定，立即定位坐标系反向。**座舱内调试一律写文件，别指望 unified log / NSLog。**
 - 改动：`SurfaceView.swift`（共享浮层 `onBarFrameChange` + 命名坐标系上报，主 Ghostty scheme 已验证编译通过、零行为变化）、`XGhosttyConsole.swift`（`focusSearchField` + `SearchOverlayHostingView` 子类 + `openSearch`）。纯 Swift 零 C-ABI（复用 xcframework），`scripts/xghostty-deploy.sh xghostty --skip-core -y` 部署，真机验证：⌘F 聚焦 / 点搜索框输入 / 按钮可点 / 点终端切回 / 翻页 全通。
 
+### 第四十二批（2026-06-23，⌘F 搜索框「拖动后点不动」bug4——三轮误诊→实测定位，纯 Swift 已部署）
+
+承第四十一批同一套机制（座舱浮层靠**上报 frame 重建命中区**）。主 app 搜索条可拖动 snap-to-corner；座舱**拖动松手后点搜索条部分位置点不动**（点中部命中、点左/下边缘穿透）。**连错两轮诊断**，教训值钱：
+
+- **误诊 1（offset 不进 frame）**：先猜 `.offset(dragOffset)` 是纯视觉变换、不反映进 `GeometryReader.frame(in:)`，在 `SurfaceView` 加 `.offsetBy` 叠加上报——**证伪**：实测 `REPORT` 拖动中是跟手的（bar 从 `(1383,8)` 平滑变到 `(-52,957)`），offset 确实进了命名坐标系 frame。
+- **误诊 2（safe area 偏移）**：再猜 `NSHostingView` 避让 window safe area（top≈52）致坐标系错位，hitTest 减 `safeAreaInsets` 并集判定——**证伪**：实测 `safe=NSEdgeInsets(top:0,...)`，safe area 根本是 0。
+- **实测真因**：松手 `onEnded` 用 `withAnimation { dragOffset = .zero }` 把条**弹回角落**；这步是渲染层动画，`GeometryReader` 在动画**最后一帧**（offset 尚未归零）触发一次 `onChange` 上报后，真正归零那帧的 `onChange` 不再触发（SwiftUI 老毛病）→ 上报的 `bar` **卡在动画中间帧**（`(38.9,860)` = snap `(8,872)` + 残留 offset `(30.9,-12)`），而搜索条**视觉**已落到 snap，两者错位 → 点条边缘落在过时 bar 外被穿透。决定性日志：`ONCHANGE measured=(1106,822) report=(1383.5,872) drag=(0,0)`。
+- **修复（`SurfaceView.swift` 一处）**：上报逻辑不信动画期间的测量值——`dragOffset`（@State）在松手瞬间即归零（动画只是渲染插值），故 `onChange` 里 **`dragOffset==.zero` 时按 `corner` 上报 `snappedFrame` 落位值（=动画终点视觉位置），否则跟手上报测量值**；无论动画哪帧触发 `onChange` 都得同一稳定 snap，彻底消除中间帧错位。`snappedFrame(for:in:barSize:)` 公式与初始布局一致（贴角、离边 `padding`，实测 topRight `x=1712-8-320.5=1383.5` 吻合）；`onEnded` 另显式上报 snap 兜底。**纯 XGhostty 行为**：主 app `onBarFrameChange=nil`、`?.` 短路、零影响。
+- **坑：辅助方法名 `barFrame` 撞局部变量** `let barFrame = barGeo.frame(...)` → Swift 把方法调用当成对 CGRect 变量调用、类型推断爆炸（`unable to type-check this expression in reasonable time`，报在 body 起始行误导）。改名 `snappedFrame` 解决。
+- **调试技法（强化 D）**：这次**双文件双向探针**——`SurfaceView`(上报侧：`APPEAR / ONCHANGE measured+report+drag / ENDED snap`) + `XGhosttyConsole`(接收侧：`RECV` + `HIT local/bar/cl/super`) 写**同一** `/tmp/xgsearch.log`，时序交错一眼看穿「上报什么→收到什么→点击命中什么」（`super=_SystemTextFieldFieldEditor` 证实点中真实输入框）。**纯推理在 SwiftUI 微妙几何（offset / 动画 / 坐标系）上连错两轮，写文件探针实测一轮定位**——座舱调试别赌行为，插桩取真值。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**
