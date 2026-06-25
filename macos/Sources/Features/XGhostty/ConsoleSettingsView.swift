@@ -16,6 +16,7 @@ struct ConsoleSettingsView: View {
     @State private var localShellTransfer: Bool
     @State private var copyOnSelect: Bool
     @State private var copyTrimWhitespace: Bool
+    @State private var searchPerSession: Bool
     @State private var selectionWordChars: String
     var onToggleAutoSave: (Bool) -> Void
     var onToggleSort: (Bool) -> Void
@@ -29,6 +30,7 @@ struct ConsoleSettingsView: View {
     var onToggleLocalShellTransfer: (Bool) -> Void
     var onToggleCopyOnSelect: (Bool) -> Void
     var onToggleCopyTrimWhitespace: (Bool) -> Void
+    var onToggleSearchPerSession: (Bool) -> Void
     var onCommitSelectionWordChars: (String) -> Void
     var onViewLogs: () -> Void
     var onResetLayout: () -> Void
@@ -47,6 +49,7 @@ struct ConsoleSettingsView: View {
          localShellTransfer: Bool,
          copyOnSelect: Bool,
          copyTrimWhitespace: Bool,
+         searchPerSession: Bool,
          selectionWordChars: String,
          onToggleAutoSave: @escaping (Bool) -> Void,
          onToggleSort: @escaping (Bool) -> Void,
@@ -60,6 +63,7 @@ struct ConsoleSettingsView: View {
          onToggleLocalShellTransfer: @escaping (Bool) -> Void,
          onToggleCopyOnSelect: @escaping (Bool) -> Void,
          onToggleCopyTrimWhitespace: @escaping (Bool) -> Void,
+         onToggleSearchPerSession: @escaping (Bool) -> Void,
          onCommitSelectionWordChars: @escaping (String) -> Void,
          onViewLogs: @escaping () -> Void,
          onResetLayout: @escaping () -> Void,
@@ -77,6 +81,7 @@ struct ConsoleSettingsView: View {
         _localShellTransfer = State(initialValue: localShellTransfer)
         _copyOnSelect = State(initialValue: copyOnSelect)
         _copyTrimWhitespace = State(initialValue: copyTrimWhitespace)
+        _searchPerSession = State(initialValue: searchPerSession)
         _selectionWordChars = State(initialValue: selectionWordChars)
         self.onToggleAutoSave = onToggleAutoSave
         self.onToggleSort = onToggleSort
@@ -90,6 +95,7 @@ struct ConsoleSettingsView: View {
         self.onToggleLocalShellTransfer = onToggleLocalShellTransfer
         self.onToggleCopyOnSelect = onToggleCopyOnSelect
         self.onToggleCopyTrimWhitespace = onToggleCopyTrimWhitespace
+        self.onToggleSearchPerSession = onToggleSearchPerSession
         self.onCommitSelectionWordChars = onCommitSelectionWordChars
         self.onViewLogs = onViewLogs
         self.onResetLayout = onResetLayout
@@ -100,6 +106,14 @@ struct ConsoleSettingsView: View {
     /// 「填推荐值」按钮预填：ghostty 默认边界集 + 波浪号 ~ + 常见全角标点（config 字符串语法，原样写文件）。
     static let recommendedWordChars = #"\t '\"│`|:;,()[]{}<>$~：，。；！？"#
 
+    /// 分组小标题样式（设置面板按类别分组用）。
+    @ViewBuilder private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .padding(.top, 2)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("座舱设置").font(.headline)
@@ -108,6 +122,8 @@ struct ConsoleSettingsView: View {
             // 自适应 sheet 里的 ScrollView 必须给确定高度，否则塌成 0（见密码库那次坑）。
             ScrollView {
               VStack(alignment: .leading, spacing: 16) {
+            sectionHeader("会话树与布局")
+
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("自动保存窗口布局", isOn: $autoSave)
                     .onChange(of: autoSave) { onToggleAutoSave($0) }
@@ -148,25 +164,51 @@ struct ConsoleSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            Divider()
+            sectionHeader("终端 · 复制 · 搜索")
+
             VStack(alignment: .leading, spacing: 6) {
-                Toggle("记录会话日志（ssh 输出落盘）", isOn: $sessionLogging)
-                    .onChange(of: sessionLogging) { onToggleSessionLogging($0) }
-                Text("开启后，之后打开的 ssh 会话会把终端输出（含控制序列）追加到 ~/.config/xghostty/logs/。仅对新打开的会话生效；可与 ⌃⇧S 会话共享同时开（输出经分发器多路转发）。")
+                Toggle("选中自动复制", isOn: $copyOnSelect)
+                    .onChange(of: copyOnSelect) { onToggleCopyOnSelect($0) }
+                Text("默认关。在终端里拖选 / 双击选词 / 三击选行后松开鼠标即把选中内容复制到剪贴板（无需 cmd+C）。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                HStack {
-                    Button("查看会话日志…") { onViewLogs() }
-                    Button("打开日志目录") { openLogsDir() }
-                }
+                Toggle("复制时去掉首尾空白", isOn: $copyTrimWhitespace)
+                    .onChange(of: copyTrimWhitespace) { onToggleCopyTrimWhitespace($0) }
+                Text("默认关。复制（cmd+C 或「选中自动复制」）时去掉整段内容开头和结尾的空格 / 换行——避免选区多带的首尾空白进剪贴板。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Toggle("SSH 自动登录兜底（expect）", isOn: $expectAutoLogin)
-                    .onChange(of: expectAutoLogin) { onToggleExpectAutoLogin($0) }
-                Text("正常用 SSH_ASKPASS 注入密码、终端不会出现密码提示。少数服务器的 ssh 不认 askpass、仍在终端问密码时，开启本项会在登录阶段监听到「password:」后自动答密码（登录成功 / 45 秒后即停，避免误答 sudo 等提示）。仅对新打开的密码会话生效。")
+                Toggle("搜索框每会话独立", isOn: $searchPerSession)
+                    .onChange(of: searchPerSession) { onToggleSearchPerSession($0) }
+                Text("默认关：⌘F 搜索框跟随当前会话——切换标签后搜索框保持打开、把搜索词带到新会话继续搜（全局一个框）。开启则每个会话各记各的搜索状态：切走时保留、切回时还原，互不影响。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("双击选词边界字符（selection-word-chars · 仅 XGhostty）")
+                    .font(.system(size: 13, weight: .medium))
+                HStack {
+                    TextField("留空 = Ghostty 默认", text: $selectionWordChars)
+                        .font(.system(size: 12, design: .monospaced))
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { onCommitSelectionWordChars(selectionWordChars) }
+                    Button("应用") { onCommitSelectionWordChars(selectionWordChars) }
+                    Button("填推荐值") {
+                        selectionWordChars = Self.recommendedWordChars
+                        onCommitSelectionWordChars(selectionWordChars)
+                    }
+                }
+                Text("双击选词遇到这些字符就停，仅 XGhostty 生效。回车或「应用」写入 ~/.config/xghostty/ghostty.config 并自动 reload，不影响主 Ghostty。内容是 ghostty config 字符串语法（\\t=制表符等）。不熟就点「填推荐值」——默认集 + 波浪号 ~ + 全角标点，让 ID~字段、中文冒号也断词。留空 = 用 Ghostty 默认。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Divider()
+            sectionHeader("文件传输")
 
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("文件传输（trz/tsz/rz/sz · 推荐）", isOn: $trzszEnabled)
@@ -192,39 +234,31 @@ struct ConsoleSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            Divider()
+            sectionHeader("连接与日志")
+
             VStack(alignment: .leading, spacing: 6) {
-                Toggle("选中自动复制", isOn: $copyOnSelect)
-                    .onChange(of: copyOnSelect) { onToggleCopyOnSelect($0) }
-                Text("默认关。在终端里拖选 / 双击选词 / 三击选行后松开鼠标即把选中内容复制到剪贴板（无需 cmd+C）。")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Toggle("复制时去掉首尾空白", isOn: $copyTrimWhitespace)
-                    .onChange(of: copyTrimWhitespace) { onToggleCopyTrimWhitespace($0) }
-                Text("默认关。复制（cmd+C 或「选中自动复制」）时去掉整段内容开头和结尾的空格 / 换行——避免选区多带的首尾空白进剪贴板。")
+                Toggle("SSH 自动登录兜底（expect）", isOn: $expectAutoLogin)
+                    .onChange(of: expectAutoLogin) { onToggleExpectAutoLogin($0) }
+                Text("正常用 SSH_ASKPASS 注入密码、终端不会出现密码提示。少数服务器的 ssh 不认 askpass、仍在终端问密码时，开启本项会在登录阶段监听到「password:」后自动答密码（登录成功 / 45 秒后即停，避免误答 sudo 等提示）。仅对新打开的密码会话生效。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("双击选词边界字符（selection-word-chars · 仅 XGhostty）")
-                    .font(.system(size: 13, weight: .medium))
-                HStack {
-                    TextField("留空 = Ghostty 默认", text: $selectionWordChars)
-                        .font(.system(size: 12, design: .monospaced))
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { onCommitSelectionWordChars(selectionWordChars) }
-                    Button("应用") { onCommitSelectionWordChars(selectionWordChars) }
-                    Button("填推荐值") {
-                        selectionWordChars = Self.recommendedWordChars
-                        onCommitSelectionWordChars(selectionWordChars)
-                    }
-                }
-                Text("双击选词遇到这些字符就停，仅 XGhostty 生效。回车或「应用」写入 ~/.config/xghostty/ghostty.config 并自动 reload，不影响主 Ghostty。内容是 ghostty config 字符串语法（\\t=制表符等）。不熟就点「填推荐值」——默认集 + 波浪号 ~ + 全角标点，让 ID~字段、中文冒号也断词。留空 = 用 Ghostty 默认。")
+                Toggle("记录会话日志（ssh 输出落盘）", isOn: $sessionLogging)
+                    .onChange(of: sessionLogging) { onToggleSessionLogging($0) }
+                Text("开启后，之后打开的 ssh 会话会把终端输出（含控制序列）追加到 ~/.config/xghostty/logs/。仅对新打开的会话生效；可与 ⌃⇧S 会话共享同时开（输出经分发器多路转发）。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Button("查看会话日志…") { onViewLogs() }
+                    Button("打开日志目录") { openLogsDir() }
+                }
             }
 
             Divider()
+            sectionHeader("维护")
 
             VStack(alignment: .leading, spacing: 6) {
                 Button("还原默认布局") { onResetLayout() }

@@ -712,6 +712,19 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 
 **结论重申**：维持 C。方案 A 工时中等但回归风险集中且隐蔽（墙 2 静默失效极易漏测），**承重墙是三处历史血泪坑的正面放大**。触发条件（上游改落位 / 浮层变复杂 / 合上游连续冲突 / 终端格本就要 SwiftUI 化）满足任一再启动，且**必须 Step 1/2 先验证三道墙可破，方可推进 Step 3 清零共享文件**。
 
+### 第四十三批（2026-06-25，⌘F 搜索框切 tab 跟随/独立[开关] + 切 tab 不跳右上角 + ⌘⏎ 编辑会话/重命名分组 + 设置面板按类别分组，纯 Swift 已部署）
+
+诉求三件：① 第五批「切 tab 自动关搜索」用户反馈不便——切标签后搜索框不该消失，且要开关二选一；② ⌘⏎ 选中会话/分组快速打开编辑（分组=重命名）；③ 设置面板 13 个开关平铺偏长，按类别分组整理。
+
+- **搜索框切 tab 跟随/独立（`searchPerSession` 开关，`LayoutStore`）**：默认 `false`=**模式 A 跟随当前会话**（切 tab 搜索框保持打开、搜索词带到新会话继续搜，全局一个框）；`true`=**模式 B 每会话独立**（切走保留该 surface 的 `searchState`、切回还原，互不影响）。`select()` 末尾的无条件 `closeSearch()` 改成 `migrateSearchOverlay(from: oldSurface)`（须在 `currentTabId` 改前抓 `oldSurface`）。
+- **关键机制实证（agent 调查 + 实读）**：`searchState` 本就挂在每个 `SurfaceView` 上（per-surface，`OSSurfaceView.swift`）；给 `searchState.needle` **赋值即自动触发搜索**——`SurfaceView_AppKit.swift:46` 的 `searchState.didSet` 建 Combine 订阅 `$needle`（`removeDuplicates`→防抖→`ghostty_surface_binding_action("search:<needle>")`），与 overlay 是否挂载**无关**。故模式 A 切 tab：`oldSurface.endSearch()` 清旧 → 新 `sv.xghosttyStartSearch()` 建空 searchState → `ss.needle = 旧 needle` 自动重搜。模式 B 复用：`xghosttyStartSearch()` 的 `guard searchState == nil` 天然保留每会话 searchState，切回直接挂浮层、needle 原样不动。
+- **bug：切 tab 后搜索框跳回右上角**（用户反馈）。**根因**：首版 migrate 用 `removeFromSuperview()` + `openSearch()` **重建浮层** → `SurfaceSearchOverlay` 里管 snap 落位的 `@State private var corner`（`SurfaceView.swift:443`，默认 `.topRight`）随重建归零。**修复**：模式 A **复用同一个 `SearchOverlayHostingView` 实例、只 `hosting.rootView = 新 overlay`** 绑新 surface——NSHostingView 实例不销毁，SwiftUI 对**同类型根 View** 的更新保留 `@State`（`corner`/`dragOffset`），搜索框停在用户拖到的角。成立前提：`surfaceContainer` **全局唯一**（`:846`，所有 tab 的 scroll 靠 `isHidden` 切换可见），浮层一直覆盖当前可见 surface、切 tab 无需 reparent；且 `SurfaceSearchOverlay.surfaceView` 是 `let`（非 `@StateObject`），换 rootView 不扰动位置 `@State`。
+- **⌘⏎ 编辑会话/重命名分组**：`keyMonitor` 加 `keyCode==36`——`treeHasFocus()` 且有选中（`selectionAnchor ?? selectedIds.first`）→ `editNode(node)`（会话=编辑表单、分组=重命名表单，`SessionEditView` 对两者通用）；否则 `return event` **放行给发送条的 `sendBtn.keyEquivalent="\r"+.command`**。能拦得住是因 **local keyDown monitor 先于 NSButton 的 `performKeyEquivalent`**（现有 ⌘W/⌘C 同理），故树聚焦时拦成编辑、焦点在终端/发送框时不破坏「⌘⏎ 发送」。
+- **设置面板按类别分组**：`ConsoleSettingsView` body 把 13 开关 + 选词字符 + 4 维护按钮重排成 5 组——`会话树与布局` / `终端·复制·搜索` / `文件传输` / `连接与日志` / `维护`，每组 `sectionHeader(_:)`（semibold secondary 小标题）+ `Divider()`。纯 UI 重排，`@State`/`onToggle` 回调零改动；「还原默认设置」仍靠 `dismiss + 重开 presentSettings` 刷新 @State（面板 init 一次性赋值）。
+- **顺带核查「复制软换行变多行」**：用户先报「多行选中（内容一行）cmd+c 粘贴变多行」。实测 `formatter.zig` 加临时 selection 测试（已还原）——XGhostty 本地软换行复制**正确**：cmd+C 走 `Surface.zig:copySelectionToClipboards` 硬编码 `unwrap=true` → formatter `if (!row.wrap or !unwrap)` 对 soft-wrap 行不插换行。是**主 Ghostty 才有**的问题，本批按用户意见不处理（之前 agent 推测的「formatter.zig:1111 缺 end_y 检查」为误判，已否）。
+- **新护栏 / 隐性耦合（写进根 `CLAUDE.md`）**：`migrateSearchOverlay` 复用 `rootView` 保位置，隐性依赖上游「`SurfaceSearchOverlay` 的拖动落位是其内部 `@State corner`、同类型根 View 重建即保留」。上游若把位置状态外置/重构 `SurfaceSearchOverlay` 的 `@State` 结构，座舱切 tab 后会**静默跳回右上角**（不报错）——与第四十二批 `snappedFrame` 同类的上游耦合，合上游需回核。
+- 改动：`LayoutStore.swift`（`searchPerSession` 字段/setter/Defaults/reset）、`XGhosttyConsole.swift`（`select`→`migrateSearchOverlay`、`openSearch`、keyMonitor ⌘⏎、presentSettings 接线）、`ConsoleSettingsView.swift`（搜索开关 + 5 组重排）。纯 Swift 零 C-ABI，`scripts/xghostty-deploy.sh xghostty --skip-core -y` 部署，三轮迭代真机：搜索框跟随/独立 + 位置保留 + ⌘⏎ + 分组。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**

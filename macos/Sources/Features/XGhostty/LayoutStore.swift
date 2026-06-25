@@ -42,6 +42,9 @@ struct ConsoleLayout: Codable, Equatable {
     var copyOnSelect: Bool?
     /// 终端复制时是否去掉整段首尾空白（nil/false=关）：cmd+C 与「选中自动复制」都生效。
     var copyTrimWhitespace: Bool?
+    /// 终端搜索框（⌘F）是否每会话独立（nil/false=跟随当前会话：切标签后搜索框保持打开、搜索词带到
+    /// 新会话继续搜，全局一个框；true=每会话独立：每个会话各记各的搜索状态，切走保留、切回还原）。
+    var searchPerSession: Bool?
 
     init(autoSave: Bool = true,
          windowFrame: CGRect? = nil,
@@ -60,7 +63,8 @@ struct ConsoleLayout: Codable, Equatable {
          trzszEnabled: Bool? = nil,
          localShellTransferEnabled: Bool? = nil,
          copyOnSelect: Bool? = nil,
-         copyTrimWhitespace: Bool? = nil) {
+         copyTrimWhitespace: Bool? = nil,
+         searchPerSession: Bool? = nil) {
         self.autoSave = autoSave
         self.windowFrame = windowFrame
         self.treeWidth = treeWidth
@@ -79,6 +83,7 @@ struct ConsoleLayout: Codable, Equatable {
         self.localShellTransferEnabled = localShellTransferEnabled
         self.copyOnSelect = copyOnSelect
         self.copyTrimWhitespace = copyTrimWhitespace
+        self.searchPerSession = searchPerSession
     }
 }
 
@@ -178,6 +183,12 @@ final class LayoutStore {
         persist()
     }
 
+    /// 仅改「搜索框每会话独立」偏好。
+    func setSearchPerSession(_ on: Bool) {
+        layout.searchPerSession = on
+        persist()
+    }
+
     /// 记录上次打开的会话集（关窗口时调用，供下次启动恢复）。
     func setLastSessionIds(_ ids: [UUID]) {
         layout.lastSessionIds = ids
@@ -197,7 +208,8 @@ final class LayoutStore {
                                trzszEnabled: layout.trzszEnabled,
                                localShellTransferEnabled: layout.localShellTransferEnabled,
                                copyOnSelect: layout.copyOnSelect,
-                               copyTrimWhitespace: layout.copyTrimWhitespace)
+                               copyTrimWhitespace: layout.copyTrimWhitespace,
+                               searchPerSession: layout.searchPerSession)
         persist()
     }
 
@@ -215,6 +227,7 @@ final class LayoutStore {
         static let localShellTransferEnabled = true
         static let copyOnSelect = false
         static let copyTrimWhitespace = true
+        static let searchPerSession = false
     }
 
     /// 「还原默认设置」：把所有偏好开关写回出厂默认（保留窗口布局/分隔条/展开态/上次会话——那归 resetLayout）。
@@ -233,6 +246,7 @@ final class LayoutStore {
         layout.localShellTransferEnabled = Defaults.localShellTransferEnabled
         layout.copyOnSelect = Defaults.copyOnSelect
         layout.copyTrimWhitespace = Defaults.copyTrimWhitespace
+        layout.searchPerSession = Defaults.searchPerSession
         persist()
     }
 

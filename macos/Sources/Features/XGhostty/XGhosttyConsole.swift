@@ -1508,6 +1508,7 @@ class XGhosttyConsoleController: NSWindowController {
             localShellTransfer: layoutStore.layout.localShellTransferEnabled ?? false,
             copyOnSelect: layoutStore.layout.copyOnSelect ?? false,
             copyTrimWhitespace: layoutStore.layout.copyTrimWhitespace ?? false,
+            searchPerSession: layoutStore.layout.searchPerSession ?? false,
             selectionWordChars: Self.readSelectionWordChars(),
             onToggleAutoSave: { [weak self] on in
                 self?.layoutStore.setAutoSave(on)
@@ -1574,6 +1575,9 @@ class XGhosttyConsoleController: NSWindowController {
             },
             onToggleCopyTrimWhitespace: { [weak self] on in
                 self?.layoutStore.setCopyTrimWhitespace(on)
+            },
+            onToggleSearchPerSession: { [weak self] on in
+                self?.layoutStore.setSearchPerSession(on)
             },
             onCommitSelectionWordChars: { [weak self] v in
                 self?.writeSelectionWordChars(v)
@@ -2330,6 +2334,7 @@ class XGhosttyConsoleController: NSWindowController {
     }
 
     private func select(_ tabId: UUID) {
+        let oldSurface = currentSurface   // 切换前的 surface（搜索浮层迁移用，须在 currentTabId 改前取）
         for (k, t) in tabs { t.scroll.isHidden = (k != tabId) }
         currentTabId = tabId
         if let sv = tabs[tabId]?.surface { window?.makeFirstResponder(sv) }
@@ -2341,8 +2346,8 @@ class XGhosttyConsoleController: NSWindowController {
             .sink { [weak self] _ in self?.updateWindowTitle() }
         updateWindowTitle()
         updateExitBar()           // 切到的 tab 若是尸体则显横幅，否则隐藏
-        // 搜索浮层绑定的是切换前的 surface，切 tab 时关闭它（避免悬挂在错误的终端上）。
-        if searchOverlayHosting != nil { closeSearch() }
+        // 搜索浮层随切 tab 跟随当前会话 / 每会话独立（按设置开关，见 migrateSearchOverlay 注释）。
+        migrateSearchOverlay(from: oldSurface)
     }
 
     /// 在 tabOrder 内相对当前标签移动（delta>0 向后、<0 向前），首尾环绕。⌘⇧]/⌘⇧[ 与 ⌃Tab/⌃⇧Tab 共用。
@@ -2779,6 +2784,40 @@ class XGhosttyConsoleController: NSWindowController {
         if searchOverlayHosting != nil { closeSearch() } else { openSearch() }
     }
 
+    /// 切 tab 后处理终端搜索浮层的去留（仅在搜索相关状态存在时动作）。
+    /// 模式 A（searchPerSession=false，默认）：搜索框跟随当前会话——把搜索词转移到新 surface 继续搜，
+    ///   全局始终一个搜索框。模式 B（searchPerSession=true）：每会话独立——切走时保留旧 surface 的
+    ///   searchState（不 endSearch、切回可还原），切到的新 surface 仅当自己有遗留 searchState 才显示。
+    private func migrateSearchOverlay(from oldSurface: Ghostty.SurfaceView?) {
+        let newSurface = currentSurface
+        guard oldSurface !== newSurface else { return }   // 没真正换 surface（如重选当前 tab），不动
+
+        if layoutStore.layout.searchPerSession == true {
+            // 模式 B：仅移除旧 surface 的浮层 UI，保留其 searchState 供切回还原。
+            searchOverlayHosting?.removeFromSuperview()
+            searchOverlayHosting = nil
+            // 新 surface 若有之前留下的 searchState（搜过且没主动关），重新挂浮层显示（openSearch 复用）。
+            if newSurface?.searchState != nil { openSearch() }
+            return
+        }
+
+        // 模式 A：搜索框跟随当前会话。复用同一个 hosting（不销毁、不重建），只把 rootView 重新绑到
+        // 新 surface——NSHostingView 实例不变，SwiftUI 保留浮层内部拖动落位的 @State（corner），
+        // 搜索框停在用户拖到的角，不跳回默认右上角。
+        guard let hosting = searchOverlayHosting as? SearchOverlayHostingView else { return }
+        let needle = oldSurface?.searchState?.needle ?? ""
+        oldSurface?.endSearch()                 // 关旧 surface 搜索（清 searchState + 高亮）
+        guard let sv = currentSurface else { closeSearch(); return }
+        sv.xghosttyStartSearch()                // 给新 surface 建空 searchState
+        guard let ss = sv.searchState else { closeSearch(); return }
+        if !needle.isEmpty { ss.needle = needle }   // 带搜索词（赋值经 Combine 自动触发搜索）
+        hosting.rootView = Ghostty.SurfaceSearchOverlay(
+            surfaceView: sv,
+            searchState: ss,
+            onClose: { [weak self] in self?.closeSearch() },
+            onBarFrameChange: { [weak hosting] frame in hosting?.searchBarFrame = frame })
+    }
+
     private func openSearch() {
         guard let sv = currentSurface else { return }
         sv.xghosttyStartSearch()
@@ -2943,6 +2982,16 @@ class XGhosttyConsoleController: NSWindowController {
             if cmd && event.keyCode == 51 && !self.selectedIds.isEmpty {  // ⌘⌫ 删除选中会话
                 self.deleteSelected()
                 return nil
+            }
+            if cmd && event.keyCode == 36 {   // ⌘⏎ 编辑选中的会话 / 重命名选中分组（仅会话树聚焦时拦截；
+                // 否则放行给发送条的「⌘⏎ 发送」）。多选时编辑锚点节点。
+                if self.treeHasFocus(),
+                   let id = self.selectionAnchor ?? self.selectedIds.first,
+                   let node = self.store.find(id) {
+                    self.editNode(node)
+                    return nil
+                }
+                return event
             }
             if event.modifierFlags.contains(.control), event.modifierFlags.contains(.shift),
                !cmd, ch == "s" {        // ⌃⇧S 共享此会话（主 app 同款；座舱主菜单项走不到响应链）
