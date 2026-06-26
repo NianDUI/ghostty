@@ -1114,9 +1114,32 @@ pub const PageFormatter = struct {
             // our blank cell count.
             if (!row.wrap_continuation or !self.opts.unwrap) blank_cells = 0;
 
+            // Detect a shell-inserted pad space at a soft-wrap boundary. When a
+            // wide char (CJK) can't fit the last column, shells (zsh/readline)
+            // pad that column with a space and wrap the wide char to the next
+            // row, rather than leaving a spacer_head. When unwrapping, that pad
+            // surfaces as a spurious space splitting the wide text (e.g.
+            // "生单平台取消订单" → "生单平台取消 订单"), so skip it. Independent of
+            // trim (the macOS copy path reads with trim=false). A real content
+            // space at the boundary continues into a NARROW char (e.g.
+            // "hello world") and is left untouched.
+            const skip_pad_x: ?size.CellCountInt = skip_pad: {
+                if (!self.opts.unwrap or !row.wrap or y >= end_y) break :skip_pad null;
+                if (cells_subset.len == 0) break :skip_pad null;
+                const last = cells_subset[cells_subset.len - 1];
+                if (last.wide != .narrow or !last.hasText() or last.codepoint() != ' ')
+                    break :skip_pad null;
+                const next_cells = self.page.getCells(self.page.getRow(y + 1));
+                if (next_cells.len == 0 or next_cells[0].wide != .wide) break :skip_pad null;
+                break :skip_pad @intCast(@as(usize, row_start_x) + cells_subset.len - 1);
+            };
+
             // Go through each cell and print it
             for (cells_subset, row_start_x..) |*cell, x_usize| {
                 const x: size.CellCountInt = @intCast(x_usize);
+
+                // Skip a shell-inserted pad space at a soft-wrap→wide boundary.
+                if (skip_pad_x) |sx| if (x == sx) continue;
 
                 // Skip spacers. These happen naturally when wide characters
                 // are printed again on the screen (for well-behaved terminals!)
@@ -4594,6 +4617,85 @@ test "Screen plain with selection" {
         try testing.expectEqual(@as(size.CellCountInt, @intCast(i)), pin_map.items[i].x);
         try testing.expectEqual(@as(size.CellCountInt, 1), pin_map.items[i].y);
     }
+}
+
+test "selection CJK pad-space soft-wrap drops pad" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var t = try Terminal.init(alloc, .{ .cols = 11, .rows = 24 });
+    defer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+    // zsh/readline pads a narrow space at the wrap boundary when the next wide
+    // char won't fit; unwrap must not surface it inside the CJK string.
+    s.nextSlice("生单平台取 消"); // 取 col 8-9, pad space col 10 (wraps), 消 on row 1
+    const sel: Selection = .init(
+        t.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = 0 } }).?,
+        t.screens.active.pages.pin(.{ .active = .{ .x = 1, .y = 1 } }).?,
+        false,
+    );
+    const out = try t.screens.active.selectionString(alloc, .{ .sel = sel, .trim = true });
+    defer alloc.free(out);
+    try testing.expectEqualStrings("生单平台取消", out);
+}
+
+test "selection ASCII space at soft-wrap boundary kept" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var t = try Terminal.init(alloc, .{ .cols = 6, .rows = 24 });
+    defer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+    // A real content space landing at the wrap boundary before a NARROW char
+    // must be preserved (the heuristic only drops pads before wide chars).
+    s.nextSlice("hello world"); // "hello " wraps, "world" on row 1
+    const sel: Selection = .init(
+        t.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = 0 } }).?,
+        t.screens.active.pages.pin(.{ .active = .{ .x = 4, .y = 1 } }).?,
+        false,
+    );
+    const out = try t.screens.active.selectionString(alloc, .{ .sel = sel, .trim = true });
+    defer alloc.free(out);
+    try testing.expectEqualStrings("hello world", out);
+}
+
+test "selection CJK pad-space soft-wrap drops pad (no trim)" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var t = try Terminal.init(alloc, .{ .cols = 11, .rows = 24 });
+    defer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+    // The macOS copy path (ghostty_surface_read_selection → dumpTextLocked) reads
+    // with trim=false; the wrap-boundary pad must still be dropped.
+    s.nextSlice("生单平台取 消");
+    const sel: Selection = .init(
+        t.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = 0 } }).?,
+        t.screens.active.pages.pin(.{ .active = .{ .x = 1, .y = 1 } }).?,
+        false,
+    );
+    const out = try t.screens.active.selectionString(alloc, .{ .sel = sel, .trim = false });
+    defer alloc.free(out);
+    try testing.expectEqualStrings("生单平台取消", out);
+}
+
+test "selection ASCII space at soft-wrap boundary kept (no trim)" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    var t = try Terminal.init(alloc, .{ .cols = 6, .rows = 24 });
+    defer t.deinit(alloc);
+    var s = t.vtStream();
+    defer s.deinit();
+    // trim=false must still preserve a real content space before a NARROW char.
+    s.nextSlice("hello world");
+    const sel: Selection = .init(
+        t.screens.active.pages.pin(.{ .active = .{ .x = 0, .y = 0 } }).?,
+        t.screens.active.pages.pin(.{ .active = .{ .x = 4, .y = 1 } }).?,
+        false,
+    );
+    const out = try t.screens.active.selectionString(alloc, .{ .sel = sel, .trim = false });
+    defer alloc.free(out);
+    try testing.expectEqualStrings("hello world", out);
 }
 
 test "Screen vt with cursor position" {

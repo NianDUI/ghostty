@@ -725,6 +725,18 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 - **新护栏 / 隐性耦合（写进根 `CLAUDE.md`）**：`migrateSearchOverlay` 复用 `rootView` 保位置，隐性依赖上游「`SurfaceSearchOverlay` 的拖动落位是其内部 `@State corner`、同类型根 View 重建即保留」。上游若把位置状态外置/重构 `SurfaceSearchOverlay` 的 `@State` 结构，座舱切 tab 后会**静默跳回右上角**（不报错）——与第四十二批 `snappedFrame` 同类的上游耦合，合上游需回核。
 - 改动：`LayoutStore.swift`（`searchPerSession` 字段/setter/Defaults/reset）、`XGhosttyConsole.swift`（`select`→`migrateSearchOverlay`、`openSearch`、keyMonitor ⌘⏎、presentSettings 接线）、`ConsoleSettingsView.swift`（搜索开关 + 5 组重排）。纯 Swift 零 C-ABI，`scripts/xghostty-deploy.sh xghostty --skip-core -y` 部署，三轮迭代真机：搜索框跟随/独立 + 位置保留 + ⌘⏎ + 分组。
 
+### 第四十四批（2026-06-26，⌘C 复制 CJK 软换行命令「折行处多空格」——zsh 填充空格 + trim=false 路径双坑，已部署）
+
+诉求承上：用户最初报「多行选中复制变多行」，第四十三批问场景时答「主 Ghostty 才有、先不处理」；本批用户精确复现——**按 ↑ 调历史命令、复制 `生单平台取消订单` 折行处多一个空格**（`生单平台取消 订单`）。
+
+- **根因一（空格哪来）**：CJK 是宽字符（2 列）。命令软换行时若某宽字符落在行的**最后一列**只剩 1 列放不下，shell（zsh/readline 的 ZLE）会**主动填一个 narrow 空格占满该列再换行**（而非依赖终端的 spacer_head 占位）。于是 screen 上折行处真有一个空格 cell。
+- **根因二（为何复制带出）**：复制软换行内容时 unwrap「拼回一行」，formatter 为保留折行处的**内容空格**（如 `hello world` 在 `hello ` 折行，空格是内容必须留）一律保留 wrap 行尾空格 → 无法区分「shell 填充空格」与「内容空格」，把填充空格也带出。
+- **误诊与纠偏**：① 先用英文复现（`hello world this is a test`）——**没复现**，因为窄字符软换行行尾无填充、formatter 本就正确（之前据此误判「本地 OK、主 app 才有问题」）。CJK 宽字符 + 行尾填充才是真场景。② 第一版修复挂在 `blank_cells` 累积上（`formatter.zig:1147`，**仅 `trim=true` 才累积**），但 macOS 复制路径 `ghostty_surface_read_selection → dumpTextLocked` 调 `selectionString` 传 **`.trim = false`**（`Surface.zig:1958`），填充空格被**直接输出**、绕过修复——测试传 `trim=true` 误判已修，实测仍多空格。**教训：改复制逻辑必须用真实复制路径的 `trim` 值（macOS = false）写测试，别只测 trim=true。**
+- **修复（`formatter.zig` `PageFormatter.formatWithState`，不依赖 trim）**：遍历 cell 前预判 `skip_pad_x`——当 `unwrap and row.wrap and y<end_y` 且本行**最后一个 cell 是 narrow 空格**且**下一行首 cell 是 wide** 时，记该行尾空格列号；遍历时 `if (x==sx) continue` 跳过。精准区分：下一行首 wide（CJK）= 填充、丢；下一行首 narrow（`hello world` 的 `w`）= 内容、留。覆盖 trim true/false 两条路径。
+- **trade-off（已知、可接受）**：唯一误判是「**故意**在中文前打空格、且该空格**恰好**落在软换行折行点」（如 `echo 中文` 正好在 `echo ` 折行 → `echo中文`）。概率远低于 zsh 填充（后者每次 CJK 跨行必现），用户实测无感知。
+- **回归测试（4 个，`formatter.zig`）**：CJK 填充空格丢弃（trim=true / **trim=false** 各一，后者匹配真实复制路径）+ `hello world` 内容空格保留（trim=true / false 各一）。全套 `zig build test-lib-vt` 绿。
+- **影响面 + 部署**：改 Zig 核心 `formatter.zig`（主 Ghostty + XGhostty 共享 `selectionString`，对主 app 同样是改进）。改 `.zig` 故**不能 `--skip-core`**，`scripts/xghostty-deploy.sh xghostty --core -y` 重建 ReleaseFast xcframework（~3-5 分钟）部署。真机实测：CJK 命令折行复制无多空格、英文空格保留。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**
