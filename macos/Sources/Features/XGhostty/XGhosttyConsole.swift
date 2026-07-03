@@ -2963,13 +2963,15 @@ class XGhosttyConsoleController: NSWindowController {
                 self.toggleSearch()
                 return nil
             }
-            if cmd && ch == "g" {        // 搜索开着时 ⌘G 下一个 / ⌘⇧G 上一个（主 app 同款键位；焦点在
-                // 搜索框时事件到不了 surface 的 core keybinding，monitor 统一拦截自调，两种焦点都生效）
+            if cmd && ch == "g" {        // 搜索开着时 ⌘G 下一个 / ⌘⇧G 上一个（焦点在搜索框时事件到不了
+                // surface 的 core keybinding，monitor 统一拦截自调，两种焦点都生效）。
+                // 方向注意：终端搜索从底部往历史搜，core 的 next=更旧的匹配=视觉向上（上游 UI 里 next
+                // 配 chevron.up）。用户语义「下一个」=视觉向下，故 ⌘G→previous、⌘⇧G→next。
                 guard self.searchOverlayHosting != nil, let sv = self.currentSurface else { return event }
                 if event.modifierFlags.contains(.shift) {
-                    _ = sv.navigateSearchToPrevious()
-                } else {
                     _ = sv.navigateSearchToNext()
+                } else {
+                    _ = sv.navigateSearchToPrevious()
                 }
                 return nil
             }
