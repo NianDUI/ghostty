@@ -29,6 +29,24 @@ extension Ghostty.SurfaceView {
     }
 }
 
+/// 座舱专用 SurfaceView：拦掉上游 `endSearch()` 的焦点副作用（隐藏时不抢 first responder）。
+/// 上游 override（`SurfaceView_AppKit.swift`，commit 97c5a21ab）在 endSearch 里
+/// `Ghostty.moveFocus(to: self)`——延迟 50ms 的 makeFirstResponder。座舱多 surface 同窗共存、
+/// 靠 scroll.isHidden 切 tab：切走时清旧 surface 搜索，除直调外 core 的 end_search 还会**无条件
+/// 回发 apprt action**（`Surface.zig` "GUIs can clean up stale stuff"）→ `Ghostty.App.endSearch`
+/// 异步再调一次本方法——这条回调路绕不开手动直清 searchState，只能在此按多态拦截。两条路不拦都会把
+/// 焦点在 50ms 后拉回已隐藏的旧 surface，打字进旧 tab 的 pty（「a→b 输入进 a」滞后一格）。
+/// 自己可见（= 当前 tab）时走上游路径：关搜索后焦点还给终端，正是想要的行为。
+final class XGhosttySurfaceView: Ghostty.SurfaceView {
+    override func endSearch() {
+        if isHiddenOrHasHiddenAncestor {
+            searchState = nil     // = 基类 endSearch 本体，跳过上游 override 的 moveFocus
+        } else {
+            super.endSearch()
+        }
+    }
+}
+
 
 /// 左树交互回调集合（穿过递归 view 一路传到 controller）。
 /// 作用范围 / 分组广播下拉的树形分组项（可折叠 submenu 用：有子组的渲染成子菜单）。
@@ -1955,7 +1973,7 @@ class XGhosttyConsoleController: NSWindowController {
                 cfg.workingDirectory = dl.path
             }
 
-            let sv = Ghostty.SurfaceView(app, baseConfig: cfg)
+            let sv = XGhosttySurfaceView(app, baseConfig: cfg)   // 子类拦 endSearch 焦点副作用，见类注释
             // 用 SurfaceScrollView 包裹：它在 layout() 里把 frame 变化喂给 surface.sizeDidChange
             // （否则终端 grid 卡在初始尺寸，不随窗口缩放），同时提供 Ghostty 原生 scrollback 滚动条。
             let scroll = SurfaceScrollView(
@@ -2333,11 +2351,21 @@ class XGhosttyConsoleController: NSWindowController {
         if tabOrder.isEmpty { window?.close() }
     }
 
+    /// 键盘焦点是否落在搜索框浮层内（含底层文本控件）。切 tab 时据此决定焦点归属。
+    private func searchFieldHasFocus() -> Bool {
+        guard let hosting = searchOverlayHosting,
+              let fr = window?.firstResponder as? NSView else { return false }
+        return fr === hosting || fr.isDescendant(of: hosting)
+    }
+
     private func select(_ tabId: UUID) {
         let oldSurface = currentSurface   // 切换前的 surface（搜索浮层迁移用，须在 currentTabId 改前取）
+        let wasInSearch = searchFieldHasFocus()
         for (k, t) in tabs { t.scroll.isHidden = (k != tabId) }
         currentTabId = tabId
-        if let sv = tabs[tabId]?.surface { window?.makeFirstResponder(sv) }
+        // 焦点在搜索框时切 tab 焦点留在搜索框（浮层挂 surfaceContainer、不随 tab 隐藏，原地不动即保留；
+        // 真换 surface 时由 migrateSearchOverlay 按 wasInSearch 收尾），否则焦点给终端。
+        if let sv = tabs[tabId]?.surface, !wasInSearch { window?.makeFirstResponder(sv) }
         refreshTabBar()
         refreshQuickBar()         // 组级快捷命令随当前会话所属分组刷新
         // 窗口标题 = 当前 tab 名 + 当前目录；订阅 pwd 变化（OSC7 跟踪）实时更新。
@@ -2347,7 +2375,7 @@ class XGhosttyConsoleController: NSWindowController {
         updateWindowTitle()
         updateExitBar()           // 切到的 tab 若是尸体则显横幅，否则隐藏
         // 搜索浮层随切 tab 跟随当前会话 / 每会话独立（按设置开关，见 migrateSearchOverlay 注释）。
-        migrateSearchOverlay(from: oldSurface)
+        migrateSearchOverlay(from: oldSurface, refocusSearch: wasInSearch)
     }
 
     /// 在 tabOrder 内相对当前标签移动（delta>0 向后、<0 向前），首尾环绕。⌘⇧]/⌘⇧[ 与 ⌃Tab/⌃⇧Tab 共用。
@@ -2788,7 +2816,9 @@ class XGhosttyConsoleController: NSWindowController {
     /// 模式 A（searchPerSession=false，默认）：搜索框跟随当前会话——把搜索词转移到新 surface 继续搜，
     ///   全局始终一个搜索框。模式 B（searchPerSession=true）：每会话独立——切走时保留旧 surface 的
     ///   searchState（不 endSearch、切回可还原），切到的新 surface 仅当自己有遗留 searchState 才显示。
-    private func migrateSearchOverlay(from oldSurface: Ghostty.SurfaceView?) {
+    /// `refocusSearch`：切换前键盘焦点是否在搜索框内——是则迁移后把焦点还给（新）搜索框，
+    ///   否则焦点留在终端（select 已交给新 surface），搜索框只展示不抢焦点。
+    private func migrateSearchOverlay(from oldSurface: Ghostty.SurfaceView?, refocusSearch: Bool) {
         let newSurface = currentSurface
         guard oldSurface !== newSurface else { return }   // 没真正换 surface（如重选当前 tab），不动
 
@@ -2797,7 +2827,12 @@ class XGhosttyConsoleController: NSWindowController {
             searchOverlayHosting?.removeFromSuperview()
             searchOverlayHosting = nil
             // 新 surface 若有之前留下的 searchState（搜过且没主动关），重新挂浮层显示（openSearch 复用）。
-            if newSurface?.searchState != nil { openSearch() }
+            if newSurface?.searchState != nil {
+                openSearch(focusField: refocusSearch)
+            } else if refocusSearch, let sv = newSurface {
+                // 原焦点在搜索框而新 tab 无搜索可还原：浮层已拆，焦点交还终端，避免悬空吃输入。
+                window?.makeFirstResponder(sv)
+            }
             return
         }
 
@@ -2806,7 +2841,9 @@ class XGhosttyConsoleController: NSWindowController {
         // 搜索框停在用户拖到的角，不跳回默认右上角。
         guard let hosting = searchOverlayHosting as? SearchOverlayHostingView else { return }
         let needle = oldSurface?.searchState?.needle ?? ""
-        oldSurface?.endSearch()                 // 关旧 surface 搜索（清 searchState + 高亮）
+        // 关旧 surface 搜索（清 searchState + 高亮）。上游 endSearch 的 moveFocus 焦点副作用由
+        // XGhosttySurfaceView.endSearch 按「是否隐藏」拦截（core 回调路径也走那里，见类注释）。
+        oldSurface?.endSearch()
         guard let sv = currentSurface else { closeSearch(); return }
         sv.xghosttyStartSearch()                // 给新 surface 建空 searchState
         guard let ss = sv.searchState else { closeSearch(); return }
@@ -2816,9 +2853,11 @@ class XGhosttyConsoleController: NSWindowController {
             searchState: ss,
             onClose: { [weak self] in self?.closeSearch() },
             onBarFrameChange: { [weak hosting] frame in hosting?.searchBarFrame = frame })
+        // 换 rootView 后 SwiftUI 多半复用底层文本控件、焦点自然保留；若被重建（焦点落回 window）则补聚焦。
+        if refocusSearch { focusSearchFieldAsync(in: hosting) }
     }
 
-    private func openSearch() {
+    private func openSearch(focusField: Bool = true) {
         guard let sv = currentSurface else { return }
         sv.xghosttyStartSearch()
         guard let ss = sv.searchState else { return }
@@ -2848,9 +2887,16 @@ class XGhosttyConsoleController: NSWindowController {
         // NSHostingView 独立挂载，SwiftUI 的 @FocusState 不会把 first responder 下放到底层文本框
         // （只 makeFirstResponder(hosting) 会卡在容器上：它不处理键盘，终端和搜索框都收不到输入）。
         // 绕过 SwiftUI focus，用 AppKit 直接定位浮层里真正的文本控件聚焦它（对称于 closeSearch 还给
-        // 终端那步）。SwiftUI 内容首次构建是异步的，下一帧 layout 后再找；当帧找不到再兜一帧。
+        // 终端那步）。focusField=false（切 tab 还原浮层、原焦点在终端）时只展示不抢焦点。
+        if focusField { focusSearchFieldAsync(in: hosting) }
+    }
+
+    /// 异步聚焦浮层里的搜索输入框。SwiftUI 内容首次构建 / 换绑 rootView 是异步的，下一帧 layout 后
+    /// 再找；当帧找不到再兜一帧。焦点已在搜索框内（换绑复用了底层控件）则不动，避免重聚焦打断选区。
+    private func focusSearchFieldAsync(in hosting: NSView) {
         DispatchQueue.main.async { [weak self, weak hosting] in
             guard let self, let hosting, hosting.window != nil else { return }
+            if self.searchFieldHasFocus() { return }
             hosting.layoutSubtreeIfNeeded()
             if self.focusSearchField(in: hosting) { return }
             DispatchQueue.main.async { [weak self, weak hosting] in
@@ -2915,6 +2961,16 @@ class XGhosttyConsoleController: NSWindowController {
             }
             if cmd && ch == "f" {        // 终端查找
                 self.toggleSearch()
+                return nil
+            }
+            if cmd && ch == "g" {        // 搜索开着时 ⌘G 下一个 / ⌘⇧G 上一个（主 app 同款键位；焦点在
+                // 搜索框时事件到不了 surface 的 core keybinding，monitor 统一拦截自调，两种焦点都生效）
+                guard self.searchOverlayHosting != nil, let sv = self.currentSurface else { return event }
+                if event.modifierFlags.contains(.shift) {
+                    _ = sv.navigateSearchToPrevious()
+                } else {
+                    _ = sv.navigateSearchToNext()
+                }
                 return nil
             }
             if cmd && ch == "," {        // ⌘, 座舱设置

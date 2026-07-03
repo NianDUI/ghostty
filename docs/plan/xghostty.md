@@ -737,6 +737,19 @@ M2 头号项，与已完成的密钥登录（⑤）凑成「密码 + 密钥」�
 - **回归测试（4 个，`formatter.zig`）**：CJK 填充空格丢弃（trim=true / **trim=false** 各一，后者匹配真实复制路径）+ `hello world` 内容空格保留（trim=true / false 各一）。全套 `zig build test-lib-vt` 绿。
 - **影响面 + 部署**：改 Zig 核心 `formatter.zig`（主 Ghostty + XGhostty 共享 `selectionString`，对主 app 同样是改进）。改 `.zig` 故**不能 `--skip-core`**，`scripts/xghostty-deploy.sh xghostty --core -y` 重建 ReleaseFast xcframework（~3-5 分钟）部署。真机实测：CJK 命令折行复制无多空格、英文空格保留。
 
+### 第四十五批（2026-07-03，⌘F 搜索导航 ⌘G/⌘⇧G + 切 tab 焦点归属——在搜索框则留搜索框、否则归终端，纯 Swift 构建验证通过）
+
+诉求三件：① ⌘G 定位下一个匹配、⌘⇧G 上一个（主 Ghostty 同款键位）；② 焦点在搜索框时切 tab 焦点仍留在搜索框；③ 搜索框展示但焦点在终端时切 tab 输入默认进终端（模式 B 之前会被 `openSearch` 抢焦点）。另：工作区里躺着一段上次会话中断的半成品——`searchFieldHasFocus()` + `wasInSearch` 算了没用上，本批补全成真行为。
+
+- **⌘G/⌘⇧G（keyMonitor 新分支）**：`searchOverlayHosting != nil` 时拦截，自调 `navigateSearchToNext/Previous()`（上游 `OSSurfaceView.swift` 现成方法，直发 `ghostty_surface_binding_action("navigate_search:…")`，不依赖焦点）。**不能只靠 core 默认 keybinding**（`Config.zig:7137` 的 performable ⌘G）：焦点在搜索框（独立 NSHostingView 里的 NSTextField）时键事件到不了 surface；monitor 统一拦截让两种焦点都生效。搜索未开时放行（`return event`）。
+- **切 tab 焦点归属（`select()` + `migrateSearchOverlay(from:refocusSearch:)`）**：`select()` 开头 `searchFieldHasFocus()` 判焦点是否在浮层内（first responder 是 hosting 或其子孙；NSTextField 编辑态的 field editor 也是子孙、判得中）→ 在搜索框则**跳过** `makeFirstResponder(sv)`（浮层挂全局唯一 `surfaceContainer`、不随 tab 隐藏，原地不动即保留焦点），并把 `wasInSearch` 传给 migrate 收尾。
+- **migrate 两模式收尾**：模式 A 换 `rootView` 后 `if refocusSearch { focusSearchFieldAsync(in:) }`——SwiftUI 换绑多半复用底层文本控件、焦点自然保留（`searchFieldHasFocus()` 已聚焦则不动，避免重聚焦打断选区），被重建才补聚焦。模式 B `openSearch(focusField: refocusSearch)`——新增参数，`false` 时只挂浮层不抢焦点（修诉求③）；新 tab 无 searchState 可还原且原焦点在搜索框时，浮层已拆、焦点交还终端防悬空。`openSearch` 原双帧聚焦段抽成 `focusSearchFieldAsync(in:)` 共用。
+- 改动仅 `XGhosttyConsole.swift`（keyMonitor ⌘G 分支、`select`、`migrateSearchOverlay` 签名+两分支、`openSearch(focusField:)`、`focusSearchFieldAsync` 抽取）。纯 Swift 零 C-ABI，`--skip-core --build-only` 构建验证通过（49MB ReleaseFast），待部署真机回归：⌘G/⌘⇧G 两种焦点、模式 A/B 各 × 焦点在/不在搜索框 × 切 tab。
+- **真机回归揪出潜伏 bug：切 tab 后打字进「上一个」tab（a→b 进 a、b→c 进 b，滞后一格）**。用户怀疑独立 NSHostingView 架构——实非。**根因**：上游 commit `97c5a21ab`（2026-04-27，"fix ending search in menu bar does focus on surface"）给 `endSearch()` override 加了 `Ghostty.moveFocus(to: self)`——它是**延迟 50ms 的 `makeFirstResponder`**（`SurfaceView.swift:1255`，DispatchWorkItem + 双倍退避）。模式 A `migrateSearchOverlay` 调 `oldSurface?.endSearch()` 清旧会话搜索 → 50ms 后焦点被强行拉回**刚切走的旧 surface**（isHidden 但仍在层级、可当 first responder），打字全进旧 tab 的 pty。select() 同步给新终端的焦点、focusSearchFieldAsync 给搜索框的焦点全被这 50ms 定时炸弹覆盖——两种焦点状态同症。**bug 自第四十三批写下 `oldSurface?.endSearch()` 即存在**（上游 override 更早），当批验证只测了搜索词跟随/位置保留、没测切完 tab 直接打字。
+- **第一版修复失败 → 发现第二条通路**：先改成 `oldSurface?.searchState = nil` 直清绕开 override——真机复测**症状原样**。再查发现闭环：直清的 didSet 发 `end_search` binding → core `Surface.zig` 的 `.end_search` 处理**无条件回发 apprt `.end_search` action**（注释 "GUIs can clean up stale stuff"）→ `Ghostty.App.swift` handler `DispatchQueue.main.async { surfaceView.endSearch() }` ——**还是 override 版**，moveFocus 照发。即：只要通知 core 结束搜索，这颗 50ms 炸弹就绕不开手动直清，**只能按多态拦**。
+- **终版修复：`XGhosttySurfaceView: Ghostty.SurfaceView` 子类 override `endSearch()`**——`isHiddenOrHasHiddenAncestor`（座舱切 tab 靠 scroll.isHidden，隐藏 = 非当前 tab）时只 `searchState = nil`（= 基类本体，didSet 的 oldValue==nil 保证不再发 action、环终止）；可见时走 `super.endSearch()`（关搜索焦点还终端，正是上游 moveFocus 想要的）。创建点 `Ghostty.SurfaceView(app, baseConfig:)` → `XGhosttySurfaceView(...)`（座舱唯一 surface 创建点），`migrateSearchOverlay` 恢复调 `endSearch()`（防线统一在子类）。全 repo 核查 `moveFocus(to:)` 其余调用点（focus-follows-mouse / 窗口循环 / 通知点击）都要求 `BaseTerminalController`，座舱走不到——切 tab 路径唯一焦点抢夺源就是 endSearch，两条进入路径（Swift 直调 + core action 回调）均被子类拦截。
+- 护栏已写进根 `CLAUDE.md`：座舱 surface 必须经 `XGhosttySurfaceView` 创建；上游 `endSearch`/`end_search` action 链改动需回核子类拦截仍生效。
+
 ### 踩坑记录（换机/重做必看）
 
 **A. Xcode duplicate macOS target（fileSystemSynchronized 同步组）会生成错误的成员例外集**
