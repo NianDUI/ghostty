@@ -141,8 +141,12 @@ extension Ghostty.OSSurfaceView {
             case .sharing:
                 return "共享中"
             case .reconnecting(let seconds):
-                guard seconds > 0 else { return "重连中..." }
-                return "重连中（\(Int(seconds.rounded()))s 后）"
+                // Guard on the *rounded* value, not `seconds > 0`: a sub-second
+                // delay (e.g. 0.4) rounds to 0, and "重连中（0s 后）" claims a
+                // delay that isn't there. Fall back to the "..." label instead.
+                let rounded = Int(seconds.rounded())
+                guard rounded > 0 else { return "重连中..." }
+                return "重连中（\(rounded)s 后）"
             case .stopping:
                 return "停止中"
             case .error:
