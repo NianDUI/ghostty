@@ -190,6 +190,16 @@ final class SessionStore {
         return SessionStore.leaves(c).filter { !$0.isLocalShell && SessionStore.isPasswordLogin($0) }.count
     }
 
+    /// 分组（含后代）下所有叶子会话的非空 host，按树序（深度优先）一行一个。
+    /// 跳过本地 shell / 无 host 的叶子。分组右键「复制全部 IP」用（不去重，一个会话一行）。
+    func hosts(inGroup groupId: UUID) -> [String] {
+        guard let g = find(groupId), let c = g.children else { return [] }
+        return SessionStore.leaves(c).compactMap { leaf in
+            guard let host = leaf.host, !host.isEmpty else { return nil }
+            return host
+        }
+    }
+
     /// 批量把分组（含后代）下所有「密码登录」叶子的 `passwordOnly` 设为 `value`
     /// （`true` = 仅用密码；`nil` = 自动：先试默认密钥再密码）。本地 shell / 密钥会话跳过。
     /// 一次遍历重建树 + 一次落盘。返回实际改动的会话数。

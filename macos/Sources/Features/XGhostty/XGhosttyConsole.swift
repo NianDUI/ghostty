@@ -67,6 +67,7 @@ private struct SessionTreeActions {
     var onAddRoot: (Bool) -> Void                 // 根级新建（是否为分组）
     var onCopy: (SessionNode) -> Void             // 复制到剪贴板
     var onCopyPlainText: (String) -> Void         // 复制纯文本到系统剪贴板（会话→主机 IP；分组→名称）
+    var onCopyGroupIPs: (SessionNode) -> Void     // 复制分组下全部会话 IP（含后代，一行一个）
     var onPasteInto: (SessionNode) -> Void        // 分组→粘进内部；会话→粘为同级
     var onPasteRoot: () -> Void                   // 工具条：粘到根
     var onClick: (SessionNode, NSEvent.ModifierFlags) -> Void  // 单击选中（读修饰键多选）
@@ -222,6 +223,8 @@ private struct SessionRowView: View {
                 Divider()
                 Button("复制分组") { actions.onCopy(node) }
                 Button("复制名称") { actions.onCopyPlainText(node.name) }
+                Button("复制全部 IP") { actions.onCopyGroupIPs(node) }
+
                 Button("重命名分组…") { actions.onEdit(node) }
                 Button("删除分组", role: .destructive) { actions.onDelete(node) }
             } else {
@@ -261,6 +264,7 @@ private struct SessionTreeView: View {
     let selectedIds: Set<UUID>
     let canPaste: Bool
     let sortByName: Bool
+    let scrollTarget: UUID?         // 方向键导航后要滚到可视区的行（nil=不滚）
     let actions: SessionTreeActions
 
     @State private var query: String = ""
@@ -284,6 +288,8 @@ private struct SessionTreeView: View {
             .padding(.horizontal, 8).padding(.vertical, 6)
 
             // 扁平 ScrollView（非 List）：行距强制 0，选中块连续贴合；展开/缩进手动管。
+            // ScrollViewReader：方向键导航把选中行滚到可视区（镜像上方标签栏做法）。
+            ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(visibleRows) { row in
@@ -297,6 +303,7 @@ private struct SessionTreeView: View {
                                        isExpanded: expandedIds.contains(row.node.id),
                                        dropHint: dropTargetId == row.node.id ? dropPosition : nil,
                                        actions: actions)
+                            .id(row.node.id)   // 供 ScrollViewReader 定位
                             .onDrag {
                                 dragging = row.node.id
                                 return NSItemProvider(object: row.node.id.uuidString as NSString)
@@ -316,6 +323,12 @@ private struct SessionTreeView: View {
                     }
                 }
                 .padding(.horizontal, 6).padding(.vertical, 4)
+            }
+            // 方向键选中变化 → 滚到该行（onChange 只在值变化时触发，别的刷新不误滚）。
+            .onChange(of: scrollTarget) { id in
+                guard let id else { return }
+                proxy.scrollTo(id, anchor: nil)   // nil=够到即可，已可见则不动
+            }
             }
 
             // 底部工具条：新建到根（＋ 弹菜单：会话 / 分组）。
@@ -899,6 +912,8 @@ class XGhosttyConsoleController: NSWindowController {
     private var selectedIds: Set<UUID> = []
     /// ⇧范围选的锚点（上一次单选/⌘选的位置）。
     private var selectionAnchor: UUID?
+    /// 方向键导航后要滚到可视区的行（每次 selectOnly 更新；SessionTreeView 的 onChange 只在值变化时滚）。
+    private var treeScrollTarget: UUID?
 
     private var currentSurface: Ghostty.SurfaceView? {
         guard let id = currentTabId else { return nil }
@@ -1115,6 +1130,7 @@ class XGhosttyConsoleController: NSWindowController {
             selectedIds: selectedIds,
             canPaste: !clipboard.isEmpty,
             sortByName: layoutStore.layout.sortByName ?? false,
+            scrollTarget: treeScrollTarget,
             actions: SessionTreeActions(
                 onOpen: { [weak self] in self?.openSession($0) },
                 onOpenSFTP: { [weak self] in self?.openSFTP($0) },
@@ -1128,6 +1144,7 @@ class XGhosttyConsoleController: NSWindowController {
                     self?.presentEditor(forNew: isGroup, parentId: nil) },
                 onCopy: { [weak self] in self?.copyOne($0) },
                 onCopyPlainText: { [weak self] in self?.copyTextToClipboard($0) },
+                onCopyGroupIPs: { [weak self] in self?.copyGroupIPs($0) },
                 onPasteInto: { [weak self] in self?.pasteRelativeTo($0) },
                 onPasteRoot: { [weak self] in self?.paste(intoParent: nil) },
                 onClick: { [weak self] node, mods in self?.handleClick(node, mods) },
@@ -2595,6 +2612,64 @@ class XGhosttyConsoleController: NSWindowController {
         refreshTree()
     }
 
+    // MARK: 方向键导航（会话树聚焦，标准树导航语义）
+
+    /// 方向键导航的「当前焦点」节点：优先 ⇧范围选锚点，退回首个选中。
+    private var arrowFocusId: UUID? { selectionAnchor ?? selectedIds.first }
+
+    /// → 右方向键：折叠的分组→展开；已展开的分组→选中第一个子项；会话（叶子）→无展开概念、不动。
+    private func treeArrowRight() {
+        guard let id = arrowFocusId, let node = store.find(id) else { selectFirstVisible(); return }
+        guard node.isGroup else { return }
+        if !expandedGroups.contains(id) {
+            expandedGroups.insert(id)
+            refreshTree()
+            scheduleSaveLayout()
+        } else if let first = sortedForDisplay(node.children ?? []).first {
+            selectOnly(first.id)                       // 已展开 → 进入第一个子项（按展示序）
+        }
+    }
+
+    /// ← 左方向键：已展开的分组→折叠；折叠的分组 / 会话→选中父级分组（已在根则不动）。
+    /// 「会话按左跳父组、父组按左再折叠」正是这条分支的自然结果。
+    private func treeArrowLeft() {
+        guard let id = arrowFocusId, let node = store.find(id) else { selectFirstVisible(); return }
+        if node.isGroup, expandedGroups.contains(id) {
+            toggleGroup(id)                            // 折叠（含「折叠时连子组」设置），选中不变
+        } else if let parent = store.parentId(of: id) {
+            selectOnly(parent)                         // 会话 / 收起的分组 → 跳到父分组
+        }
+    }
+
+    /// ↑/↓ 方向键：在当前可见行（展开的分组 + 会话，按展示序）里把选中上/下移一格。
+    /// 到顶/底不环绕；无选中时 ↓ 落到首行、↑ 落到末行。
+    private func moveTreeSelection(by delta: Int) {
+        let order = visibleOrder()
+        guard !order.isEmpty else { return }
+        guard let cur = arrowFocusId, let i = order.firstIndex(of: cur) else {
+            selectOnly(delta > 0 ? order.first! : order.last!)
+            return
+        }
+        let next = i + delta
+        guard next >= 0, next < order.count else { return }
+        selectOnly(order[next])
+    }
+
+    /// 把选中收敛为单个节点、设为锚点、请求滚到可视区并把键盘焦点留在树，刷新。
+    private func selectOnly(_ id: UUID) {
+        selectedIds = [id]
+        selectionAnchor = id
+        treeScrollTarget = id
+        if let tree = treeHosting { window?.makeFirstResponder(tree) }
+        refreshTree()
+    }
+
+    /// 无选中时方向键先落到首个可见行。
+    private func selectFirstVisible() {
+        guard let first = visibleOrder().first else { return }
+        selectOnly(first)
+    }
+
     /// ⌘A：全选当前可见的会话行（焦点在树时；焦点在终端/文本框则不拦）。
     private func selectAllSessions() {
         let all = visibleOrder()
@@ -2604,11 +2679,18 @@ class XGhosttyConsoleController: NSWindowController {
         refreshTree()
     }
 
-    /// 当前可见行的有序 id（深度优先，仅展开的分组递归）。⇧范围选用。
+    /// 一层节点按当前展示顺序排列：`sortByName` 开→按名称（大小写不敏感），关→存储（拖拽）序。
+    /// 与 `SessionTreeView.flatten` 的排序保持一致，方向键导航 / 范围选才与用户所见同序。
+    private func sortedForDisplay(_ nodes: [SessionNode]) -> [SessionNode] {
+        guard layoutStore.layout.sortByName == true else { return nodes }
+        return nodes.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// 当前可见行的有序 id（深度优先、按展示序，仅展开的分组递归）。⇧范围选 / ⌘A / 方向键用。
     private func visibleOrder() -> [UUID] {
         var out: [UUID] = []
         func walk(_ nodes: [SessionNode]) {
-            for n in nodes {
+            for n in sortedForDisplay(nodes) {
                 out.append(n.id)
                 if let c = n.children, expandedGroups.contains(n.id) { walk(c) }
             }
@@ -2628,6 +2710,23 @@ class XGhosttyConsoleController: NSWindowController {
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.setString(text, forType: .string)
+    }
+
+    /// 分组右键「复制全部 IP」：把该分组（含后代）下所有会话的 IP 一行一个复制到系统剪贴板
+    /// （按树序，跳过本地 shell / 无 host；不去重，一个会话一行）。无可复制 IP 时给个提示。
+    private func copyGroupIPs(_ node: SessionNode) {
+        guard node.isGroup else { return }
+        let hosts = store.hosts(inGroup: node.id)
+        guard !hosts.isEmpty else {
+            let alert = NSAlert()
+            alert.alertStyle = .informational
+            alert.messageText = "分组「\(node.name)」下没有可复制的 IP"
+            alert.informativeText = "该分组下没有带主机地址的会话（本地 shell 不含 IP）。"
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+            return
+        }
+        copyTextToClipboard(hosts.joined(separator: "\n"))
     }
 
     /// 批量复制：取选中的顶层节点（祖先已选中的子节点跳过，避免重复）存入剪贴板。
@@ -3063,6 +3162,22 @@ class XGhosttyConsoleController: NSWindowController {
             if event.keyCode == 53, self.searchOverlayHosting != nil {   // Esc 关搜索
                 self.closeSearch()
                 return nil
+            }
+            // ←/→/↑/↓ 方向键：会话树聚焦时在树上导航（←→ 展开折叠/跳父组，↑↓ 在可见行间上下移选中）。
+            // 焦点在终端或文本框时放行（终端光标移动 / readline / 文本框编辑与命令历史）。带
+            // cmd/ctrl/opt/shift 的组合不拦（留给别处）。注意：方向键 modifierFlags 天然含
+            // .function/.numericPad，故只查这 4 个「有意义」修饰键是否为空。
+            if (123...126).contains(Int(event.keyCode)) {
+                let significant: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+                if event.modifierFlags.intersection(significant).isEmpty, self.treeHasFocus() {
+                    switch event.keyCode {
+                    case 124: self.treeArrowRight()
+                    case 123: self.treeArrowLeft()
+                    case 125: self.moveTreeSelection(by: 1)     // ↓ 下一个可见行
+                    default:  self.moveTreeSelection(by: -1)    // ↑ 上一个可见行（126）
+                    }
+                    return nil
+                }
             }
             return event
         }
