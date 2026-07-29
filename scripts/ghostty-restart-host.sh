@@ -49,7 +49,7 @@ for a in "$@"; do
     -h|--help)
       # 只打印文件顶部说明块（到 set -uo pipefail 为止），不含后面的小节注释
       sed -n '2,/^set -uo pipefail/{/^set -uo pipefail/d; s/^# \{0,1\}//; p;}' "$0"; exit 0 ;;
-    *) die "未知参数：$a（用法见 -h）" ;;
+    *) die "未知参数：${a}（用法见 -h）" ;;
   esac
 done
 APP="/Applications/$APP_NAME"
@@ -73,7 +73,7 @@ while [ "$p" -gt 1 ]; do
   p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' '); [ -z "$p" ] && break
 done
 
-warn "将 kill -9 $APP_NAME（PID $pid）$host_note，2 秒后自动 open 拉回。"
+warn "将 kill -9 ${APP_NAME}（PID ${pid}）${host_note}，2 秒后自动 open 拉回。"
 if [ "$ASSUME_YES" != 1 ]; then
   if [ -t 0 ]; then
     read -r -p "继续? [y/N] " ans
@@ -87,7 +87,7 @@ fi
 # nohup 忽略 SIGHUP + disown 解绑当前 shell：宿主被杀后 sleep 子进程被 launchd 收养，到点 open。
 nohup bash -c "sleep 2 && open '$APP'" >/dev/null 2>&1 &
 disown
-info "重启子进程已脱离宿主调度（2 秒后 open $APP）"
+info "重启子进程已脱离宿主调度（2 秒后 open ${APP}）"
 
 # 给后台子进程一点起步时间，再清场
 sleep 0.3
@@ -95,4 +95,4 @@ info "kill -9 $pid"
 kill -9 "$pid"
 
 # 走到这里通常意味着被杀的不是本脚本的宿主；若是宿主，脚本已随之终止，下面不会执行。
-ok "已发送 kill -9，等待重启子进程在 2 秒后拉回 $APP_NAME。"
+ok "已发送 kill -9，等待重启子进程在 2 秒后拉回 ${APP_NAME}。"
