@@ -1980,6 +1980,15 @@ class XGhosttyConsoleController: NSWindowController {
                 cfg.command = "/bin/sh -c " + Self.shellQuote(inner)
                 trzszWrapped = true
             }
+            // trzsz 包裹时补 PATH：trzsz 本体经绝对路径启动没问题（见 trzszPath），但它处理 `-z`
+            // (ZMODEM/lrzsz) 时要 `exec.LookPath` 找本机的 `sz`/`rz`——而会话继承的是 GUI app 环境
+            // (launchd 起的 app，PATH 仅 `/usr/bin:/bin:/usr/sbin:/sbin`，无 brew)，且 cfg.command
+            // 走 `/bin/sh -c` 是非登录 shell、不重算 PATH。不补则远端一跑 rz/sz 就撞
+            // 「run sz client failed: exec: "sz": executable file not found in $PATH」（trzsz 打的，
+            // 不是远端）。只在包裹时设，避免无谓改动普通会话的环境。
+            if trzszWrapped {
+                cfg.environmentVariables["PATH"] = Self.transferPATH()
+            }
             if let workingDirectory, !workingDirectory.isEmpty {
                 cfg.workingDirectory = workingDirectory
             } else if trzszWrapped {
@@ -2139,6 +2148,18 @@ class XGhosttyConsoleController: NSWindowController {
             "/usr/bin/trzsz",
         ]
         return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    /// trzsz 包裹会话的 PATH：继承环境前面补上 lrzsz(`sz`/`rz`)所在的 brew 目录。
+    /// GUI app 进程的 PATH 不含 brew，而 trzsz 的 ZMODEM 兜底按 PATH 查 `sz`/`rz`（见调用点注释）。
+    /// 探 `sz` 存在才加，且跳过已在 PATH 里的目录，避免重复段。
+    private static func transferPATH() -> String {
+        let inherited = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        let existing = inherited.split(separator: ":").map(String.init)
+        let extra = ["/opt/homebrew/bin", "/usr/local/bin"].filter {
+            FileManager.default.isExecutableFile(atPath: $0 + "/sz") && !existing.contains($0)
+        }
+        return extra.isEmpty ? inherited : extra.joined(separator: ":") + ":" + inherited
     }
 
     /// 用户登录 shell（trzsz 包裹本地 shell 时用）。读 passwd 的 pw_shell，兜底 /bin/zsh。
