@@ -3355,8 +3355,8 @@ pub fn sendBytesCallback(self: *Surface, bytes: []const u8) !void {
 }
 
 pub fn setTermioOutputCallback(self: *Surface, callback: termio.Termio.OutputCallback) void {
-    self.renderer_state.mutex.lock();
-    defer self.renderer_state.mutex.unlock();
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
     self.io.setOutputCallback(callback);
 }
 
@@ -3365,8 +3365,8 @@ pub fn setTermioOutputCallback(self: *Surface, callback: termio.Termio.OutputCal
 /// (ZMODEM/file transfer). Taking the renderer mutex ensures a clean handoff:
 /// the flag never flips mid-batch.
 pub fn setTermioOutputDiverted(self: *Surface, diverted: bool) void {
-    self.renderer_state.mutex.lock();
-    defer self.renderer_state.mutex.unlock();
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
     self.io.setOutputDiverted(diverted);
 }
 

@@ -79,7 +79,7 @@ for a in "$@"; do
     --build-only)      BUILD_ONLY=1 ;;
     --yes|-y)          ASSUME_YES=1 ;;
     -h|--help)         usage; exit 0 ;;
-    *) die "未知参数: $a（用 xghostty|ghostty|both 加可选 --core/--skip-core/--build-only/--yes；-h 看帮助）" ;;
+    *) die "未知参数: ${a}（用 xghostty|ghostty|both 加可选 --core/--skip-core/--build-only/--yes；-h 看帮助）" ;;
   esac
 done
 
@@ -159,7 +159,7 @@ build_target() {
   rc=$?
   set -e
   grep -E 'error:|BUILD (SUCCEEDED|FAILED)' "$log" | tail -8 || true
-  [ $rc -eq 0 ] || { warn "完整日志: $log"; die "$(target_name "$t") 构建失败（exit $rc）"; }
+  [ "$rc" -eq 0 ] || { warn "完整日志: $log"; die "$(target_name "$t") 构建失败（exit ${rc}）"; }
   p="$(find ~/Library/Developer/Xcode/DerivedData/Ghostty-*/Build/Products/ReleaseLocal/"$app" -maxdepth 0 2>/dev/null | head -1)"
   [ -n "$p" ] && [ -d "$p" ] || die "$(target_name "$t") 产物未找到"
   built_set "$t" "$p"

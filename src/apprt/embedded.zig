@@ -1679,15 +1679,15 @@ pub const CAPI = struct {
         result: *Text,
     ) bool {
         const core_surface = &surface.core_surface;
-        core_surface.renderer_state.mutex.lock();
-        defer core_surface.renderer_state.mutex.unlock();
+        core_surface.renderer_state.mutex.lockUncancelable(global.io());
+        defer core_surface.renderer_state.mutex.unlock(global.io());
 
         const core_sel = sel.core(
             core_surface.renderer_state.terminal.screens.active,
         ) orelse return false;
 
         const styled = core_surface.dumpStyledTextLocked(
-            global.alloc,
+            global.alloc(),
             core_sel,
         ) catch |err| {
             log.warn("error reading styled text err={}", .{err});
@@ -1726,14 +1726,14 @@ pub const CAPI = struct {
         result_trailing_blank_rows: *u16,
     ) bool {
         const core_surface = &surface.core_surface;
-        core_surface.renderer_state.mutex.lock();
-        defer core_surface.renderer_state.mutex.unlock();
+        core_surface.renderer_state.mutex.lockUncancelable(global.io());
+        defer core_surface.renderer_state.mutex.unlock(global.io());
 
         const screen = core_surface.renderer_state.terminal.screens.active;
         const core_sel = sel.core(screen) orelse return false;
 
         const styled = core_surface.dumpStyledTextLocked(
-            global.alloc,
+            global.alloc(),
             core_sel,
         ) catch |err| {
             log.warn("error reading styled text err={}", .{err});

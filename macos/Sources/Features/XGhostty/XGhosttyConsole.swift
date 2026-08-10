@@ -2967,7 +2967,7 @@ class XGhosttyConsoleController: NSWindowController {
         guard let sv = currentSurface else { closeSearch(); return }
         sv.xghosttyStartSearch()                // 给新 surface 建空 searchState
         guard let ss = sv.searchState else { closeSearch(); return }
-        if !needle.isEmpty { ss.needle = needle }   // 带搜索词（赋值经 Combine 自动触发搜索）
+        if !needle.isEmpty { ss.setNeedle(needle) } // 带搜索词（经公开 API 自动触发搜索）
         hosting.rootView = Ghostty.SurfaceSearchOverlay(
             surfaceView: sv,
             searchState: ss,
