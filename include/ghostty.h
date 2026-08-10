@@ -653,6 +653,12 @@ typedef enum {
   GHOSTTY_INSPECTOR_HIDE,
 } ghostty_action_inspector_e;
 
+// apprt.action.ExportTerminalIO.C
+typedef struct {
+  const char* contents;
+  size_t len;
+} ghostty_action_export_terminal_io_s;
+
 // apprt.action.QuitTimer
 typedef enum {
   GHOSTTY_QUIT_TIMER_START,
@@ -820,6 +826,7 @@ typedef enum {
   GHOSTTY_ACTION_OPEN_URL_KIND_UNKNOWN,
   GHOSTTY_ACTION_OPEN_URL_KIND_TEXT,
   GHOSTTY_ACTION_OPEN_URL_KIND_HTML,
+  GHOSTTY_ACTION_OPEN_URL_KIND_OSC8,
 } ghostty_action_open_url_kind_e;
 
 // apprt.action.OpenUrl.C
@@ -923,6 +930,7 @@ typedef enum {
   GHOSTTY_ACTION_INSPECTOR,
   GHOSTTY_ACTION_SHOW_GTK_INSPECTOR,
   GHOSTTY_ACTION_RENDER_INSPECTOR,
+  GHOSTTY_ACTION_EXPORT_TERMINAL_IO,
   GHOSTTY_ACTION_DESKTOP_NOTIFICATION,
   GHOSTTY_ACTION_SET_TITLE,
   GHOSTTY_ACTION_SET_TAB_TITLE,
@@ -958,6 +966,7 @@ typedef enum {
   GHOSTTY_ACTION_SEARCH_SELECTED,
   GHOSTTY_ACTION_READONLY,
   GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD,
+  GHOSTTY_ACTION_MOVE_TAB_TO_NEW_WINDOW,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -973,6 +982,7 @@ typedef union {
   ghostty_action_cell_size_s cell_size;
   ghostty_action_scrollbar_s scrollbar;
   ghostty_action_inspector_e inspector;
+  ghostty_action_export_terminal_io_s export_terminal_io;
   ghostty_action_desktop_notification_s desktop_notification;
   ghostty_action_set_title_s set_title;
   ghostty_action_set_title_s set_tab_title;
@@ -1064,6 +1074,7 @@ typedef union {
 // apprt.ipc.Action.Key
 typedef enum {
   GHOSTTY_IPC_ACTION_NEW_WINDOW,
+  GHOSTTY_IPC_ACTION_NEW_TAB,
   GHOSTTY_IPC_ACTION_TOGGLE_QUICK_TERMINAL,
 } ghostty_ipc_action_tag_e;
 

@@ -6,7 +6,7 @@ const ArenaAllocator = std.heap.ArenaAllocator;
 const assert = @import("../quirks.zig").inlineAssert;
 const testing = std.testing;
 const posix = std.posix;
-const windows = std.os.windows;
+const windows = @import("../os/windows.zig");
 const fastmem = @import("../fastmem.zig");
 const color = @import("color.zig");
 const hyperlink = @import("hyperlink.zig");
@@ -43,7 +43,7 @@ const AllocPosix = struct {
         return try posix.mmap(
             null,
             n,
-            posix.PROT.READ | posix.PROT.WRITE,
+            .{ .READ = true, .WRITE = true },
             .{ .TYPE = .PRIVATE, .ANONYMOUS = true },
             -1,
             0,
@@ -59,12 +59,12 @@ const AllocPosix = struct {
 /// MEM_COMMIT | MEM_RESERVE which guarantees zeroed pages.
 const AllocWindows = struct {
     pub fn alloc(n: usize) error{OutOfMemory}![]align(std.heap.page_size_min) u8 {
-        const addr = windows.VirtualAlloc(
+        const addr = windows.exp.kernel32.VirtualAlloc(
             null,
             n,
             windows.MEM_COMMIT | windows.MEM_RESERVE,
             windows.PAGE_READWRITE,
-        ) catch return error.OutOfMemory;
+        ) orelse return error.OutOfMemory;
 
         return @as(
             [*]align(std.heap.page_size_min) u8,
@@ -73,7 +73,7 @@ const AllocWindows = struct {
     }
 
     pub fn free(mem: []align(std.heap.page_size_min) u8) void {
-        windows.VirtualFree(
+        _ = windows.exp.kernel32.VirtualFree(
             @ptrCast(@alignCast(mem.ptr)),
             0,
             windows.MEM_RELEASE,
@@ -89,10 +89,15 @@ const AllocWindows = struct {
 /// for alignment.
 const grapheme_chunk_len = 4;
 const grapheme_chunk = grapheme_chunk_len * @sizeOf(u21);
+pub const grapheme_max_len = 64;
 const GraphemeAlloc = BitmapAllocator(grapheme_chunk);
 const grapheme_count_default = GraphemeAlloc.bitmap_bit_size;
 pub const grapheme_bytes_default = grapheme_count_default * grapheme_chunk;
-const GraphemeMap = AutoOffsetHashMap(Offset(Cell), Offset(u21).Slice);
+const GraphemeMap = AutoOffsetHashMap(
+    Offset(Cell),
+    Offset(u21).Slice,
+    hash_map.default_max_load_percentage,
+);
 
 /// The allocator used for shared utf8-encoded strings within a page.
 /// Note the chunk size below is the minimum size of a single allocation
@@ -354,11 +359,11 @@ pub const Page = struct {
         }
     }
 
-    /// A helper that can be used to assert the integrity of the page
-    /// when runtime safety is enabled. This is a no-op when runtime
-    /// safety is disabled. This uses the libc allocator.
+    /// A helper that can be used to assert the integrity of the page when
+    /// runtime safety is enabled. This is a no-op when runtime safety is
+    /// disabled or the target is freestanding. This uses the libc allocator.
     pub inline fn assertIntegrity(self: *const Page) void {
-        if (comptime build_options.slow_runtime_safety) {
+        if (comptime build_options.slow_runtime_safety and builtin.os.tag != .freestanding) {
             var debug_allocator: std.heap.DebugAllocator(.{}) = .init;
             defer _ = debug_allocator.deinit();
             const alloc = debug_allocator.allocator();
@@ -770,11 +775,11 @@ pub const Page = struct {
             }
         }
 
-        // The hyperlink_map capacity in layout() is computed as:
-        //   hyperlink_count * hyperlink_cell_multiplier (rounded to power of 2)
-        // We need enough hyperlink_bytes so that when layout() computes
-        // the map capacity, it can accommodate all hyperlink cells. This
-        // is unit tested.
+        // layout() requests `hyperlink_count * hyperlink_cell_multiplier`
+        // usable map entries. The map layout adds load-factor headroom and
+        // rounds the raw slot count to a power of two. We need enough
+        // hyperlink_bytes for that requested entry count to accommodate all
+        // hyperlink cells. This is unit tested.
         const hyperlink_cap = cap: {
             const hyperlink_count = id_set.count();
             const hyperlink_set_cap = hyperlink.Set.capacityForCount(hyperlink_count);
@@ -1477,7 +1482,7 @@ pub const Page = struct {
         const entry = map.getEntry(src_offset).?;
         const value = entry.value_ptr.*;
         map.removeByPtr(entry.key_ptr);
-        map.putAssumeCapacity(dst_offset, value);
+        map.putAssumeCapacityNoClobber(dst_offset, value);
 
         // NOTE: We must not set src/dst.hyperlink here because this
         // function is used in various cases where we swap cell contents
@@ -1494,11 +1499,12 @@ pub const Page = struct {
     /// Returns the hyperlink capacity for the page. This isn't the byte
     /// size but the number of unique cells that can have hyperlink data.
     pub inline fn hyperlinkCapacity(self: *const Page) usize {
-        return self.hyperlink_map.map(self.memory).capacity();
+        return self.hyperlink_map.map(self.memory).maxLoad();
     }
 
     /// Set the graphemes for the given cell. This asserts that the cell
-    /// has no graphemes set, and only contains a single codepoint.
+    /// has no graphemes set, and only contains a single codepoint. Input
+    /// beyond grapheme_max_len is ignored.
     pub inline fn setGraphemes(
         self: *Page,
         row: *Row,
@@ -1512,14 +1518,15 @@ pub const Page = struct {
 
         const cell_offset = getOffset(Cell, self.memory, cell);
         var map = self.grapheme_map.map(self.memory);
+        const stored_cps = cps[0..@min(cps.len, grapheme_max_len)];
 
-        const slice = self.grapheme_alloc.alloc(u21, self.memory, cps.len) catch |e| {
+        const slice = self.grapheme_alloc.alloc(u21, self.memory, stored_cps.len) catch |e| {
             comptime assert(@TypeOf(e) == error{OutOfMemory});
             // The grapheme alloc capacity needs to be increased.
             return error.GraphemeAllocOutOfMemory;
         };
         errdefer self.grapheme_alloc.free(self.memory, slice);
-        @memcpy(slice, cps);
+        @memcpy(slice, stored_cps);
 
         map.putNoClobber(cell_offset, .{
             .offset = getOffset(u21, self.memory, @ptrCast(slice.ptr)),
@@ -1537,7 +1544,8 @@ pub const Page = struct {
         return;
     }
 
-    /// Append a codepoint to the given cell as a grapheme.
+    /// Append a codepoint to the given cell as a grapheme. Once the cell has
+    /// grapheme_max_len suffix codepoints, additional codepoints are ignored.
     pub fn appendGrapheme(self: *Page, row: *Row, cell: *Cell, cp: u21) Allocator.Error!void {
         defer self.assertIntegrity();
 
@@ -1570,6 +1578,10 @@ pub const Page = struct {
         assert(row.grapheme);
 
         const slice = map.getPtr(cell_offset).?;
+
+        // Terminal input is untrusted. In addition to bounding memory, this
+        // prevents repeated chunk growth and copying from becoming quadratic.
+        if (slice.len >= grapheme_max_len) return;
 
         // If our slice len doesn't divide evenly by the grapheme chunk
         // length then we can utilize the additional chunk space.
@@ -1625,7 +1637,7 @@ pub const Page = struct {
         const entry = map.getEntry(src_offset).?;
         const value = entry.value_ptr.*;
         map.removeByPtr(entry.key_ptr);
-        map.putAssumeCapacity(dst_offset, value);
+        map.putAssumeCapacityNoClobber(dst_offset, value);
     }
 
     /// Clear the graphemes for a given cell.
@@ -1765,7 +1777,7 @@ pub const Page = struct {
                 u32,
                 hyperlink_count * hyperlink_cell_multiplier,
             ) orelse break :count std.math.maxInt(u32);
-            break :count std.math.ceilPowerOfTwoAssert(u32, mult);
+            break :count mult;
         };
         const hyperlink_map_layout = hyperlink.Map.layout(hyperlink_map_count);
         const hyperlink_map_start = alignForward(usize, hyperlink_set_end, hyperlink.Map.base_align.toByteUnits());
@@ -2044,12 +2056,18 @@ pub const Cell = packed struct(u64) {
         /// The codepoint that this cell contains. If `grapheme` is false,
         /// then this is the only codepoint in the cell. If `grapheme` is
         /// true, then this is the first codepoint in the grapheme cluster.
-        codepoint: u21,
+        codepoint: packed struct(u24) {
+            data: u21,
+            _pad: u3 = 0,
+        },
 
         /// The content is an empty cell with a background color.
-        color_palette: u8,
+        color_palette: packed struct(u24) {
+            data: u8,
+            _pad: u16 = 0,
+        },
         color_rgb: RGB,
-    } = .{ .codepoint = 0 },
+    } = .{ .codepoint = .{ .data = 0 } },
 
     /// The style ID to use for this cell within the style map. Zero
     /// is always the default style so no lookup is required.
@@ -2146,7 +2164,7 @@ pub const Cell = packed struct(u64) {
         // memory in the packed union. Valgrind verifies this.
         var cell: Cell = @bitCast(@as(u64, 0));
         cell.content_tag = .codepoint;
-        cell.content = .{ .codepoint = cp };
+        cell.content = .{ .codepoint = .{ .data = cp } };
         return cell;
     }
 
@@ -2164,7 +2182,7 @@ pub const Cell = packed struct(u64) {
         return switch (self.content_tag) {
             .codepoint,
             .codepoint_grapheme,
-            => self.content.codepoint != 0,
+            => self.content.codepoint.data != 0,
 
             .bg_color_palette,
             .bg_color_rgb,
@@ -2176,7 +2194,7 @@ pub const Cell = packed struct(u64) {
         return switch (self.content_tag) {
             .codepoint,
             .codepoint_grapheme,
-            => self.content.codepoint,
+            => self.content.codepoint.data,
 
             .bg_color_palette,
             .bg_color_rgb,
@@ -2245,6 +2263,12 @@ pub const Cell = packed struct(u64) {
 /// struct T, used for masked compares of raw backing-integer values
 /// (e.g. `Row.Backing`, `Cell.Backing`). This is an implementation
 /// detail of `Mask`, which is the public API built on top of this.
+///
+/// A field may be a dot-separated path (e.g. "content.codepoint.data")
+/// to cover only a nested field of a packed struct or packed union
+/// member. This allows a mask to be more precise than a whole
+/// top-level field, e.g. covering the codepoint bits of a cell without
+/// its padding.
 fn fieldMask(
     comptime T: type,
     comptime fields: []const []const u8,
@@ -2252,16 +2276,33 @@ fn fieldMask(
     // Backing int of the packed struct
     const Int = @typeInfo(T).@"struct".backing_integer.?;
 
-    var mask: Int = 0;
-    inline for (fields) |field| {
+    comptime var mask: Int = 0;
+    inline for (fields) |path| {
+        // Walk the path to find the total bit offset and the type of
+        // the (possibly nested) field.
+        comptime var offset = 0;
+        comptime var Field = T;
+        comptime var it = std.mem.splitScalar(u8, path, '.');
+        inline while (comptime it.next()) |name| {
+            offset += switch (@typeInfo(Field)) {
+                .@"struct" => @bitOffsetOf(Field, name),
+
+                // Packed union members all share bit offset zero.
+                .@"union" => |u| offset: {
+                    comptime assert(u.layout == .@"packed");
+                    break :offset 0;
+                },
+
+                else => @compileError("invalid field path: " ++ path),
+            };
+            Field = @FieldType(Field, name);
+        }
+
         // The type that fits all the bits we need to set.
-        const Ones = std.meta.Int(
-            .unsigned,
-            @bitSizeOf(@FieldType(T, field)),
-        );
+        const Ones = std.meta.Int(.unsigned, @bitSizeOf(Field));
 
         // Mask out the ones
-        mask |= @as(Int, std.math.maxInt(Ones)) << @bitOffsetOf(T, field);
+        mask |= @as(Int, std.math.maxInt(Ones)) << offset;
     }
 
     return mask;
@@ -2384,6 +2425,21 @@ pub fn Mask(
             return pattern(v) == expected;
         }
 
+        /// Returns true if any value in the group of group_len values
+        /// starting at index i has masked fields equal to the expected
+        /// pattern (see `pattern`). This is the "any" counterpart to
+        /// `eql`: use it to detect the presence of a specific value
+        /// within a group, e.g. a run scan that must stop when it
+        /// encounters a sentinel codepoint anywhere in the group.
+        pub inline fn eqlAny(
+            values: []const T,
+            i: usize,
+            expected: Backing,
+        ) bool {
+            const masked = load(values, i) & @as(Group, @splat(mask));
+            return @reduce(.Or, masked == @as(Group, @splat(expected)));
+        }
+
         /// Like `eql` but returns the number of leading values whose
         /// masked fields equal the expected pattern, i.e. group_len if
         /// the entire group matches. This is useful for early-exit run
@@ -2502,6 +2558,59 @@ test "Mask" {
         styled_other.style_id = 6;
         try testing.expectEqual(M.strip(styled), M.strip(styled_other));
         try testing.expect(M.strip(styled) != M.strip(styled2));
+    }
+
+    // eqlAny: presence of a matching value anywhere in the group
+    {
+        const expected = M.pattern(styled);
+        var cells: [4]Cell = .{ plain, plain, plain, plain };
+        try testing.expect(!M.eqlAny(&cells, 0, expected));
+
+        cells[2] = styled;
+        try testing.expect(M.eqlAny(&cells, 0, expected));
+
+        // Masked compare: same masked fields with a different
+        // codepoint still matches.
+        cells[2] = styled2;
+        try testing.expect(M.eqlAny(&cells, 0, expected));
+    }
+}
+
+test "Mask nested field path" {
+    // Mask only the codepoint data bits of the content field, not
+    // the padding next to it or any other field.
+    const M = Mask(Cell, &.{"content.codepoint.data"}, 4);
+
+    const a: Cell = .init('A');
+    var b: Cell = .init('A');
+    b.style_id = 5;
+    b.wide = .wide;
+    const c: Cell = .init('C');
+
+    // Same codepoint matches regardless of other fields.
+    const expected = M.pattern(a);
+    try testing.expect(M.eqlScalar(b, expected));
+    try testing.expect(!M.eqlScalar(c, expected));
+
+    // The mask must cover exactly the codepoint data bits.
+    const cp_offset = @bitOffsetOf(Cell, "content");
+    try testing.expectEqual(
+        @as(u64, std.math.maxInt(u21)) << cp_offset,
+        comptime fieldMask(Cell, &.{"content.codepoint.data"}),
+    );
+
+    // Group variants
+    {
+        var cells: [4]Cell = .{ a, b, a, b };
+        try testing.expect(M.eql(&cells, 0, expected));
+        try testing.expect(M.eqlAny(&cells, 0, expected));
+
+        cells[1] = c;
+        try testing.expect(!M.eql(&cells, 0, expected));
+        try testing.expect(M.eqlAny(&cells, 0, expected));
+
+        const none: [4]Cell = .{ c, c, c, c };
+        try testing.expect(!M.eqlAny(&none, 0, expected));
     }
 }
 
@@ -2680,14 +2789,16 @@ test "Page read and write cells" {
         const rac = page.getRowAndCell(1, y);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(y) },
+            .content = .{
+                .codepoint = .{ .data = @intCast(y) },
+            },
         };
     }
 
     // Read it again
     for (0..page.capacity.rows) |y| {
         const rac = page.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint.data);
     }
 }
 
@@ -2744,6 +2855,49 @@ test "Page appendGrapheme larger than chunk" {
     }
 }
 
+test "Page appendGrapheme caps codepoints per cell" {
+    var page = try Page.init(.{
+        .cols = 10,
+        .rows = 10,
+        .styles = 8,
+    });
+    defer page.deinit();
+
+    const rac = page.getRowAndCell(0, 0);
+    rac.cell.* = .init('A');
+
+    for (0..grapheme_max_len + 16) |i| {
+        try page.appendGrapheme(rac.row, rac.cell, @intCast(0x0300 + i));
+    }
+
+    const cps = page.lookupGrapheme(rac.cell).?;
+    try testing.expectEqual(@as(usize, grapheme_max_len), cps.len);
+    for (0..grapheme_max_len) |i| {
+        try testing.expectEqual(@as(u21, @intCast(0x0300 + i)), cps[i]);
+    }
+}
+
+test "Page setGraphemes caps codepoints per cell" {
+    var page = try Page.init(.{
+        .cols = 10,
+        .rows = 10,
+        .styles = 8,
+    });
+    defer page.deinit();
+
+    var input: [grapheme_max_len + 16]u21 = undefined;
+    for (&input, 0..) |*cp, i| cp.* = @intCast(0x0300 + i);
+
+    const rac = page.getRowAndCell(0, 0);
+    rac.cell.* = .init('A');
+    try page.setGraphemes(rac.row, rac.cell, &input);
+
+    try testing.expectEqual(
+        @as(usize, grapheme_max_len),
+        page.lookupGrapheme(rac.cell).?.len,
+    );
+}
+
 test "Page clearGrapheme not all cells" {
     var page = try Page.init(.{
         .cols = 10,
@@ -2781,7 +2935,7 @@ test "Page clone" {
         const rac = page.getRowAndCell(1, y);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(y) },
+            .content = .{ .codepoint = .{ .data = @intCast(y) } },
         };
     }
 
@@ -2793,7 +2947,7 @@ test "Page clone" {
     // Read it again
     for (0..page2.capacity.rows) |y| {
         const rac = page2.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint.data);
     }
 
     // Write again
@@ -2801,20 +2955,20 @@ test "Page clone" {
         const rac = page.getRowAndCell(1, y);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = 0 },
+            .content = .{ .codepoint = .{ .data = 0 } },
         };
     }
 
     // Read it again, should be unchanged
     for (0..page2.capacity.rows) |y| {
         const rac = page2.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint.data);
     }
 
     // Read the original
     for (0..page.capacity.rows) |y| {
         const rac = page.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, 0), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), rac.cell.content.codepoint.data);
     }
 }
 
@@ -2864,7 +3018,7 @@ test "Page clone styles" {
             rac.row.styled = true;
             rac.cell.* = .{
                 .content_tag = .codepoint,
-                .content = .{ .codepoint = @intCast(x + 1) },
+                .content = .{ .codepoint = .{ .data = @intCast(x + 1) } },
                 .style_id = id,
             };
             page.styles.use(page.memory, id);
@@ -2909,7 +3063,7 @@ test "Page cloneFrom" {
         const rac = page.getRowAndCell(1, y);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(y) },
+            .content = .{ .codepoint = .{ .data = @intCast(y) } },
         };
     }
 
@@ -2925,7 +3079,7 @@ test "Page cloneFrom" {
     // Read it again
     for (0..page2.capacity.rows) |y| {
         const rac = page2.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint.data);
     }
 
     // Write again
@@ -2933,20 +3087,20 @@ test "Page cloneFrom" {
         const rac = page.getRowAndCell(1, y);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = 0 },
+            .content = .{ .codepoint = .{ .data = 0 } },
         };
     }
 
     // Read it again, should be unchanged
     for (0..page2.capacity.rows) |y| {
         const rac = page2.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint.data);
     }
 
     // Read the original
     for (0..page.capacity.rows) |y| {
         const rac = page.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, 0), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), rac.cell.content.codepoint.data);
     }
 }
 
@@ -2963,7 +3117,7 @@ test "Page cloneFrom shrink columns" {
         const rac = page.getRowAndCell(1, y);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(y) },
+            .content = .{ .codepoint = .{ .data = @intCast(y) } },
         };
     }
 
@@ -2980,7 +3134,7 @@ test "Page cloneFrom shrink columns" {
     // Read it again
     for (0..page2.capacity.rows) |y| {
         const rac = page2.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint.data);
     }
 }
 
@@ -2997,7 +3151,7 @@ test "Page cloneFrom partial" {
         const rac = page.getRowAndCell(1, y);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(y) },
+            .content = .{ .codepoint = .{ .data = @intCast(y) } },
         };
     }
 
@@ -3013,11 +3167,11 @@ test "Page cloneFrom partial" {
     // Read it again
     for (0..5) |y| {
         const rac = page2.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, @intCast(y)), rac.cell.content.codepoint.data);
     }
     for (5..page2.size.rows) |y| {
         const rac = page2.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, 0), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), rac.cell.content.codepoint.data);
     }
 }
 
@@ -3044,7 +3198,7 @@ test "Page cloneFrom hyperlinks exact capacity" {
             const rac = page.getRowAndCell(x, y);
             rac.cell.* = .{
                 .content_tag = .codepoint,
-                .content = .{ .codepoint = 42 },
+                .content = .{ .codepoint = .{ .data = 42 } },
             };
             try page.setHyperlink(rac.row, rac.cell, hyperlink_id);
             page.hyperlink_set.use(page.memory, hyperlink_id);
@@ -3078,7 +3232,7 @@ test "Page cloneFrom graphemes" {
         const rac = page.getRowAndCell(1, y);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(y + 1) },
+            .content = .{ .codepoint = .{ .data = @intCast(y + 1) } },
         };
         try page.appendGrapheme(rac.row, rac.cell, 0x0A);
     }
@@ -3095,7 +3249,7 @@ test "Page cloneFrom graphemes" {
     // Read it again
     for (0..page2.capacity.rows) |y| {
         const rac = page2.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, @intCast(y + 1)), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, @intCast(y + 1)), rac.cell.content.codepoint.data);
         try testing.expect(rac.row.grapheme);
         try testing.expect(rac.cell.hasGrapheme());
         try testing.expectEqualSlices(u21, &.{0x0A}, page2.lookupGrapheme(rac.cell).?);
@@ -3108,14 +3262,14 @@ test "Page cloneFrom graphemes" {
         page.updateRowGraphemeFlag(rac.row);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = 0 },
+            .content = .{ .codepoint = .{ .data = 0 } },
         };
     }
 
     // Read it again, should be unchanged
     for (0..page2.capacity.rows) |y| {
         const rac = page2.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, @intCast(y + 1)), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, @intCast(y + 1)), rac.cell.content.codepoint.data);
         try testing.expect(rac.row.grapheme);
         try testing.expect(rac.cell.hasGrapheme());
         try testing.expectEqualSlices(u21, &.{0x0A}, page2.lookupGrapheme(rac.cell).?);
@@ -3124,7 +3278,7 @@ test "Page cloneFrom graphemes" {
     // Read the original
     for (0..page.capacity.rows) |y| {
         const rac = page.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, 0), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, 0), rac.cell.content.codepoint.data);
     }
 }
 
@@ -3139,7 +3293,7 @@ test "Page cloneFrom frees dst graphemes" {
         const rac = page.getRowAndCell(1, y);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(y + 1) },
+            .content = .{ .codepoint = .{ .data = @intCast(y + 1) } },
         };
     }
 
@@ -3154,7 +3308,7 @@ test "Page cloneFrom frees dst graphemes" {
         const rac = page2.getRowAndCell(1, y);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(y + 1) },
+            .content = .{ .codepoint = .{ .data = @intCast(y + 1) } },
         };
         try page2.appendGrapheme(rac.row, rac.cell, 0x0A);
     }
@@ -3165,7 +3319,7 @@ test "Page cloneFrom frees dst graphemes" {
     // Read it again
     for (0..page2.capacity.rows) |y| {
         const rac = page2.getRowAndCell(1, y);
-        try testing.expectEqual(@as(u21, @intCast(y + 1)), rac.cell.content.codepoint);
+        try testing.expectEqual(@as(u21, @intCast(y + 1)), rac.cell.content.codepoint.data);
         try testing.expect(!rac.row.grapheme);
         try testing.expect(!rac.cell.hasGrapheme());
     }
@@ -3187,7 +3341,7 @@ test "Page cloneRowFrom partial" {
             const rac = page.getRowAndCell(x, y);
             rac.cell.* = .{
                 .content_tag = .codepoint,
-                .content = .{ .codepoint = @intCast(x + 1) },
+                .content = .{ .codepoint = .{ .data = @intCast(x + 1) } },
             };
         }
     }
@@ -3213,7 +3367,7 @@ test "Page cloneRowFrom partial" {
         for (0..page2.size.cols) |x| {
             const expected: u21 = if (x >= 2 and x < 8) @intCast(x + 1) else 0;
             const rac = page2.getRowAndCell(x, y);
-            try testing.expectEqual(expected, rac.cell.content.codepoint);
+            try testing.expectEqual(expected, rac.cell.content.codepoint.data);
         }
     }
 }
@@ -3233,7 +3387,7 @@ test "Page cloneRowFrom partial grapheme in non-copied source region" {
             const rac = page.getRowAndCell(x, y);
             rac.cell.* = .{
                 .content_tag = .codepoint,
-                .content = .{ .codepoint = @intCast(x + 1) },
+                .content = .{ .codepoint = .{ .data = @intCast(x + 1) } },
             };
         }
         {
@@ -3268,7 +3422,7 @@ test "Page cloneRowFrom partial grapheme in non-copied source region" {
         for (0..page2.size.cols) |x| {
             const expected: u21 = if (x >= 2 and x < 8) @intCast(x + 1) else 0;
             const rac = page2.getRowAndCell(x, y);
-            try testing.expectEqual(expected, rac.cell.content.codepoint);
+            try testing.expectEqual(expected, rac.cell.content.codepoint.data);
             try testing.expect(!rac.cell.hasGrapheme());
         }
         {
@@ -3294,7 +3448,7 @@ test "Page cloneRowFrom partial grapheme in non-copied dest region" {
             const rac = page.getRowAndCell(x, y);
             rac.cell.* = .{
                 .content_tag = .codepoint,
-                .content = .{ .codepoint = @intCast(x + 1) },
+                .content = .{ .codepoint = .{ .data = @intCast(x + 1) } },
             };
         }
     }
@@ -3313,7 +3467,7 @@ test "Page cloneRowFrom partial grapheme in non-copied dest region" {
             const rac = page2.getRowAndCell(x, y);
             rac.cell.* = .{
                 .content_tag = .codepoint,
-                .content = .{ .codepoint = 0xBB },
+                .content = .{ .codepoint = .{ .data = 0xBB } },
             };
         }
         {
@@ -3339,7 +3493,7 @@ test "Page cloneRowFrom partial grapheme in non-copied dest region" {
         for (0..page2.size.cols) |x| {
             const expected: u21 = if (x >= 2 and x < 8) @intCast(x + 1) else 0xBB;
             const rac = page2.getRowAndCell(x, y);
-            try testing.expectEqual(expected, rac.cell.content.codepoint);
+            try testing.expectEqual(expected, rac.cell.content.codepoint.data);
         }
         {
             const rac = page2.getRowAndCell(9, y);
@@ -3367,7 +3521,7 @@ test "Page cloneRowFrom partial hyperlink in same page copy" {
             const rac = page.getRowAndCell(x, y);
             rac.cell.* = .{
                 .content_tag = .codepoint,
-                .content = .{ .codepoint = @intCast(x + 1) },
+                .content = .{ .codepoint = .{ .data = @intCast(x + 1) } },
             };
         }
 
@@ -3394,7 +3548,7 @@ test "Page cloneRowFrom partial hyperlink in same page copy" {
         for (0..page.size.cols) |x| {
             const expected: u21 = if (x >= 2 and x < 8) @intCast(x + 1) else 0;
             const rac = page.getRowAndCell(x, y);
-            try testing.expectEqual(expected, rac.cell.content.codepoint);
+            try testing.expectEqual(expected, rac.cell.content.codepoint.data);
         }
         {
             const rac = page.getRowAndCell(7, y);
@@ -3423,7 +3577,7 @@ test "Page cloneRowFrom partial hyperlink in same page omit" {
             const rac = page.getRowAndCell(x, y);
             rac.cell.* = .{
                 .content_tag = .codepoint,
-                .content = .{ .codepoint = @intCast(x + 1) },
+                .content = .{ .codepoint = .{ .data = @intCast(x + 1) } },
             };
         }
 
@@ -3450,7 +3604,7 @@ test "Page cloneRowFrom partial hyperlink in same page omit" {
         for (0..page.size.cols) |x| {
             const expected: u21 = if (x >= 2 and x < 6) @intCast(x + 1) else 0;
             const rac = page.getRowAndCell(x, y);
-            try testing.expectEqual(expected, rac.cell.content.codepoint);
+            try testing.expectEqual(expected, rac.cell.content.codepoint.data);
         }
         {
             const rac = page.getRowAndCell(7, y);
@@ -3474,7 +3628,7 @@ test "Page moveCells text-only" {
         const rac = page.getRowAndCell(x, 0);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(x + 1) },
+            .content = .{ .codepoint = .{ .data = @intCast(x + 1) } },
         };
     }
 
@@ -3487,7 +3641,7 @@ test "Page moveCells text-only" {
         const rac = page.getRowAndCell(x, 1);
         try testing.expectEqual(
             @as(u21, @intCast(x + 1)),
-            rac.cell.content.codepoint,
+            rac.cell.content.codepoint.data,
         );
     }
 
@@ -3496,7 +3650,7 @@ test "Page moveCells text-only" {
         const rac = page.getRowAndCell(x, 0);
         try testing.expectEqual(
             @as(u21, 0),
-            rac.cell.content.codepoint,
+            rac.cell.content.codepoint.data,
         );
     }
 }
@@ -3514,7 +3668,7 @@ test "Page moveCells graphemes" {
         const rac = page.getRowAndCell(x, 0);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(x + 1) },
+            .content = .{ .codepoint = .{ .data = @intCast(x + 1) } },
         };
         try page.appendGrapheme(rac.row, rac.cell, 0x0A);
     }
@@ -3530,7 +3684,7 @@ test "Page moveCells graphemes" {
         const rac = page.getRowAndCell(x, 1);
         try testing.expectEqual(
             @as(u21, @intCast(x + 1)),
-            rac.cell.content.codepoint,
+            rac.cell.content.codepoint.data,
         );
         try testing.expectEqualSlices(
             u21,
@@ -3544,7 +3698,7 @@ test "Page moveCells graphemes" {
         const rac = page.getRowAndCell(x, 0);
         try testing.expectEqual(
             @as(u21, 0),
-            rac.cell.content.codepoint,
+            rac.cell.content.codepoint.data,
         );
     }
 }
@@ -3566,7 +3720,7 @@ test "Page verifyIntegrity graphemes good" {
         const rac = page.getRowAndCell(x, 0);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(x + 1) },
+            .content = .{ .codepoint = .{ .data = @intCast(x + 1) } },
         };
         try page.appendGrapheme(rac.row, rac.cell, 0x0A);
     }
@@ -3591,7 +3745,7 @@ test "Page verifyIntegrity grapheme row not marked" {
         const rac = page.getRowAndCell(x, 0);
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(x + 1) },
+            .content = .{ .codepoint = .{ .data = @intCast(x + 1) } },
         };
         try page.appendGrapheme(rac.row, rac.cell, 0x0A);
     }
@@ -3628,7 +3782,7 @@ test "Page verifyIntegrity styles good" {
         rac.row.styled = true;
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(x + 1) },
+            .content = .{ .codepoint = .{ .data = @intCast(x + 1) } },
             .style_id = id,
         };
         page.styles.use(page.memory, id);
@@ -3664,7 +3818,7 @@ test "Page verifyIntegrity styles ref count mismatch" {
         rac.row.styled = true;
         rac.cell.* = .{
             .content_tag = .codepoint,
-            .content = .{ .codepoint = @intCast(x + 1) },
+            .content = .{ .codepoint = .{ .data = @intCast(x + 1) } },
             .style_id = id,
         };
         page.styles.use(page.memory, id);
@@ -4232,15 +4386,15 @@ test "Cell isBlankStyled treats pure-bg-color row as non-blank unlike hasTextAny
     // Three cell archetypes the formatter encounters on a row.
     const empty_cell: Cell = .{
         .content_tag = .codepoint,
-        .content = .{ .codepoint = 0 },
+        .content = .{ .codepoint = .{ .data = 0 } },
     };
     const bg_only_cell: Cell = .{
         .content_tag = .bg_color_palette,
-        .content = .{ .color_palette = 1 }, // red bg, no text
+        .content = .{ .color_palette = .{ .data = 1 } }, // red bg, no text
     };
     const text_cell: Cell = .{
         .content_tag = .codepoint,
-        .content = .{ .codepoint = 'A' },
+        .content = .{ .codepoint = .{ .data = 'A' } },
     };
 
     const empty_row = [_]Cell{ empty_cell, empty_cell, empty_cell };
@@ -4262,4 +4416,21 @@ test "Cell isBlankStyled treats pure-bg-color row as non-blank unlike hasTextAny
     try testing.expect(Cell.isBlankStyled(&empty_row));
     try testing.expect(!Cell.isBlankStyled(&bg_row));
     try testing.expect(!Cell.isBlankStyled(&text_row));
+}
+
+test "Page layout avoids double rounding hyperlink map capacity" {
+    const hyperlink_count = 3;
+    const layout = Page.layout(.{
+        .cols = 1,
+        .rows = 1,
+        .hyperlink_bytes = hyperlink_count * @sizeOf(hyperlink.Set.Item),
+    });
+
+    // Three set entries request 48 usable map entries. Scaling that for the
+    // 80% load factor needs 60 raw slots, which rounds once to 64. Rounding
+    // the request before applying the load factor would allocate 128 slots.
+    try std.testing.expectEqual(
+        @as(u32, 64),
+        layout.hyperlink_map_layout.capacity,
+    );
 }

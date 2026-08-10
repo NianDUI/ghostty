@@ -390,8 +390,18 @@ pub const Window = extern struct {
     /// Create a new tab with the given parent. The tab will be inserted
     /// at the position dictated by the `window-new-tab-position` config.
     /// The new tab will be selected.
-    pub fn newTab(self: *Self, parent_: ?*CoreSurface) void {
-        _ = self.newTabPage(parent_, .tab, .none);
+    pub fn newTab(self: *Self, parent_: ?*CoreSurface, overrides: struct {
+        command: ?configpkg.Command = null,
+        working_directory: ?[:0]const u8 = null,
+        title: ?[:0]const u8 = null,
+
+        pub const none: @This() = .{};
+    }) void {
+        _ = self.newTabPage(parent_, .tab, .{
+            .command = overrides.command,
+            .working_directory = overrides.working_directory,
+            .title = overrides.title,
+        });
     }
 
     pub fn newTabForWindow(
@@ -602,6 +612,29 @@ pub const Window = extern struct {
         assert(desired_pos < total);
 
         return tab_view.reorderPage(page, desired_pos) != 0;
+    }
+
+    pub fn moveTabToNewWindow(self: *Self, surface: *Surface) bool {
+        const tab_view = self.private().tab_view;
+        const tab = ext.getAncestor(
+            Tab,
+            surface.as(gtk.Widget),
+        ) orelse return false;
+        const page = tab_view.getPage(tab.as(gtk.Widget));
+
+        // Skip if this is the only tab in the existing window
+        if (tab_view.getNPages() <= 1) return false;
+
+        const app = Application.default();
+        const window = Window.new(app, .none);
+
+        tab_view.transferPage(
+            page,
+            window.private().tab_view,
+            0,
+        );
+        window.as(gtk.Window).present();
+        return true;
     }
 
     pub fn toggleTabOverview(self: *Self) void {
@@ -1374,9 +1407,31 @@ pub const Window = extern struct {
             }
         }
 
+        // Notify every displayed surface when the compositor changes the
+        // Wayland xdg_toplevel suspended state.
+        _ = gobject.Object.signals.notify.connect(
+            self.as(gtk.Window),
+            *Self,
+            propSuspended,
+            self,
+            .{ .detail = "suspended" },
+        );
+
         // When we are realized we always setup our appearance since this
         // calls some winproto functions.
         self.syncAppearance();
+    }
+
+    fn propSuspended(
+        _: *gtk.Window,
+        _: *gobject.ParamSpec,
+        self: *Self,
+    ) callconv(.c) void {
+        const tab = self.getSelectedTab() orelse return;
+        const tree = tab.getSurfaceTree() orelse return;
+
+        var it = tree.iterator();
+        while (it.next()) |entry| entry.view.updateOcclusion();
     }
 
     fn btnNewTab(_: *adw.SplitButton, self: *Self) callconv(.c) void {

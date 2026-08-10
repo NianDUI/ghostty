@@ -11,6 +11,7 @@ const lib = @This();
 
 const std = @import("std");
 const builtin = @import("builtin");
+const stderr = @import("os/stderr.zig");
 
 // The public API below reproduces a lot of terminal/main.zig but
 // is separate because (1) we need our root file to be in `src/`
@@ -36,6 +37,17 @@ const terminal = @import("terminal/main.zig");
 ///
 /// Additional functionality will be added here over time as needed.
 pub const sys = terminal.sys;
+
+/// A tiny, blocking `std.Io` implementation optimized for binary size.
+///
+/// Constructing a `Terminal` requires a `std.Io` for features that touch
+/// the filesystem (e.g. Kitty graphics file transmission). Embedders that
+/// don't have their own `Io` can use `TinyIo` (e.g.
+/// `(TinyIo.init).io()`) instead of `std.Io.Threaded` to avoid linking
+/// Threaded's full vtable (networking, process spawning, async
+/// machinery, etc.), which is worth roughly 110KB of binary size. See
+/// the TinyIo docs for the exact tradeoffs.
+pub const TinyIo = @import("lib/TinyIo.zig");
 
 pub const apc = terminal.apc;
 pub const dcs = terminal.dcs;
@@ -80,6 +92,7 @@ pub const Terminal = terminal.Terminal;
 pub const TerminalStream = terminal.TerminalStream;
 pub const Stream = terminal.Stream;
 pub const StreamAction = terminal.StreamAction;
+pub const UnknownSequence = terminal.UnknownSequence;
 pub const Cursor = Screen.Cursor;
 pub const CursorStyle = Screen.CursorStyle;
 pub const CursorStyleReq = terminal.CursorStyle;
@@ -141,10 +154,31 @@ pub const unicode = struct {
     pub const graphemeWidth = unicode_pkg.graphemeWidth;
 };
 
+/// Used for MSVC builds (see below)
+var msvc_fltused: c_int = 1;
+
 comptime {
     // If we're building the C library (vs. the Zig module) then
     // we want to reference the C API so that it gets exported.
     if (@import("root") == lib) {
+        // MSVC requires this marker whenever floating-point code is present.
+        // Zig's compiler_rt only provides it when libc is not linked.
+        if (builtin.os.tag == .windows and
+            builtin.abi == .msvc and
+            builtin.link_mode == .static)
+        {
+            @export(
+                &msvc_fltused,
+                .{ .name = "_fltused" },
+            );
+        }
+
+        // Force-reference our memset override so its export is
+        // emitted. This must stay inside the root guard so that
+        // downstream Zig module consumers don't get the override
+        // injected into their binaries. See quirks_memset.zig.
+        _ = @import("quirks_memset.zig");
+
         const c = terminal.c_api;
         @export(&c.key_event_new, .{ .name = "ghostty_key_event_new" });
         @export(&c.key_event_free, .{ .name = "ghostty_key_event_free" });
@@ -263,10 +297,11 @@ comptime {
         @export(&c.terminal_scroll_viewport, .{ .name = "ghostty_terminal_scroll_viewport" });
         @export(&c.terminal_compression_activity, .{ .name = "ghostty_terminal_compression_activity" });
         @export(&c.terminal_compress, .{ .name = "ghostty_terminal_compress" });
-        @export(&c.terminal_mode_get, .{ .name = "ghostty_terminal_mode_get" });
-        @export(&c.terminal_mode_set, .{ .name = "ghostty_terminal_mode_set" });
         @export(&c.terminal_get, .{ .name = "ghostty_terminal_get" });
         @export(&c.terminal_get_multi, .{ .name = "ghostty_terminal_get_multi" });
+        @export(&c.terminal_continuation_write, .{ .name = "ghostty_terminal_continuation_write" });
+        @export(&c.terminal_continuation_buf, .{ .name = "ghostty_terminal_continuation_buf" });
+        @export(&c.terminal_continuation_alloc, .{ .name = "ghostty_terminal_continuation_alloc" });
         @export(&c.terminal_select_word, .{ .name = "ghostty_terminal_select_word" });
         @export(&c.terminal_select_word_between, .{ .name = "ghostty_terminal_select_word_between" });
         @export(&c.terminal_select_line, .{ .name = "ghostty_terminal_select_line" });
@@ -289,6 +324,18 @@ comptime {
         @export(&c.terminal_grid_ref, .{ .name = "ghostty_terminal_grid_ref" });
         @export(&c.terminal_grid_ref_track, .{ .name = "ghostty_terminal_grid_ref_track" });
         @export(&c.terminal_point_from_grid_ref, .{ .name = "ghostty_terminal_point_from_grid_ref" });
+        @export(&c.snapshot_encode, .{ .name = "ghostty_snapshot_encode" });
+        @export(&c.snapshot_encode_buf, .{ .name = "ghostty_snapshot_encode_buf" });
+        @export(&c.snapshot_encode_alloc, .{ .name = "ghostty_snapshot_encode_alloc" });
+        @export(&c.snapshot_decoder_new, .{ .name = "ghostty_snapshot_decoder_new" });
+        @export(&c.snapshot_decoder_new_buf, .{ .name = "ghostty_snapshot_decoder_new_buf" });
+        @export(&c.snapshot_decoder_free, .{ .name = "ghostty_snapshot_decoder_free" });
+        @export(&c.snapshot_decoder_set, .{ .name = "ghostty_snapshot_decoder_set" });
+        @export(&c.snapshot_decoder_get, .{ .name = "ghostty_snapshot_decoder_get" });
+        @export(&c.snapshot_decoder_get_multi, .{ .name = "ghostty_snapshot_decoder_get_multi" });
+        @export(&c.snapshot_decoder_ready, .{ .name = "ghostty_snapshot_decoder_ready" });
+        @export(&c.snapshot_decoder_next, .{ .name = "ghostty_snapshot_decoder_next" });
+        @export(&c.snapshot_decoder_decode, .{ .name = "ghostty_snapshot_decoder_decode" });
         @export(&c.kitty_graphics_get, .{ .name = "ghostty_kitty_graphics_get" });
         @export(&c.kitty_graphics_image, .{ .name = "ghostty_kitty_graphics_image" });
         @export(&c.kitty_graphics_image_get, .{ .name = "ghostty_kitty_graphics_image_get" });
@@ -339,30 +386,126 @@ comptime {
     }
 }
 
-pub const std_options: std.Options = options: {
-    if (builtin.target.cpu.arch.isWasm()) break :options .{
+pub const std_options: std.Options = opts: {
+    var options: std.Options = .{};
+
+    if (builtin.target.cpu.arch.isWasm()) {
         // Wasm builds we specifically want to optimize for space with small
         // releases so we bump up to warn. Everything else acts pretty normal.
-        .log_level = switch (builtin.mode) {
+        options.log_level = switch (builtin.mode) {
             .Debug => .debug,
             .ReleaseSmall => .warn,
             else => .info,
-        },
+        };
 
         // Wasm doesn't have access to stdio so we have a custom log function.
-        .logFn = @import("os/wasm/log.zig").log,
-    };
+        options.logFn = @import("os/wasm/log.zig").log;
+    } else if (terminal.options.c_abi) {
+        // For C ABI builds, use a custom log function that dispatches to an
+        // embedder-provided callback (or silently discards when none is set).
+        options.logFn = @import("terminal/c/sys.zig").logFn;
+    }
 
-    // For C ABI builds, use a custom log function that dispatches to an
-    // embedder-provided callback (or silently discards when none is set).
-    if (terminal.options.c_abi) break :options .{
-        .logFn = @import("terminal/c/sys.zig").logFn,
-    };
+    if (builtin.target.os.tag.isDarwin() and builtin.target.os.tag != .macos) {
+        // If are building for a non-MacOS Darwin target (e.g., iOS), we need to
+        // disable stack tracing for the time being. This is due to the fact that
+        // Zig switched to using _dyld_get_image_header_containing_address and some
+        // other (deprecated) calls to speed up stack unwinding; these calls are
+        // available on MacOS, but not on other platforms.
+        //
+        // A fix has already been submitted to exempt non-MacOS (but still Darwin)
+        // targets, so this can likely be removed in Zig 0.17.0, or a 0.16.x patch
+        // version if it releases beforehand.
+        //
+        // More details:
+        //   https://codeberg.org/ziglang/zig/commit/89f86e46d278a35a613bbc662cdd3f65ffc76ed7
+        //
+        options.allow_stack_tracing = false;
+    }
 
-    break :options .{};
+    break :opts options;
 };
 
+/// True for builds where we keep the full std debug machinery (stack
+/// traces on panic, std.debug.print, etc.). These builds are for
+/// development, where the roughly 160KB of binary size it costs is
+/// worth it.
+const debug_machinery: bool = builtin.is_test or switch (builtin.mode) {
+    .Debug, .ReleaseSafe => true,
+    .ReleaseFast, .ReleaseSmall => false,
+};
+
+/// The panic handler for when this file is the root module.
+///
+/// In ReleaseFast and ReleaseSmall builds we print the panic message to
+/// stderr and trap, but do not attempt to unwind the stack to print a
+/// stack trace.
+pub const panic: type = if (debug_machinery)
+    std.debug.FullPanic(std.debug.defaultPanic)
+else
+    std.debug.FullPanic(tinyPanicImpl);
+
+/// Guards release builds against accidentally reintroducing the std
+/// debug Io machinery.
+///
+/// `std.Options.debug_io` defaults to `std.Io.Threaded`, and anything
+/// that reaches it (std.debug.print, std.debug.lockStderr, the default
+/// std.log handler, etc.) pins Threaded's entire vtable into the binary:
+/// roughly 110KB of unreachable code.
+///
+/// This verifies nothing ever touches it.
+pub const std_options_debug_io: std.Io = if (debug_machinery)
+    std.Io.Threaded.global_single_threaded.io()
+else
+    @compileError(
+        \\The std debug Io machinery (std.debug.print, std.debug.lockStderr,
+        \\std.log's default handler, ...) is disabled in libghostty-vt release
+        \\builds because it costs ~110KB of binary size. Use std.log (routed
+        \\through our logFn), os/stderr.zig for raw diagnostic writes, or
+        \\gate the code on debug builds.
+    );
+
+/// Prints the panic message to stderr (best-effort) and traps.
+///
+/// This intentionally avoids `std.debug.lockStderr`, which routes through
+/// `std.Options.debug_io` and would keep the entire `std.Io.Threaded`
+/// vtable alive in the binary which takes up hundreds of KB.
+///
+/// This is safe to call from any thread (and even from signal handlers):
+/// it takes no locks, performs no allocation, and touches no shared
+/// mutable state. The message is emitted with a single raw write so that
+/// concurrent stderr output doesn't interleave with it.
+fn tinyPanicImpl(msg: []const u8, ra: ?usize) noreturn {
+    @branchHint(.cold);
+    _ = ra;
+
+    // 256 bytes is enough for most messages, so try that first
+    // so that we can try to write in a single syscall.
+    var buf: [256]u8 = undefined;
+    if (std.fmt.bufPrint(
+        &buf,
+        "panic: {s}\n",
+        .{msg},
+    )) |line| {
+        stderr.write(line);
+    } else |_| {
+        stderr.write("panic: ");
+        stderr.write(msg);
+        stderr.write("\n");
+    }
+
+    // Trap forces a standard crash that embedder-provided debuggers
+    // or environments can catch.
+    @trap();
+}
+
 test {
+    // Zig 0.16.0 has made test logging more strict. Now, *anything* that gets
+    // printed to stderr results in a "failed command" message, even if the
+    // tests ultimately passed. To reduce confusion here (and honestly, test
+    // log spam in general), we bump the default testing log level to error.
+    @import("std").testing.log_level = std.log.Level.err;
+
     _ = terminal;
     _ = @import("lib/main.zig");
     @import("std").testing.refAllDecls(input);

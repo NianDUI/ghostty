@@ -228,7 +228,10 @@ extension Ghostty {
                 // top Z-index os it isn't faded by the unfocused overlay.
                 //
                 // This is disabled except on macOS because it uses AppKit drag/drop APIs.
-                SurfaceGrabHandle(surfaceView: surfaceView)
+                SurfaceGrabHandle(
+                    surfaceView: surfaceView,
+                    dragHandle: ghostty.config.dragHandle,
+                )
                 #endif
             }
         }
@@ -454,8 +457,14 @@ extension Ghostty {
                 HStack(spacing: 4) {
                     BackportSelectionTextField(
                         "Search",
-                        text: $searchState.needle,
-                        selection: $searchState.needleSelection
+                        text: Binding(
+                            get: { searchState.needle },
+                            set: { searchState.setNeedle($0) }
+                        ),
+                        selection: Binding(
+                            get: { searchState.needleSelection },
+                            set: { searchState.setNeedleSelection($0) }
+                        )
                     )
                     .textFieldStyle(.plain)
                     .frame(width: 180)
