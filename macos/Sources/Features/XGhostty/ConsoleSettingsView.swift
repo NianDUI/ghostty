@@ -183,7 +183,7 @@ struct ConsoleSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("搜索框每会话独立", isOn: $searchPerSession)
                     .onChange(of: searchPerSession) { onToggleSearchPerSession($0) }
-                Text("默认关：⌘F 搜索框跟随当前会话——切换标签后搜索框保持打开、把搜索词带到新会话继续搜（全局一个框）。开启则每个会话各记各的搜索状态：切走时保留、切回时还原，互不影响。")
+                Text("关闭时所有会话共用搜索框和关键词；开启后每个会话独立保存搜索状态。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -202,7 +202,7 @@ struct ConsoleSettingsView: View {
                         onCommitSelectionWordChars(selectionWordChars)
                     }
                 }
-                Text("双击选词遇到这些字符就停，仅 XGhostty 生效。回车或「应用」写入 ~/.config/xghostty/ghostty.config 并自动 reload，不影响主 Ghostty。内容是 ghostty config 字符串语法（\\t=制表符等）。不熟就点「填推荐值」——默认集 + 波浪号 ~ + 全角标点，让 ID~字段、中文冒号也断词。留空 = 用 Ghostty 默认。")
+                Text("指定双击选词时使用的边界字符。留空使用 Ghostty 默认值；修改后自动重新加载。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -213,7 +213,7 @@ struct ConsoleSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("文件传输（trz/tsz/rz/sz · 推荐）", isOn: $trzszEnabled)
                     .onChange(of: trzszEnabled) { onToggleTrzsz($0) }
-                Text("开启后新打开的 ssh 会话用 trzsz-go 透明包裹（trzsz -z -d ssh …）：远端跑 trz/tsz **和** rz/sz 都由本机 trzsz 原生处理——进度条、总大小、无乱码、拖文件上传全都有，最可靠。需先 brew install trzsz-go。下载落到 ~/Downloads。**这一个就够了**，强烈推荐只用它。")
+                Text("通过 trzsz-go 处理 SSH 文件传输，支持拖放上传和进度显示。需要先安装 trzsz-go，文件下载到“下载”目录。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -221,7 +221,7 @@ struct ConsoleSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("ZMODEM 兜底（仅未装 trzsz-go 时）", isOn: $zmodemEnabled)
                     .onChange(of: zmodemEnabled) { onToggleZmodem($0) }
-                Text("仅当本机**没装 trzsz-go**、又想要 rz/sz 时才开：用内置伪终端桥接本机 lrzsz（需 brew install lrzsz）。可靠性不如上面的 trzsz，传输中可按 Esc 取消。装了 trzsz-go 的话开上面那个即可，本项无需开。")
+                Text("未安装 trzsz-go 时，通过 lrzsz 支持 rz/sz。需要先安装 lrzsz。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -229,7 +229,7 @@ struct ConsoleSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("本地 shell 文件传输（手动 ssh 后 rz/sz）", isOn: $localShellTransfer)
                     .onChange(of: localShellTransfer) { onToggleLocalShellTransfer($0) }
-                Text("默认关。开启后新开的「本地 shell」标签会被 trzsz-go 包裹（装了就走 `trzsz -z -d <登录 shell>`，trz/tsz + rz/sz 全协议；没装则挂 ZMODEM 兜底，仅 rz/sz）——这样你在本地 shell 里**手动 ssh** 进服务器后，远端的 rz/sz · trz/tsz 也能用。代价：包裹会改用 trzsz 启动本地 shell，丢 Ghostty 原生 shell-integration、起始目录落 ~/Downloads，故独立于上面两个会话开关、需单独打开。配置好的 SSH 会话仍用上面两个开关。")
+                Text("让本地 Shell 中手动建立的 SSH 连接支持文件传输。可能影响 Shell Integration 和初始目录。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -240,7 +240,7 @@ struct ConsoleSettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("SSH 自动登录兜底（expect）", isOn: $expectAutoLogin)
                     .onChange(of: expectAutoLogin) { onToggleExpectAutoLogin($0) }
-                Text("正常用 SSH_ASKPASS 注入密码、终端不会出现密码提示。少数服务器的 ssh 不认 askpass、仍在终端问密码时，开启本项会在登录阶段监听到「password:」后自动答密码（登录成功 / 45 秒后即停，避免误答 sudo 等提示）。仅对新打开的密码会话生效。")
+                Text("当 SSH_ASKPASS 无法自动登录时，使用 expect 响应登录密码提示。仅对新会话生效。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -268,7 +268,7 @@ struct ConsoleSettingsView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Button("还原默认设置") { confirmResetToDefaults() }
-                Text("把上面所有开关与「双击选词边界字符」恢复到默认值（文件传输 trzsz / ZMODEM、本地 shell 传输、复制去首尾空白 默认开，选词字符回推荐值，其余默认关）。不影响窗口布局、分隔条、分组展开态与上次会话——那些用上面的「还原默认布局」。")
+                Text("恢复本页设置的默认值，不影响窗口布局和会话状态。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -299,7 +299,7 @@ struct ConsoleSettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 420)
+        .frame(width: 480)
     }
 
     /// 「还原默认设置」二次确认；确认后回调 console 统一还原（开关 + 选词字符）。
