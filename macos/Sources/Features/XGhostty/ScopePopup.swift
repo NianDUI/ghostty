@@ -1,6 +1,7 @@
 #if XGHOSTTY
 import SwiftUI
 import Foundation
+import AppKit
 
 /// 下拉选中值（作用范围 / 分组广播共用）。
 enum ScopeValue: Equatable {
@@ -55,7 +56,7 @@ struct ScopePopupList: View {
         }
         .frame(width: 240)
         .frame(maxHeight: 360)
-        .environment(\.colorScheme, OSColor(bg).isLightColor ? .light : .dark)
+        .environment(\.colorScheme, NSColor(bg).isLightColor ? .light : .dark)
         .modifier(ScopePopupBackground(bg: bg))
         .onAppear {
             // 展示上次选择：选中项若在某父组子树里，自动展开它的子页（逐层 onAppear 接力到选中项）。

@@ -93,6 +93,15 @@ class AppDelegate: NSObject,
     /// seconds since the process was launched.
     private var applicationLaunchTime: TimeInterval = 0
 
+    /// AppKit treats positional command-line arguments as documents to open. This
+    /// filter consumes the corresponding open-file events for arguments following
+    /// `-e`. It is initialized lazily because most launches never open a file.
+    private lazy var commandLineOpenFileFilter = CommandLineOpenFileFilter(
+        arguments: CommandLine.arguments,
+        workingDirectory: FileManager.default.currentDirectoryPath,
+        fileExists: { FileManager.default.fileExists(atPath: $0) }
+    )
+
     /// This is the current configuration from the Ghostty configuration that we need.
     private var derivedConfig: DerivedConfig = DerivedConfig()
 
@@ -255,6 +264,12 @@ class AppDelegate: NSObject,
             self,
             selector: #selector(ghosttyConfigDidChange(_:)),
             name: .ghosttyConfigDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(keyboardSelectionDidChange(_:)),
+            name: NSTextInputContext.keyboardSelectionDidChangeNotification,
             object: nil
         )
         NotificationCenter.default.addObserver(
@@ -488,6 +503,14 @@ class AppDelegate: NSObject,
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        // `-e` makes existing path arguments part of the child command, but
+        // AppKit also reports those paths as documents to open. Only consume
+        // matching command arguments so unrelated Finder or Dock requests work.
+        if commandLineOpenFileFilter.shouldIgnore(filename) {
+            Self.logger.debug("ignoring command argument open-file event path=\(filename, privacy: .public)")
+            return true
+        }
+
         // Ghostty will validate as well but we can avoid creating an entirely new
         // surface by doing our own validation here. We can also show a useful error
         // this way.
@@ -683,6 +706,11 @@ class AppDelegate: NSObject,
         ] as? Ghostty.Config else { return }
 
         ghosttyConfigDidChange(config: config)
+    }
+
+    @MainActor @objc private func keyboardSelectionDidChange(_ notification: Notification) {
+        syncMenuShortcuts(ghostty.config)
+        TerminalController.all.forEach { $0.relabelTabs() }
     }
 
     @objc private func ghosttyBellDidRing(_ notification: Notification) {

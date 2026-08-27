@@ -1426,7 +1426,7 @@ class XGhosttyConsoleController: NSWindowController {
 
     /// 座舱终端背景色（自绘下拉弹层背景 = 此色，与主窗口一致）。
     private var consoleBgColor: Color {
-        Color(nsColor: OSColor(ghostty.config.backgroundColor))
+        Color(nsColor: NSColor(ghostty.config.backgroundColor))
     }
 
     /// 当前广播目标 → 弹层选中值（打 ✓ 用）。
@@ -1440,7 +1440,7 @@ class XGhosttyConsoleController: NSWindowController {
 
     /// 座舱左侧/底部与终端用同一主题（背景取终端背景色，明暗选 appearance）。
     private func applyTheme() {
-        let bg = OSColor(ghostty.config.backgroundColor)
+        let bg = NSColor(ghostty.config.backgroundColor)
         window?.appearance = NSAppearance(named: bg.isLightColor ? .aqua : .darkAqua)
         window?.backgroundColor = bg
         if let content = window?.contentView {
@@ -2960,7 +2960,7 @@ class XGhosttyConsoleController: NSWindowController {
         // 新 surface——NSHostingView 实例不变，SwiftUI 保留浮层内部拖动落位的 @State（corner），
         // 搜索框停在用户拖到的角，不跳回默认右上角。
         guard let hosting = searchOverlayHosting as? SearchOverlayHostingView else { return }
-        let needle = oldSurface?.searchState?.needle ?? ""
+        let needle = oldSurface?.searchState?.needle.text ?? ""
         // 关旧 surface 搜索（清 searchState + 高亮）。上游 endSearch 的 moveFocus 焦点副作用由
         // XGhosttySurfaceView.endSearch 按「是否隐藏」拦截（core 回调路径也走那里，见类注释）。
         oldSurface?.endSearch()

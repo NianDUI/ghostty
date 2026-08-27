@@ -12,6 +12,7 @@ const gtk = @import("gtk");
 
 const build_config = @import("../../../build_config.zig");
 const build_info = @import("../build/info.zig");
+const cli = @import("../../../cli.zig");
 const global = @import("../../../global.zig");
 const i18n = @import("../../../os/main.zig").i18n;
 const apprt = @import("../../../apprt.zig");
@@ -738,7 +739,7 @@ pub const Application = extern struct {
                 .none,
             ),
 
-            .open_config => return Action.openConfig(self),
+            .open_config => return Action.openConfig(self, value),
 
             .open_url => Action.openUrl(self, value),
 
@@ -769,6 +770,7 @@ pub const Application = extern struct {
 
             .set_title => Action.setTitle(target, value),
             .set_tab_title => return Action.setTabTitle(target, value),
+            .set_window_title => return Action.setWindowTitle(target, value),
 
             .show_child_exited => return Action.showChildExited(target, value),
 
@@ -1203,7 +1205,8 @@ pub const Application = extern struct {
 
     fn syncActionAccelerators(self: *Self) void {
         self.syncActionAccelerator("app.quit", .{ .quit = {} });
-        self.syncActionAccelerator("app.open-config", .{ .open_config = {} });
+        self.syncActionAccelerator("app.open-config::os-open", .{ .open_config = .os_open });
+        self.syncActionAccelerator("app.open-config::new-window", .{ .open_config = .new_window });
         self.syncActionAccelerator("app.reload-config", .{ .reload_config = {} });
         self.syncActionAccelerator("win.toggle-inspector", .{ .inspector = .toggle });
         self.syncActionAccelerator("app.show-gtk-inspector", .show_gtk_inspector);
@@ -1480,11 +1483,14 @@ pub const Application = extern struct {
         const tas_variant_type = glib.VariantType.new("(tas)");
         defer tas_variant_type.free();
 
+        const s_variant_type = glib.ext.VariantType.newFor([:0]const u8);
+        defer s_variant_type.free();
+
         const actions = [_]ext.actions.Action(Self){
             .init("new-window", actionNewWindow, null),
             .init("new-window-command", actionNewWindow, as_variant_type),
             .init("new-tab", actionNewTab, tas_variant_type),
-            .init("open-config", actionOpenConfig, null),
+            .init("open-config", actionOpenConfig, s_variant_type),
             .init("present-surface", actionPresentSurface, t_variant_type),
             .init("quit", actionQuit, null),
             .init("reload-config", actionReloadConfig, null),
@@ -1553,7 +1559,7 @@ pub const Application = extern struct {
             diag.close();
             diag.unref(); // strong ref from get()
         }
-        priv.config_errors_dialog.set(null);
+        priv.config_errors_dialog.deinit();
         if (priv.signal_source) |v| {
             if (glib.Source.remove(v) == 0) {
                 log.warn("unable to remove signal source", .{});
@@ -1850,6 +1856,7 @@ pub const Application = extern struct {
             null,
             if (overrides) |o| .{
                 .command = o.command,
+                .shell_integration = o.shell_integration,
                 .working_directory = o.working_directory,
                 .title = o.title,
             } else .none,
@@ -1930,6 +1937,7 @@ pub const Application = extern struct {
                 },
                 .{
                     .command = overrides.command,
+                    .shell_integration = overrides.shell_integration,
                     .working_directory = overrides.working_directory,
                     .title = overrides.title,
                 },
@@ -1942,6 +1950,7 @@ pub const Application = extern struct {
                 null,
                 .{
                     .command = overrides.command,
+                    .shell_integration = overrides.shell_integration,
                     .working_directory = overrides.working_directory,
                     .title = overrides.title,
                 },
@@ -1953,6 +1962,7 @@ pub const Application = extern struct {
 
     fn parseOverrides(arena_alloc: Allocator, arguments_it: *glib.VariantIter) (Allocator.Error || error{ValueRequired})!struct {
         command: ?configpkg.Command = null,
+        shell_integration: ?configpkg.Config.ShellIntegration = null,
         working_directory: ?[:0]const u8 = null,
         title: ?[:0]const u8 = null,
     } {
@@ -1961,6 +1971,9 @@ pub const Application = extern struct {
         var working_directory: ?[:0]const u8 = null;
         var title: ?[:0]const u8 = null;
         var command: ?configpkg.Command = null;
+        var parsed_shell_integration: struct {
+            @"shell-integration": ?configpkg.Config.ShellIntegration = null,
+        } = .{};
 
         const s_variant_type = glib.VariantType.new("s");
         defer s_variant_type.free();
@@ -2006,6 +2019,19 @@ pub const Application = extern struct {
                 command = cmd;
                 continue;
             }
+            if (std.mem.cutPrefix(u8, str, "--shell-integration=")) |v| {
+                cli.args.parseIntoField(
+                    @TypeOf(parsed_shell_integration),
+                    arena_alloc,
+                    &parsed_shell_integration,
+                    "shell-integration",
+                    std.mem.trim(u8, v, &std.ascii.whitespace),
+                ) catch |err| {
+                    log.warn("unable to parse shell integration {s}: {t}", .{ v, err });
+                    continue;
+                };
+                continue;
+            }
             if (std.mem.cutPrefix(u8, str, "--working-directory=")) |v| {
                 working_directory = arena_alloc.dupeZ(u8, std.mem.trim(u8, v, &std.ascii.whitespace)) catch |err| {
                     log.warn("unable to duplicate working directory: {t}", .{err});
@@ -2030,6 +2056,7 @@ pub const Application = extern struct {
 
         return .{
             .command = command,
+            .shell_integration = parsed_shell_integration.@"shell-integration",
             .working_directory = working_directory,
             .title = title,
         };
@@ -2037,10 +2064,42 @@ pub const Application = extern struct {
 
     pub fn actionOpenConfig(
         _: *gio.SimpleAction,
-        _: ?*glib.Variant,
+        parameter_: ?*glib.Variant,
         self: *Self,
     ) callconv(.c) void {
-        _ = self.core().mailbox.push(global.io(), .open_config, .forever);
+        const target: CoreApp.Message.OpenConfig = target: {
+            const target_map: std.StaticStringMap(CoreApp.Message.OpenConfig) = .initComptime(&.{
+                .{ "os-open", .os_open },
+                .{ "new-window", .new_window },
+            });
+
+            const parameter = parameter_ orelse {
+                log.warn("no parameter provided to app.open-config action", .{});
+                break :target .os_open;
+            };
+
+            const s_variant_type = glib.ext.VariantType.newFor([:0]const u8);
+            defer s_variant_type.free();
+
+            if (parameter.isOfType(s_variant_type) == 0) {
+                log.warn("parameter to app.open-config action is of type '{s}' not '{s}'", .{
+                    parameter.getTypeString(),
+                    s_variant_type.peekString()[0..s_variant_type.getStringLength()],
+                });
+                break :target .os_open;
+            }
+
+            var len: usize = undefined;
+            const buf = parameter.getString(&len);
+            const str = buf[0..len];
+
+            break :target target_map.get(str) orelse {
+                log.warn("'{s}' is not configured as a target for the app.open-config action", .{str});
+                break :target .os_open;
+            };
+        };
+
+        _ = self.core().mailbox.push(global.io(), .{ .open_config = target }, .forever);
     }
 
     fn actionPresentSurface(
@@ -2599,6 +2658,7 @@ const Action = struct {
         target: apprt.Target,
         overrides: struct {
             command: ?configpkg.Command = null,
+            shell_integration: ?configpkg.Config.ShellIntegration = null,
             working_directory: ?[:0]const u8 = null,
             title: ?[:0]const u8 = null,
 
@@ -2625,6 +2685,7 @@ const Action = struct {
                 };
                 window.newTab(core, .{
                     .command = overrides.command,
+                    .shell_integration = overrides.shell_integration,
                     .working_directory = overrides.working_directory,
                     .title = overrides.title,
                 });
@@ -2638,6 +2699,7 @@ const Action = struct {
         parent: ?*CoreSurface,
         overrides: struct {
             command: ?configpkg.Command = null,
+            shell_integration: ?configpkg.Config.ShellIntegration = null,
             working_directory: ?[:0]const u8 = null,
             title: ?[:0]const u8 = null,
 
@@ -2660,6 +2722,7 @@ const Action = struct {
             parent,
             .{
                 .command = overrides.command,
+                .shell_integration = overrides.shell_integration,
                 .working_directory = overrides.working_directory,
                 .title = overrides.title,
             },
@@ -2672,6 +2735,7 @@ const Action = struct {
         parent: ?*CoreSurface,
         overrides: struct {
             command: ?configpkg.Command = null,
+            shell_integration: ?configpkg.Config.ShellIntegration = null,
             working_directory: ?[:0]const u8 = null,
             title: ?[:0]const u8 = null,
 
@@ -2692,6 +2756,7 @@ const Action = struct {
         // Create a new tab with window context (first tab in new window)
         win.newTabForWindow(parent, .{
             .command = overrides.command,
+            .shell_integration = overrides.shell_integration,
             .working_directory = overrides.working_directory,
             .title = overrides.title,
         });
@@ -2712,18 +2777,55 @@ const Action = struct {
         gtk.Window.present(win.as(gtk.Window));
     }
 
-    pub fn openConfig(self: *Application) bool {
-        // Get the config file path
+    pub fn openConfig(self: *Application, value: apprt.action.OpenConfig) bool {
         const alloc = self.allocator();
+
+        // Get the config file path
         const path = configpkg.edit.openPath(alloc) catch |err| {
-            log.warn("error getting config file path: {}", .{err});
+            log.warn("error getting config file path: {t}", .{err});
             return false;
         };
         defer alloc.free(path);
 
-        // Open it using openURL. "path" isn't actually a URL but
-        // at the time of writing that works just fine for GTK.
-        openUrl(self, .{ .kind = .text, .url = path });
+        switch (value) {
+            .os_open => {
+                // Open it using openUrl. "path" isn't actually a URL but
+                // at the time of writing that works just fine for GTK.
+                openUrl(self, .{ .kind = .text, .url = path });
+            },
+
+            .new_window => {
+                const cmd = internal_os.getConfigEditCommand(alloc, path, .default) catch |err| {
+                    log.warn("unable to get command to edit the config: {t}", .{err});
+                    return false;
+                };
+                defer alloc.free(cmd);
+
+                const command: configpkg.Command = .{
+                    .direct = &.{ "/bin/sh", "-c", cmd },
+                };
+
+                const title = std.fmt.allocPrintSentinel(
+                    alloc,
+                    "{s} {s}",
+                    .{ i18n._("Editing configuration file"), path },
+                    0,
+                ) catch |err| t: {
+                    log.warn("unable to format title: {t}", .{err});
+                    break :t null;
+                };
+                defer if (title) |t| alloc.free(t);
+
+                Action.newWindow(self, null, .{
+                    .command = command,
+                    .title = title,
+                }) catch |err| {
+                    log.warn("unable to create new window: {t}", .{err});
+                    return false;
+                };
+            },
+        }
+
         return true;
     }
 
@@ -2814,6 +2916,23 @@ const Action = struct {
                             return false;
                         };
                         tab.promptTabTitle();
+                        return true;
+                    },
+                }
+            },
+            .window => {
+                switch (target) {
+                    .app => return false,
+                    .surface => |v| {
+                        const surface = v.rt_surface.surface;
+                        const win = ext.getAncestor(
+                            Window,
+                            surface.as(gtk.Widget),
+                        ) orelse {
+                            log.warn("surface is not in a window, ignoring prompt_window_title", .{});
+                            return false;
+                        };
+                        win.promptWindowTitle();
                         return true;
                     },
                 }
@@ -2984,6 +3103,30 @@ const Action = struct {
                     return false;
                 };
                 tab.setTitleOverride(if (value.title.len == 0) null else value.title);
+                return true;
+            },
+        }
+    }
+
+    pub fn setWindowTitle(
+        target: apprt.Target,
+        value: apprt.action.SetTitle,
+    ) bool {
+        switch (target) {
+            .app => {
+                log.warn("set_tab_title to app is unexpected", .{});
+                return false;
+            },
+            .surface => |core| {
+                const surface = core.rt_surface.surface;
+                const window = ext.getAncestor(
+                    Window,
+                    surface.as(gtk.Widget),
+                ) orelse {
+                    log.warn("surface is not in a window, ignoring set_window_title", .{});
+                    return false;
+                };
+                window.setTitleOverride(if (value.title.len == 0) null else value.title);
                 return true;
             },
         }
