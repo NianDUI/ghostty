@@ -64,6 +64,7 @@ private struct SessionTreeActions {
     var onEdit: (SessionNode) -> Void
     var onDelete: (SessionNode) -> Void
     var onAddChild: (SessionNode, Bool) -> Void   // (父分组, 新建的是否为分组)
+    var onAddSiblingGroup: (SessionNode) -> Void  // 在当前分组后新建同级分组
     var onAddRoot: (Bool) -> Void                 // 根级新建（是否为分组）
     var onCopy: (SessionNode) -> Void             // 复制到剪贴板
     var onCopyPlainText: (String) -> Void         // 复制纯文本到系统剪贴板（会话→主机 IP；分组→名称）
@@ -218,6 +219,7 @@ private struct SessionRowView: View {
                 Divider()
                 Button("新建会话…") { actions.onAddChild(node, false) }
                 Button("新建分组…") { actions.onAddChild(node, true) }
+                Button("新建同级分组…") { actions.onAddSiblingGroup(node) }
                 Button("粘贴到此分组") { actions.onPasteInto(node) }
                     .disabled(!canPaste)
                 Divider()
@@ -1140,6 +1142,8 @@ class XGhosttyConsoleController: NSWindowController {
                 onDelete: { [weak self] in self?.deleteNode($0) },
                 onAddChild: { [weak self] parent, isGroup in
                     self?.presentEditor(forNew: isGroup, parentId: parent.id) },
+                onAddSiblingGroup: { [weak self] group in
+                    self?.presentEditor(forNewSiblingGroupAfter: group) },
                 onAddRoot: { [weak self] isGroup in
                     self?.presentEditor(forNew: isGroup, parentId: nil) },
                 onCopy: { [weak self] in self?.copyOne($0) },
@@ -2450,6 +2454,14 @@ class XGhosttyConsoleController: NSWindowController {
         presentEditor(node: template, isNew: true, parentId: parentId)
     }
 
+    /// 在指定分组后新建同级分组（根级与嵌套分组均适用）。
+    private func presentEditor(forNewSiblingGroupAfter group: SessionNode) {
+        let parentId = store.parentId(of: group.id)
+        let index = store.indexInParent(of: group.id).map { $0 + 1 }
+        let template = SessionNode(name: "", children: [])
+        presentEditor(node: template, isNew: true, parentId: parentId, insertAt: index)
+    }
+
     /// 编辑既有节点（重命名分组 / 改主机字段）。
     private func editNode(_ node: SessionNode) {
         presentEditor(node: node, isNew: false, parentId: nil)
@@ -2469,12 +2481,12 @@ class XGhosttyConsoleController: NSWindowController {
         return sheet
     }
 
-    private func presentEditor(node: SessionNode, isNew: Bool, parentId: UUID?) {
+    private func presentEditor(node: SessionNode, isNew: Bool, parentId: UUID?, insertAt index: Int? = nil) {
         let view = SessionEditView(
             node: node,
             lockType: true,                       // 类型由「新建会话/分组」入口决定，表单内锁定
             onSave: { [weak self] updated in
-                self?.commitEditor(updated, isNew: isNew, parentId: parentId)
+                self?.commitEditor(updated, isNew: isNew, parentId: parentId, insertAt: index)
             },
             onCancel: { [weak self] in self?.dismissEditor() })
         let sheet = makeThemedSheet(view)
@@ -2482,9 +2494,9 @@ class XGhosttyConsoleController: NSWindowController {
         window?.beginSheet(sheet)
     }
 
-    private func commitEditor(_ node: SessionNode, isNew: Bool, parentId: UUID?) {
+    private func commitEditor(_ node: SessionNode, isNew: Bool, parentId: UUID?, insertAt index: Int? = nil) {
         if isNew {
-            store.add(node, toParent: parentId)
+            store.add(node, toParent: parentId, atIndex: index)
             if node.isGroup { expandedGroups.insert(node.id) }    // 新分组默认展开
         } else {
             store.update(node)

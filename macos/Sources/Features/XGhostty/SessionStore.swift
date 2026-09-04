@@ -160,10 +160,13 @@ final class SessionStore {
 
     // MARK: 增删改（递归重建不可变树 + 落盘）
 
-    /// 新增节点。`parentId == nil` 加到根；否则加到指定分组末尾。
-    func add(_ node: SessionNode, toParent parentId: UUID?) {
+    /// 新增节点。`parentId == nil` 加到根；否则加到指定分组。
+    /// `index == nil` 或越界时追加到末尾。
+    func add(_ node: SessionNode, toParent parentId: UUID?, atIndex index: Int? = nil) {
         if let parentId {
-            roots = SessionStore.insert(node, into: parentId, nodes: roots)
+            roots = SessionStore.insert(node, into: parentId, at: index, nodes: roots)
+        } else if let index, index >= 0, index <= roots.count {
+            roots.insert(node, at: index)
         } else {
             roots.append(node)
         }
@@ -266,19 +269,6 @@ final class SessionStore {
         return siblings.firstIndex { $0.id == id }
     }
 
-    private static func insert(_ node: SessionNode, into parentId: UUID,
-                               nodes: [SessionNode]) -> [SessionNode] {
-        nodes.map { n in
-            var n = n
-            if n.id == parentId, n.children != nil {
-                n.children!.append(node)
-            } else if let c = n.children {
-                n.children = insert(node, into: parentId, nodes: c)
-            }
-            return n
-        }
-    }
-
     private static func replace(_ node: SessionNode,
                                 in nodes: [SessionNode]) -> [SessionNode] {
         nodes.map { n in
@@ -311,7 +301,7 @@ final class SessionStore {
         nodes.map { n in
             var n = n
             if n.id == parentId, n.children != nil {
-                if let index, index <= n.children!.count {
+                if let index, index >= 0, index <= n.children!.count {
                     n.children!.insert(node, at: index)
                 } else {
                     n.children!.append(node)
