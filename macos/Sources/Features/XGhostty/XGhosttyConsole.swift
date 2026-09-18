@@ -92,6 +92,56 @@ private struct SessionTreeActions {
     var onSetGroupPasswordOnly: (SessionNode, Bool) -> Void  // 批量设分组下密码会话「仅用密码」(true=设/false=取消)
 }
 
+/// 序号宽度跟随同组会话总数：1–9 个显示 1、2；达到两位数后显示 01、02；以此类推。
+private func formattedSessionNumber(_ index: Int, total: Int) -> String {
+    let width = String(max(total, 1)).count
+    let value = String(index)
+    return String(repeating: "0", count: max(0, width - value.count)) + value
+}
+
+/// 会话展示标题的单一事实来源。树、顶部标签和窗口标题都读取同一份结果，避免编号不一致。
+private struct SessionDisplayTitles {
+    private let values: [UUID: String]
+
+    init(roots: [SessionNode], sortByName: Bool, showNumbers: Bool) {
+        var result: [UUID: String] = [:]
+
+        func ordered(_ nodes: [SessionNode]) -> [SessionNode] {
+            guard sortByName else { return nodes }
+            return nodes.sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
+        }
+
+        func collect(_ nodes: [SessionNode], directChildrenOfGroup: Bool) {
+            let nodes = ordered(nodes)
+            for node in nodes { result[node.id] = node.displayName }
+
+            if showNumbers && directChildrenOfGroup {
+                let sessions = nodes.filter { !$0.isGroup }
+                for (offset, session) in sessions.enumerated() {
+                    let number = formattedSessionNumber(offset + 1, total: sessions.count)
+                    result[session.id] = "\(number). \(session.displayName)"
+                }
+            }
+
+            for node in nodes {
+                if let children = node.children {
+                    collect(children, directChildrenOfGroup: true)
+                }
+            }
+        }
+
+        // 根节点不属于任何分组，因此根级会话不编号；每个分组从 1 独立编号。
+        collect(roots, directChildrenOfGroup: false)
+        values = result
+    }
+
+    func title(for node: SessionNode) -> String {
+        values[node.id] ?? node.displayName
+    }
+}
+
 /// 拖拽落点相对目标行的位置：之前（同级）/ 之后（同级）/ 移入（仅分组）。
 private enum DropPosition { case before, after, into }
 
@@ -144,6 +194,7 @@ private struct SessionRowView: View {
     let showHost: Bool          // 搜索态下叶子补一行 host
     let canPaste: Bool          // 剪贴板非空（显式 Bool 才能让 clipboard 变化触发菜单重渲染）
     let depth: Int              // 层级缩进
+    let displayTitle: String    // 已统一处理空名称回退与可选分组序号
     let isExpanded: Bool        // 分组是否展开（画三角）
     let dropHint: DropPosition? // 拖拽落点提示（before/after 画插入线，into 画移入边框）
     let actions: SessionTreeActions
@@ -164,8 +215,8 @@ private struct SessionRowView: View {
             Image(systemName: node.isGroup ? "folder.fill" : (isConnected ? "terminal.fill" : "terminal"))
                 .foregroundStyle(isConnected ? Color.green : Color.secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text(node.name).lineLimit(1)
-                if showHost, let host = node.host, !host.isEmpty, host != node.name {
+                Text(displayTitle).lineLimit(1)
+                if showHost, let host = node.host, !host.isEmpty, host != node.displayName {
                     Text(host).lineLimit(1).font(.system(size: 10)).foregroundStyle(.secondary)
                 }
             }
@@ -266,6 +317,7 @@ private struct SessionTreeView: View {
     let selectedIds: Set<UUID>
     let canPaste: Bool
     let sortByName: Bool
+    let displayTitles: SessionDisplayTitles
     let scrollTarget: UUID?         // 方向键导航后要滚到可视区的行（nil=不滚）
     let actions: SessionTreeActions
 
@@ -302,6 +354,7 @@ private struct SessionTreeView: View {
                                        selectedCount: selectedIds.count,
                                        showHost: !query.isEmpty, canPaste: canPaste,
                                        depth: row.depth,
+                                       displayTitle: displayTitles.title(for: row.node),
                                        isExpanded: expandedIds.contains(row.node.id),
                                        dropHint: dropTargetId == row.node.id ? dropPosition : nil,
                                        actions: actions)
@@ -399,7 +452,7 @@ private struct SessionTreeView: View {
                                 expanded: Set<UUID>?, sortByName: Bool) -> [SessionTreeRow] {
         // 按名称排序仅影响展示层（不动存储顺序）：分组在前、组内/会话按名称；关则按存储（拖拽）顺序。
         let ordered = sortByName
-            ? nodes.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            ? nodes.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
             : nodes
         var out: [SessionTreeRow] = []
         for n in ordered {
@@ -415,7 +468,7 @@ private struct SessionTreeView: View {
     private func filtered(_ nodes: [SessionNode]) -> [SessionNode] {
         let q = query.lowercased()
         func match(_ n: SessionNode) -> Bool {
-            n.name.lowercased().contains(q) || (n.host?.lowercased().contains(q) ?? false)
+            n.displayName.lowercased().contains(q) || (n.host?.lowercased().contains(q) ?? false)
         }
         return nodes.compactMap { node -> SessionNode? in
             if let children = node.children {
@@ -732,7 +785,7 @@ private enum TabTransport { case ssh, sftp }
 private final class OpenTab {
     let tabId: UUID
     let nodeId: UUID?
-    let title: String
+    var title: String
     let transport: TabTransport         // ssh / sftp（决定是否入群发、重连用哪种、连接判定方式）
     let surface: Ghostty.SurfaceView
     let scroll: SurfaceScrollView
@@ -1132,6 +1185,7 @@ class XGhosttyConsoleController: NSWindowController {
             selectedIds: selectedIds,
             canPaste: !clipboard.isEmpty,
             sortByName: layoutStore.layout.sortByName ?? false,
+            displayTitles: sessionDisplayTitles,
             scrollTarget: treeScrollTarget,
             actions: SessionTreeActions(
                 onOpen: { [weak self] in self?.openSession($0) },
@@ -1318,6 +1372,7 @@ class XGhosttyConsoleController: NSWindowController {
         }
         targetMenuHosting?.rootView = makeTargetPicker()   // 分组增删改 → 刷新下拉
         updateBroadcastWarning()
+        refreshOpenTabTitles()
     }
 
     private func makeTabBar() -> SessionTabBar {
@@ -1346,6 +1401,31 @@ class XGhosttyConsoleController: NSWindowController {
 
     private func refreshTabBar() {
         tabBarHosting?.rootView = makeTabBar()
+    }
+
+    /// 当前会话树的统一展示标题快照；树、标签、窗口标题均使用它。
+    private var sessionDisplayTitles: SessionDisplayTitles {
+        SessionDisplayTitles(
+            roots: store.roots,
+            sortByName: layoutStore.layout.sortByName == true,
+            showNumbers: layoutStore.layout.numberSessionsInGroups == true)
+    }
+
+    /// 会话树和标签共用的展示标题。
+    private func sessionDisplayTitle(for node: SessionNode) -> String {
+        sessionDisplayTitles.title(for: node)
+    }
+
+    /// 设置、排序、拖拽或编辑会话后，已打开标签与窗口标题即时跟随最新编号和名称。
+    private func refreshOpenTabTitles() {
+        let displayTitles = sessionDisplayTitles
+        for tab in tabs.values {
+            guard let nodeId = tab.nodeId, let node = store.find(nodeId) else { continue }
+            let title = displayTitles.title(for: node)
+            tab.title = tab.transport == .sftp ? "\(title) · SFTP" : title
+        }
+        refreshTabBar()
+        updateWindowTitle()
     }
 
     private func makeQuickBar() -> QuickCommandBar {
@@ -1548,6 +1628,7 @@ class XGhosttyConsoleController: NSWindowController {
             copyOnSelect: layoutStore.layout.copyOnSelect ?? false,
             copyTrimWhitespace: layoutStore.layout.copyTrimWhitespace ?? false,
             searchPerSession: layoutStore.layout.searchPerSession ?? false,
+            numberSessionsInGroups: layoutStore.layout.numberSessionsInGroups ?? false,
             selectionWordChars: Self.readSelectionWordChars(),
             onToggleAutoSave: { [weak self] on in
                 self?.layoutStore.setAutoSave(on)
@@ -1617,6 +1698,10 @@ class XGhosttyConsoleController: NSWindowController {
             },
             onToggleSearchPerSession: { [weak self] on in
                 self?.layoutStore.setSearchPerSession(on)
+            },
+            onToggleNumberSessionsInGroups: { [weak self] on in
+                self?.layoutStore.setNumberSessionsInGroups(on)
+                self?.refreshTree()
             },
             onCommitSelectionWordChars: { [weak self] v in
                 self?.writeSelectionWordChars(v)
@@ -1953,7 +2038,8 @@ class XGhosttyConsoleController: NSWindowController {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 20, execute: askpass.cleanup)
                 }
                 cfg.environmentVariables = env
-                title = transport == .sftp ? "\(node.name) · SFTP" : node.name
+                let displayTitle = sessionDisplayTitle(for: node)
+                title = transport == .sftp ? "\(displayTitle) · SFTP" : displayTitle
                 // 登录命令是远端 shell 命令——只对 ssh 标签发；sftp> 提示符不接受它们，跳过。
                 if transport == .ssh, !node.loginCommands.isEmpty {
                     cfg.initialInput = node.loginCommands.joined(separator: "\n") + "\n"
@@ -2100,7 +2186,7 @@ class XGhosttyConsoleController: NSWindowController {
             return tabId
         } catch {
             let alert = NSAlert()
-            alert.messageText = "无法打开会话「\(node?.name ?? "本地 shell")」"
+            alert.messageText = "无法打开会话「\(node?.displayName ?? "本地 shell")」"
             alert.informativeText = "\(error)"
             alert.alertStyle = .warning
             alert.runModal()
@@ -2485,6 +2571,7 @@ class XGhosttyConsoleController: NSWindowController {
         let view = SessionEditView(
             node: node,
             lockType: true,                       // 类型由「新建会话/分组」入口决定，表单内锁定
+            isNew: isNew,
             onSave: { [weak self] updated in
                 self?.commitEditor(updated, isNew: isNew, parentId: parentId, insertAt: index)
             },
@@ -2549,7 +2636,7 @@ class XGhosttyConsoleController: NSWindowController {
     private func deleteNode(_ node: SessionNode) {
         let alert = NSAlert()
         alert.alertStyle = .warning
-        alert.messageText = "删除\(node.isGroup ? "分组" : "会话")「\(node.name)」？"
+        alert.messageText = "删除\(node.isGroup ? "分组" : "会话")「\(node.displayName)」？"
         if node.isGroup, let c = node.children, !c.isEmpty {
             alert.informativeText = "该分组下的 \(c.count) 项也会一并删除。已打开的终端不受影响。"
         } else {
@@ -2716,7 +2803,7 @@ class XGhosttyConsoleController: NSWindowController {
     /// 与 `SessionTreeView.flatten` 的排序保持一致，方向键导航 / 范围选才与用户所见同序。
     private func sortedForDisplay(_ nodes: [SessionNode]) -> [SessionNode] {
         guard layoutStore.layout.sortByName == true else { return nodes }
-        return nodes.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        return nodes.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
     }
 
     /// 当前可见行的有序 id（深度优先、按展示序，仅展开的分组递归）。⇧范围选 / ⌘A / 方向键用。

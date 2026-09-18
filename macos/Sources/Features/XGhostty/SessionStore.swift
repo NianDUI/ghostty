@@ -27,6 +27,15 @@ struct SessionNode: Codable, Identifiable, Equatable {
     var isGroup: Bool { children != nil }
     var isLocalShell: Bool { !isGroup && (host?.isEmpty ?? true) }
 
+    /// 面向界面的名称：会话允许不命名，此时以主机/IP 作为默认展示。
+    /// 保留原始 `name` 为空，避免把展示回退值误持久化成用户手写名称。
+    var displayName: String {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty { return trimmedName }
+        if let host, !host.isEmpty { return host }
+        return isLocalShell ? "本地 shell" : "未命名"
+    }
+
     init(id: UUID = UUID(),
          name: String,
          children: [SessionNode]? = nil,

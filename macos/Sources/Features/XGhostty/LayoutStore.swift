@@ -45,6 +45,8 @@ struct ConsoleLayout: Codable, Equatable {
     /// 终端搜索框（⌘F）是否每会话独立（nil/false=跟随当前会话：切标签后搜索框保持打开、搜索词带到
     /// 新会话继续搜，全局一个框；true=每会话独立：每个会话各记各的搜索状态，切走保留、切回还原）。
     var searchPerSession: Bool?
+    /// 分组直接包含的会话是否在树中显示序号（nil/false=不显示）。
+    var numberSessionsInGroups: Bool?
 
     init(autoSave: Bool = true,
          windowFrame: CGRect? = nil,
@@ -64,7 +66,8 @@ struct ConsoleLayout: Codable, Equatable {
          localShellTransferEnabled: Bool? = nil,
          copyOnSelect: Bool? = nil,
          copyTrimWhitespace: Bool? = nil,
-         searchPerSession: Bool? = nil) {
+         searchPerSession: Bool? = nil,
+         numberSessionsInGroups: Bool? = nil) {
         self.autoSave = autoSave
         self.windowFrame = windowFrame
         self.treeWidth = treeWidth
@@ -84,6 +87,7 @@ struct ConsoleLayout: Codable, Equatable {
         self.copyOnSelect = copyOnSelect
         self.copyTrimWhitespace = copyTrimWhitespace
         self.searchPerSession = searchPerSession
+        self.numberSessionsInGroups = numberSessionsInGroups
     }
 }
 
@@ -189,6 +193,12 @@ final class LayoutStore {
         persist()
     }
 
+    /// 仅改「分组内会话显示序号」偏好。
+    func setNumberSessionsInGroups(_ on: Bool) {
+        layout.numberSessionsInGroups = on
+        persist()
+    }
+
     /// 记录上次打开的会话集（关窗口时调用，供下次启动恢复）。
     func setLastSessionIds(_ ids: [UUID]) {
         layout.lastSessionIds = ids
@@ -209,7 +219,8 @@ final class LayoutStore {
                                localShellTransferEnabled: layout.localShellTransferEnabled,
                                copyOnSelect: layout.copyOnSelect,
                                copyTrimWhitespace: layout.copyTrimWhitespace,
-                               searchPerSession: layout.searchPerSession)
+                               searchPerSession: layout.searchPerSession,
+                               numberSessionsInGroups: layout.numberSessionsInGroups)
         persist()
     }
 
@@ -228,6 +239,7 @@ final class LayoutStore {
         static let copyOnSelect = false
         static let copyTrimWhitespace = true
         static let searchPerSession = false
+        static let numberSessionsInGroups = false
     }
 
     /// 「还原默认设置」：把所有偏好开关写回出厂默认（保留窗口布局/分隔条/展开态/上次会话——那归 resetLayout）。
@@ -247,6 +259,7 @@ final class LayoutStore {
         layout.copyOnSelect = Defaults.copyOnSelect
         layout.copyTrimWhitespace = Defaults.copyTrimWhitespace
         layout.searchPerSession = Defaults.searchPerSession
+        layout.numberSessionsInGroups = Defaults.numberSessionsInGroups
         persist()
     }
 

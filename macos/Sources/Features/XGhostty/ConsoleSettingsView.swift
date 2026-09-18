@@ -17,6 +17,7 @@ struct ConsoleSettingsView: View {
     @State private var copyOnSelect: Bool
     @State private var copyTrimWhitespace: Bool
     @State private var searchPerSession: Bool
+    @State private var numberSessionsInGroups: Bool
     @State private var selectionWordChars: String
     var onToggleAutoSave: (Bool) -> Void
     var onToggleSort: (Bool) -> Void
@@ -31,6 +32,7 @@ struct ConsoleSettingsView: View {
     var onToggleCopyOnSelect: (Bool) -> Void
     var onToggleCopyTrimWhitespace: (Bool) -> Void
     var onToggleSearchPerSession: (Bool) -> Void
+    var onToggleNumberSessionsInGroups: (Bool) -> Void
     var onCommitSelectionWordChars: (String) -> Void
     var onViewLogs: () -> Void
     var onResetLayout: () -> Void
@@ -50,6 +52,7 @@ struct ConsoleSettingsView: View {
          copyOnSelect: Bool,
          copyTrimWhitespace: Bool,
          searchPerSession: Bool,
+         numberSessionsInGroups: Bool,
          selectionWordChars: String,
          onToggleAutoSave: @escaping (Bool) -> Void,
          onToggleSort: @escaping (Bool) -> Void,
@@ -64,6 +67,7 @@ struct ConsoleSettingsView: View {
          onToggleCopyOnSelect: @escaping (Bool) -> Void,
          onToggleCopyTrimWhitespace: @escaping (Bool) -> Void,
          onToggleSearchPerSession: @escaping (Bool) -> Void,
+         onToggleNumberSessionsInGroups: @escaping (Bool) -> Void,
          onCommitSelectionWordChars: @escaping (String) -> Void,
          onViewLogs: @escaping () -> Void,
          onResetLayout: @escaping () -> Void,
@@ -82,6 +86,7 @@ struct ConsoleSettingsView: View {
         _copyOnSelect = State(initialValue: copyOnSelect)
         _copyTrimWhitespace = State(initialValue: copyTrimWhitespace)
         _searchPerSession = State(initialValue: searchPerSession)
+        _numberSessionsInGroups = State(initialValue: numberSessionsInGroups)
         _selectionWordChars = State(initialValue: selectionWordChars)
         self.onToggleAutoSave = onToggleAutoSave
         self.onToggleSort = onToggleSort
@@ -96,6 +101,7 @@ struct ConsoleSettingsView: View {
         self.onToggleCopyOnSelect = onToggleCopyOnSelect
         self.onToggleCopyTrimWhitespace = onToggleCopyTrimWhitespace
         self.onToggleSearchPerSession = onToggleSearchPerSession
+        self.onToggleNumberSessionsInGroups = onToggleNumberSessionsInGroups
         self.onCommitSelectionWordChars = onCommitSelectionWordChars
         self.onViewLogs = onViewLogs
         self.onResetLayout = onResetLayout
@@ -160,6 +166,14 @@ struct ConsoleSettingsView: View {
                 Toggle("启动时恢复上次打开的会话", isOn: $restoreLastSession)
                     .onChange(of: restoreLastSession) { onToggleRestoreLastSession($0) }
                 Text("开启后，下次启动座舱自动重新打开上次关闭时的会话集（ssh 会话会重新登录）；关闭则只默认打开第一个会话。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("分组内会话显示序号", isOn: $numberSessionsInGroups)
+                    .onChange(of: numberSessionsInGroups) { onToggleNumberSessionsInGroups($0) }
+                Text("为每个分组直接包含的会话按当前展示顺序添加序号；不修改会话名称。名称留空时默认显示主机 IP。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

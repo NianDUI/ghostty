@@ -15,6 +15,8 @@ struct SessionEditView: View {
 
     /// 编辑锁定类型（分组 ↔ 主机不可互转）；新建时为 false，可在表单里选类型。
     let lockType: Bool
+    /// 明确区分新建与编辑；名称现在允许为空，不能再用 name 是否为空推断。
+    let isNew: Bool
     /// 保留原 id 与 children，保存时带回。
     private let original: SessionNode
     var onSave: (SessionNode) -> Void
@@ -40,10 +42,12 @@ struct SessionEditView: View {
 
     init(node: SessionNode,
          lockType: Bool,
+         isNew: Bool,
          onSave: @escaping (SessionNode) -> Void,
          onCancel: @escaping () -> Void) {
         self.original = node
         self.lockType = lockType
+        self.isNew = isNew
         self.onSave = onSave
         self.onCancel = onCancel
         _isGroup = State(initialValue: node.isGroup)
@@ -87,7 +91,7 @@ struct SessionEditView: View {
                 .labelsHidden()
             }
 
-            field("名称", text: $name, placeholder: isGroup ? "分组名" : "会话名")
+            field("名称", text: $name, placeholder: isGroup ? "分组名" : "可空，默认显示主机 IP")
 
             if !isGroup {
                 field("主机 / IP", text: $host, placeholder: "必填，如 192.0.2.10")
@@ -274,7 +278,8 @@ struct SessionEditView: View {
 
     private var title: String {
         let kind = isGroup ? "分组" : "主机"
-        return original.name.isEmpty ? "新建\(kind)" : "编辑\(kind)「\(original.name)」"
+        if isNew { return "新建\(kind)" }
+        return "编辑\(kind)「\(original.displayName)」"
     }
 
     /// 密码来源下拉的当前显示文案。
@@ -316,8 +321,8 @@ struct SessionEditView: View {
         let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !h.isEmpty else { errorText = "主机 / IP 不能为空"; return }
         node.host = h
-        // 名称留空：用 IP/host 顶上。
-        node.name = trimmedName.isEmpty ? h : trimmedName
+        // 名称可留空；界面以 host/IP 作为默认展示，但不把回退值写回数据。
+        node.name = trimmedName
         let u = user.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !u.isEmpty else { errorText = "用户名不能为空"; return }
         node.user = u
