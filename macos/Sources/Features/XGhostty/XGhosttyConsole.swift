@@ -2849,11 +2849,18 @@ class XGhosttyConsoleController: NSWindowController {
         copyTextToClipboard(hosts.joined(separator: "\n"))
     }
 
-    /// 批量复制：取选中的顶层节点（祖先已选中的子节点跳过，避免重复）存入剪贴板。
+    /// 批量复制：取选中的顶层节点（祖先已选中的子节点跳过，避免重复）存入内部剪贴板，
+    /// 同时把可粘贴到外部应用的纯文本写入系统剪贴板（分组→名称，会话→主机 IP）。
     private func copySelected() {
         let nodes = selectedTopLevel()
         guard !nodes.isEmpty else { return }
         clipboard = nodes
+        let plainText = nodes.map { node in
+            if node.isGroup { return node.displayName }
+            if let host = node.host, !host.isEmpty { return host }
+            return node.displayName
+        }.joined(separator: "\n")
+        copyTextToClipboard(plainText)
         refreshTree()
     }
 
