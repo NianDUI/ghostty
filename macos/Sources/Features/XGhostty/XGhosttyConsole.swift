@@ -959,6 +959,7 @@ class XGhosttyConsoleController: NSWindowController {
     private var searchOverlayHosting: NSView?   // Ghostty 原生搜索浮层（⌘F），nil = 未开
     private var keyMonitor: Any?
     private var mouseMonitor: Any?              // leftMouseUp 监听：选中自动复制（copyOnSelect 开时）
+    private var sshImagePasteUploadInProgress = false
     /// 当前打开的会话编辑 sheet（增删改），由 controller 持有避免 view→sheet 循环引用。
     private var editorSheet: NSWindow?
     /// 会话/分组复制粘贴的剪贴板（深拷贝快照；粘贴时再换新 id）。支持批量。
@@ -1706,6 +1707,10 @@ class XGhosttyConsoleController: NSWindowController {
             onCommitSelectionWordChars: { [weak self] v in
                 self?.writeSelectionWordChars(v)
             },
+            onSSHImagePasteSettings: { [weak self] in
+                self?.dismissEditor()
+                DispatchQueue.main.async { self?.presentSSHImagePasteSettings() }
+            },
             onViewLogs: { [weak self] in
                 // 关设置 sheet 再开日志查看器（座舱单 editorSheet 槽，不嵌套）。
                 self?.dismissEditor()
@@ -1714,6 +1719,22 @@ class XGhosttyConsoleController: NSWindowController {
             onResetLayout: { [weak self] in self?.resetLayout() },
             onResetToDefaults: { [weak self] in self?.resetSettingsToDefaults() },
             onClose: { [weak self] in self?.dismissEditor() })
+        let sheet = makeThemedSheet(view)
+        editorSheet = sheet
+        window?.beginSheet(sheet)
+    }
+
+    /// XGhostty 设置页和“共享此会话”相邻菜单项共用的独立配置页。
+    private func presentSSHImagePasteSettings() {
+        if editorSheet != nil { dismissEditor() }
+        let settingsStore = SSHImagePasteSettingsStore.shared
+        let view = SSHImagePasteSettingsView(
+            settings: settingsStore.load(),
+            onSave: { [weak self] value in
+                settingsStore.save(value)
+                self?.dismissEditor()
+            },
+            onCancel: { [weak self] in self?.dismissEditor() })
         let sheet = makeThemedSheet(view)
         editorSheet = sheet
         window?.beginSheet(sheet)
@@ -3172,11 +3193,152 @@ class XGhosttyConsoleController: NSWindowController {
         return true
     }
 
+    /// 纯 Ctrl+V 且当前是已保存 SSH 标签、剪贴板为图片时接管；不满足条件返回 false，
+    /// 让原始 Ctrl+V 继续交给远端程序。
+    @MainActor private func handleSSHImagePaste() -> Bool {
+        let settings = SSHImagePasteSettingsStore.shared.load()
+        guard settings.enabled else { return false }
+        guard let responder = window?.firstResponder as? NSView,
+              responder.isDescendant(of: surfaceContainer) else { return false }
+        guard let tabID = currentTabId,
+              let tab = tabs[tabID], tab.transport == .ssh, !tab.exited else { return false }
+
+        let pngData: Data
+        do {
+            guard let data = try SSHImagePasteUploader.clipboardPNGData() else { return false }
+            pngData = data
+        } catch {
+            presentSSHImagePasteError(error)
+            return true
+        }
+
+        guard !sshImagePasteUploadInProgress else {
+            NSSound.beep()
+            return true
+        }
+        guard pngData.count <= settings.maxImageBytes else {
+            presentSSHImagePasteError(SSHImagePasteUploadError.imageTooLarge(
+                actual: pngData.count, limit: settings.maxImageBytes))
+            return true
+        }
+
+        let node = tab.nodeId.flatMap { store.find($0) }
+        if node == nil || node?.isLocalShell == true {
+            guard let rawSurface = tab.surface.surface else { return false }
+            let rawForegroundPID = ghostty_surface_foreground_pid(rawSurface)
+            guard rawForegroundPID != 0,
+                  let foregroundPID = Int(exactly: rawForegroundPID) else { return false }
+            guard let arguments = SSHImagePasteUploader.runningSSHArguments(
+                foregroundPID: foregroundPID) else { return false }
+            sshImagePasteUploadInProgress = true
+            SSHImagePasteUploader.upload(.init(
+                pngData: pngData,
+                sshArguments: arguments,
+                environment: [:],
+                remoteBaseDirectory: settings.remoteBaseDirectory,
+                surfaceID: tab.surface.id
+            )) { [weak self, weak surface = tab.surface] result in
+                self?.sshImagePasteUploadInProgress = false
+                switch result {
+                case let .success(path):
+                    surface?.xghosttySendBytes(Data(path.utf8))
+                case let .failure(error):
+                    self?.presentSSHImagePasteError(error)
+                }
+            }
+            return true
+        }
+
+        guard let node else { return false }
+
+        var effective = node
+        let auth = resolveAuth(for: node)
+        effective.identityFile = auth.identityFile
+        let policy: SessionCommandBuilder.PasswordPolicy = auth.password == nil
+            ? .none
+            : (node.passwordOnly == true ? .strict : .auto)
+
+        var environment: [String: String] = [:]
+        var cleanups: [() -> Void] = []
+        if let secret = auth.secret {
+            guard let prepared = XGhosttyAskpass.prepare(password: secret) else {
+                presentSSHImagePasteError(SSHImagePasteUploadError.cannotStart("无法准备 SSH AskPass。"))
+                return true
+            }
+            environment = prepared.environment
+            cleanups.append(prepared.cleanup)
+        }
+
+        var jump: SessionCommandBuilder.Jump?
+        if let jumpID = node.proxyJumpId,
+           let jumpHost = JumpHostStore.shared.find(jumpID),
+           let endpoint = SessionCommandBuilder.jumpEndpoint(for: jumpHost) {
+            var spec = SessionCommandBuilder.Jump(endpoint: endpoint, port: jumpHost.port)
+            if let credentialID = jumpHost.credentialId,
+               let credential = CredentialLibrary.shared.find(credentialID) {
+                if credential.isKey {
+                    spec.identityFile = credential.keyPath
+                } else if let password = XGhosttyCredentialStore.shared.password(for: credentialID) {
+                    guard let prepared = XGhosttyAskpass.prepare(password: password) else {
+                        cleanups.forEach { $0() }
+                        presentSSHImagePasteError(SSHImagePasteUploadError.cannotStart("无法准备跳板机 AskPass。"))
+                        return true
+                    }
+                    spec.askpassEnv = prepared.environment
+                    cleanups.append(prepared.cleanup)
+                }
+            }
+            jump = spec
+        }
+
+        do {
+            let arguments = try SessionCommandBuilder.buildImageUploadArguments(
+                for: effective,
+                policy: policy,
+                batchMode: auth.secret == nil,
+                jump: jump)
+            sshImagePasteUploadInProgress = true
+            SSHImagePasteUploader.upload(.init(
+                pngData: pngData,
+                sshArguments: arguments,
+                environment: environment,
+                remoteBaseDirectory: settings.remoteBaseDirectory,
+                surfaceID: tab.surface.id
+            )) { [weak self, weak surface = tab.surface] result in
+                cleanups.forEach { $0() }
+                self?.sshImagePasteUploadInProgress = false
+                switch result {
+                case let .success(path):
+                    surface?.xghosttySendBytes(Data(path.utf8))
+                case let .failure(error):
+                    self?.presentSSHImagePasteError(error)
+                }
+            }
+        } catch {
+            cleanups.forEach { $0() }
+            presentSSHImagePasteError(error)
+        }
+        return true
+    }
+
+    private func presentSSHImagePasteError(_ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "SSH 图片粘贴失败"
+        alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "好")
+        if let window { alert.beginSheetModal(for: window) }
+    }
+
     private func installKeyMonitor() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.window?.isKeyWindow == true else { return event }
             let cmd = event.modifierFlags.contains(.command)
             let ch = event.charactersIgnoringModifiers?.lowercased() ?? ""
+            let significant: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+            if event.modifierFlags.intersection(significant) == [.control], event.keyCode == 9 {
+                if self.handleSSHImagePaste() { return nil }
+            }
             if cmd && ch == "t" {        // 复制当前标签并 cd 到当前目录
                 self.duplicateCurrentTab()
                 return nil
@@ -3295,7 +3457,6 @@ class XGhosttyConsoleController: NSWindowController {
             // cmd/ctrl/opt/shift 的组合不拦（留给别处）。注意：方向键 modifierFlags 天然含
             // .function/.numericPad，故只查这 4 个「有意义」修饰键是否为空。
             if (123...126).contains(Int(event.keyCode)) {
-                let significant: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
                 if event.modifierFlags.intersection(significant).isEmpty, self.treeHasFocus() {
                     switch event.keyCode {
                     case 124: self.treeArrowRight()
@@ -3356,6 +3517,10 @@ extension XGhosttyConsoleController: NSMenuItemValidation {
 
     @IBAction func toggleSessionSharing(_ sender: Any?) { // 显示>共享此会话：当前 surface 切换共享
         currentSurface?.toggleSessionSharing(from: window)
+    }
+
+    @IBAction func showSSHImagePasteSettings(_ sender: Any?) {
+        presentSSHImagePasteSettings()
     }
 
     // 显示>增大/减小/重置字体（⌘+ / ⌘- / ⌘0）：对当前 surface 发字体缩放，与主 Ghostty 同实现。

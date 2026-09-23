@@ -73,6 +73,12 @@ class BaseTerminalController: NSWindowController,
     /// The clipboard confirmation window, if shown.
     private var clipboardConfirmation: ClipboardConfirmationController?
 
+    /// Main-Ghostty SSH image paste settings sheet, if shown.
+    private var sshImagePasteSettingsSheet: NSWindow?
+
+    /// Prevent repeated Ctrl+V from starting overlapping uploads.
+    private var sshImagePasteUploadInProgress = false
+
     /// Fullscreen state management.
     private(set) var fullscreenStyle: FullscreenStyle?
 
@@ -225,7 +231,7 @@ class BaseTerminalController: NSWindowController,
         // Listen for local events that we need to know of outside of
         // single surface handlers.
         self.eventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.flagsChanged]
+            matching: [.flagsChanged, .keyDown]
         ) { [weak self] event in self?.localEventHandler(event) }
     }
 
@@ -906,9 +912,83 @@ class BaseTerminalController: NSWindowController,
         case .flagsChanged:
             localEventFlagsChanged(event)
 
+        case .keyDown:
+            localEventKeyDown(event)
+
         default:
             event
         }
+    }
+
+    private func localEventKeyDown(_ event: NSEvent) -> NSEvent? {
+        guard window?.isKeyWindow == true else { return event }
+        let significant: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
+        guard event.modifierFlags.intersection(significant) == [.control],
+              event.keyCode == 9 else { return event }
+        return handleSSHImagePaste() ? nil : event
+    }
+
+    /// 主 Ghostty 的手动 SSH 场景：从当前 PTY 前台进程树解析正在运行的 ssh。
+    /// 无图片或不是 SSH 时返回 false，保留终端原始 Ctrl+V 行为。
+    @MainActor private func handleSSHImagePaste() -> Bool {
+        let settings = SSHImagePasteSettingsStore.shared.load()
+        guard settings.enabled,
+              let surfaceView = focusedSurface,
+              surfaceView.focused,
+              let rawSurface = surfaceView.surface else { return false }
+
+        let pngData: Data
+        do {
+            guard let data = try SSHImagePasteUploader.clipboardPNGData() else { return false }
+            pngData = data
+        } catch {
+            presentSSHImagePasteError(error)
+            return true
+        }
+
+        guard !sshImagePasteUploadInProgress else {
+            NSSound.beep()
+            return true
+        }
+        guard pngData.count <= settings.maxImageBytes else {
+            presentSSHImagePasteError(SSHImagePasteUploadError.imageTooLarge(
+                actual: pngData.count,
+                limit: settings.maxImageBytes))
+            return true
+        }
+
+        let rawForegroundPID = ghostty_surface_foreground_pid(rawSurface)
+        guard rawForegroundPID != 0,
+              let foregroundPID = Int(exactly: rawForegroundPID),
+              let arguments = SSHImagePasteUploader.runningSSHArguments(
+                foregroundPID: foregroundPID) else { return false }
+
+        sshImagePasteUploadInProgress = true
+        SSHImagePasteUploader.upload(.init(
+            pngData: pngData,
+            sshArguments: arguments,
+            environment: [:],
+            remoteBaseDirectory: settings.remoteBaseDirectory,
+            surfaceID: surfaceView.id
+        )) { [weak self, weak surfaceView] result in
+            self?.sshImagePasteUploadInProgress = false
+            switch result {
+            case let .success(path):
+                surfaceView?.sshImagePasteSendBytes(Data(path.utf8))
+            case let .failure(error):
+                self?.presentSSHImagePasteError(error)
+            }
+        }
+        return true
+    }
+
+    private func presentSSHImagePasteError(_ error: Error) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "SSH 图片粘贴失败"
+        alert.informativeText = error.localizedDescription
+        alert.addButton(withTitle: "好")
+        if let window { alert.beginSheetModal(for: window) }
     }
 
     private func localEventFlagsChanged(_ event: NSEvent) -> NSEvent? {
@@ -1506,6 +1586,52 @@ class BaseTerminalController: NSWindowController,
 
     @IBAction func toggleSessionSharing(_ sender: Any?) {
         focusedSurface?.toggleSessionSharing(from: window)
+    }
+
+    @IBAction func showSSHImagePasteSettings(_ sender: Any?) {
+        if let sheet = sshImagePasteSettingsSheet {
+            sheet.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let parentWindow = window
+        let store = SSHImagePasteSettingsStore.shared
+        let view = SSHImagePasteSettingsView(
+            settings: store.load(),
+            onSave: { [weak self] settings in
+                store.save(settings)
+                self?.dismissSSHImagePasteSettings(on: parentWindow)
+            },
+            onCancel: { [weak self] in
+                self?.dismissSSHImagePasteSettings(on: parentWindow)
+            })
+
+        // Match the current terminal background and appearance, just like the
+        // session-sharing settings sheet.
+        let bg = focusedSurface.map { NSColor($0.derivedConfig.backgroundColor) } ?? .windowBackgroundColor
+        let host = NSHostingController(rootView: AnyView(view.background(Color(nsColor: bg))))
+        host.view.wantsLayer = true
+        host.view.layer?.backgroundColor = bg.cgColor
+        let sheet = NSWindow(contentViewController: host)
+        sheet.appearance = NSAppearance(named: bg.isLightColor ? .aqua : .darkAqua)
+        sheet.backgroundColor = bg
+        sshImagePasteSettingsSheet = sheet
+
+        if let parentWindow {
+            parentWindow.beginSheet(sheet)
+        } else {
+            sheet.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private func dismissSSHImagePasteSettings(on parentWindow: NSWindow?) {
+        guard let sheet = sshImagePasteSettingsSheet else { return }
+        if let parentWindow {
+            parentWindow.endSheet(sheet)
+        } else {
+            sheet.close()
+        }
+        sshImagePasteSettingsSheet = nil
     }
 
     @IBAction func find(_ sender: Any) {

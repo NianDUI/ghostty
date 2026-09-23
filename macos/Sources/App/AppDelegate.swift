@@ -76,6 +76,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuTerminalInspector: NSMenuItem?
     @IBOutlet private var menuCommandPalette: NSMenuItem?
     private var menuToggleSessionSharing: NSMenuItem?
+    private var menuSSHImagePasteSettings: NSMenuItem?
 
     @IBOutlet private var menuEqualizeSplits: NSMenuItem?
     @IBOutlet private var menuMoveSplitDividerUp: NSMenuItem?
@@ -331,6 +332,7 @@ class AppDelegate: NSObject,
 
         // Setup our menu
         installSessionSharingMenuItemIfNeeded()
+        installSSHImagePasteSettingsMenuItemIfNeeded()
         setupMenuImages()
 
         // Setup signal handlers
@@ -1205,6 +1207,7 @@ extension AppDelegate {
         self.menuTerminalInspector?.setImageIfDesired(systemSymbolName: "scope")
         self.menuReadonly?.setImageIfDesired(systemSymbolName: "eye.fill")
         self.menuToggleSessionSharing?.setImageIfDesired(systemSymbolName: "shared.with.you")
+        self.menuSSHImagePasteSettings?.setImageIfDesired(systemSymbolName: "photo.on.rectangle.angled")
         self.menuSetAsDefaultTerminal?.setImageIfDesired(systemSymbolName: "star.fill")
         self.menuToggleFullScreen?.setImageIfDesired(systemSymbolName: "square.arrowtriangle.4.outward")
         self.menuToggleVisibility?.setImageIfDesired(systemSymbolName: "eye")
@@ -1347,6 +1350,22 @@ extension AppDelegate {
         item.target = nil
         parentMenu.insertItem(item, at: anchorIndex)
         menuToggleSessionSharing = item
+    }
+
+    @MainActor private func installSSHImagePasteSettingsMenuItemIfNeeded() {
+        guard menuSSHImagePasteSettings == nil else { return }
+        guard let sharingItem = menuToggleSessionSharing,
+              let parentMenu = sharingItem.menu,
+              let sharingIndex = parentMenu.items.firstIndex(of: sharingItem) else { return }
+
+        let item = NSMenuItem(
+            title: LocalizedString.text("SSH 图片粘贴设置…"),
+            action: #selector(BaseTerminalController.showSSHImagePasteSettings(_:)),
+            keyEquivalent: ""
+        )
+        item.target = nil
+        parentMenu.insertItem(item, at: sharingIndex + 1)
+        menuSSHImagePasteSettings = item
     }
 
     @MainActor func performGhosttyBindingMenuKeyEquivalent(with event: NSEvent) -> Bool {

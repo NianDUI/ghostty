@@ -221,6 +221,82 @@ enum SessionCommandBuilder {
         return Built(command: parts.joined(separator: " "), environment: baseEnv)
     }
 
+    /// 构造图片剪贴板上传使用的 ssh argv。与交互会话保持相同的目标、端口、密钥、跳板和
+    /// 老服务器兼容选项，但不申请 TTY，也不追加远端登录 shell bootstrap。
+    static func buildImageUploadArguments(for node: SessionNode,
+                                          policy: PasswordPolicy = .none,
+                                          batchMode: Bool = true,
+                                          jump: Jump? = nil) throws -> [String] {
+        guard !node.isLocalShell, let host = node.host, validHost(host) else {
+            throw SessionCommandError.invalidHost(node.host ?? "")
+        }
+
+        var parts = [
+            "-T",
+            "-o", "ConnectTimeout=10",
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "PubkeyAcceptedAlgorithms=+ssh-rsa",
+            "-o", "HostKeyAlgorithms=+ssh-rsa",
+        ]
+
+        switch policy {
+        case .none:
+            parts += ["-o", batchMode ? "BatchMode=yes" : "BatchMode=no"]
+        case .auto:
+            parts += [
+                "-o", "BatchMode=no",
+                "-o", "PreferredAuthentications=publickey,keyboard-interactive,password",
+                "-o", "NumberOfPasswordPrompts=1",
+            ]
+        case .strict:
+            parts += [
+                "-o", "BatchMode=no",
+                "-o", "PubkeyAuthentication=no",
+                "-o", "PreferredAuthentications=keyboard-interactive,password",
+                "-o", "NumberOfPasswordPrompts=1",
+            ]
+        }
+
+        if let port = node.port {
+            guard (1...65535).contains(port) else {
+                throw SessionCommandError.invalidPort(port)
+            }
+            parts += ["-p", String(port)]
+        }
+        if let identity = node.identityFile, !identity.isEmpty {
+            parts += [
+                "-i", (identity as NSString).expandingTildeInPath,
+                "-o", "IdentitiesOnly=yes",
+            ]
+        }
+        if let jump {
+            if jump.hasAuth {
+                parts += ["-o", "ProxyCommand=" + proxyCommand(for: jump)]
+            } else {
+                var endpoint = jump.endpoint
+                if let port = jump.port { endpoint += ":\(port)" }
+                parts += ["-J", endpoint]
+            }
+        } else if let manual = node.proxyJump, !manual.isEmpty {
+            guard validProxy(manual) else {
+                throw SessionCommandError.invalidProxy(manual)
+            }
+            parts += ["-J", manual]
+        }
+
+        var target = host
+        if let user = node.user, !user.isEmpty {
+            guard validName(user) else {
+                throw SessionCommandError.invalidUser(user)
+            }
+            target = "\(user)@\(host)"
+        }
+        parts.append(target)
+        return parts
+    }
+
     /// SFTP 标签首行展示用（只含 `sftp user@host` / `-P` / `-J`，不含 ServerAlive 等噪音）。本地返回 nil。
     static func displaySFTPCommand(for node: SessionNode, viaJump: String? = nil) -> String? {
         guard !node.isLocalShell, let host = node.host else { return nil }

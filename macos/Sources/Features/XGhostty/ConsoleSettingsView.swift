@@ -34,6 +34,7 @@ struct ConsoleSettingsView: View {
     var onToggleSearchPerSession: (Bool) -> Void
     var onToggleNumberSessionsInGroups: (Bool) -> Void
     var onCommitSelectionWordChars: (String) -> Void
+    var onSSHImagePasteSettings: () -> Void
     var onViewLogs: () -> Void
     var onResetLayout: () -> Void
     var onResetToDefaults: () -> Void
@@ -69,6 +70,7 @@ struct ConsoleSettingsView: View {
          onToggleSearchPerSession: @escaping (Bool) -> Void,
          onToggleNumberSessionsInGroups: @escaping (Bool) -> Void,
          onCommitSelectionWordChars: @escaping (String) -> Void,
+         onSSHImagePasteSettings: @escaping () -> Void,
          onViewLogs: @escaping () -> Void,
          onResetLayout: @escaping () -> Void,
          onResetToDefaults: @escaping () -> Void,
@@ -103,6 +105,7 @@ struct ConsoleSettingsView: View {
         self.onToggleSearchPerSession = onToggleSearchPerSession
         self.onToggleNumberSessionsInGroups = onToggleNumberSessionsInGroups
         self.onCommitSelectionWordChars = onCommitSelectionWordChars
+        self.onSSHImagePasteSettings = onSSHImagePasteSettings
         self.onViewLogs = onViewLogs
         self.onResetLayout = onResetLayout
         self.onResetToDefaults = onResetToDefaults
@@ -244,6 +247,13 @@ struct ConsoleSettingsView: View {
                 Toggle("本地 shell 文件传输（手动 ssh 后 rz/sz）", isOn: $localShellTransfer)
                     .onChange(of: localShellTransfer) { onToggleLocalShellTransfer($0) }
                 Text("让本地 Shell 中手动建立的 SSH 连接支持文件传输。可能影响 Shell Integration 和初始目录。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Button("SSH 图片粘贴设置…") { onSSHImagePasteSettings() }
+                Text("在 XGhostty 的 SSH 标签中按 Ctrl+V，把本机图片剪贴板上传到远端，再把远端图片路径填入终端。无需 lrzsz 或 trzsz-go。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }

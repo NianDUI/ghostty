@@ -548,6 +548,15 @@ extension Ghostty {
             }
         }
 
+        /// SSH 图片粘贴上传完成后，把远程文件路径写入当前 PTY。
+        func sshImagePasteSendBytes(_ data: Data) {
+            guard let surface else { return }
+            data.withUnsafeBytes { rawBuffer in
+                guard let ptr = rawBuffer.bindMemory(to: CChar.self).baseAddress else { return }
+                ghostty_surface_send_bytes(surface, ptr, UInt(rawBuffer.count))
+            }
+        }
+
 #if XGHOSTTY
         /// XGhostty spike：对外开放的 send_bytes（座舱广播用，绕过 bracketed-paste 直写 pty）。
         func xghosttySendBytes(_ data: Data) {
