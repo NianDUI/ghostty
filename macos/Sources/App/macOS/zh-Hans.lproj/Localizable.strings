@@ -353,3 +353,5 @@
 "Disable" = "禁用";
 "Terminal pane" = "终端窗格";
 "Read-only terminal" = "只读终端";
+
+"You have %d windows with running processes. Do you want to review these windows before closing?" = "您有 %d 个窗口中有进程在运行。关闭前是否要逐个查看这些窗口？";

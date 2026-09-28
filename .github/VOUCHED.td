@@ -46,6 +46,7 @@ alexfeijoo44
 alexjuca
 alosarjos
 amadeus
+and-rs
 andrejdaskalov
 anhthang
 anmitalidev
@@ -85,6 +86,7 @@ chronologos
 cmwetherell
 crayxt
 craziestowl
+cristeahub
 curtismoncoq
 -cznorth Automated advertising + likely AI communication
 d-dudas
@@ -113,6 +115,7 @@ douglance
 douglas
 douglas-macgregor
 drepper
+dungdm93
 dzhlobo
 ekaterinepapava
 elias8
@@ -149,17 +152,20 @@ hakonhagland
 halosatrio
 heaths
 heddxh heddxh
+helium777
 -highimpact-dev Disrespectful AI user
 hlcfan
 hqnna
 hulet
 i999rri
+ibaios
 icodesign
 illiakrauchanka
 j-c-m
 j0hnm4r5
 jacobsandlund
 jake-stewart
+jakeriksen
 -jamesarch Bad AI etiquette
 jamylak
 jarred-sumner
@@ -172,8 +178,10 @@ johnslavik
 jordandm
 josephmart
 jparise
+juaniraggio
 juniqlim
 justonia
+jzillmann
 karesansui-u
 kataokatsuki
 kawarimidoll
@@ -183,10 +191,13 @@ khipp
 kierancanter
 kirwiisp
 kjvdven
+kleshzz
 kloneets
 knu
 -kody-w
+konstantinhudyakov
 koranir
+korikhin
 kostich
 kristina8888
 kristofersoler
@@ -211,6 +222,7 @@ marrocco-simone
 masterflitzer
 matkotiric
 mattn
+mgsloan
 micaeljarniac
 michielvk
 miguelelgallo
@@ -219,6 +231,7 @@ mikailmm
 minorcell
 misairuzame
 mischief
+mistertea
 mitchellh
 miupa
 mjbommar
@@ -234,8 +247,10 @@ mustafa0x
 nagato-yuzuru
 natesmyth
 neo773
+neoto
 neurosnap
 nicholas-ochoa
+nicolaair
 nicosuave
 nikicat
 nilsherzig
@@ -253,11 +268,13 @@ pan93412
 pangoraw
 pauley-unsaturated
 pearkes
+pedronaugusto
 peilingjiang
 peterdavehello
 philocalyst
 phush0
 piedrahitac
+pltrz
 pluiedev
 pouwerkerk
 poweruser64
@@ -270,6 +287,7 @@ puzza007
 qappell
 quinnypig
 qwerasd205
+radicaltray
 ragnoroct
 raphamorim
 reo101
@@ -296,11 +314,14 @@ seruman
 seyoungjeong
 sghng
 shorsher
+shreeve
 silveirapf
 simonbcn
+slowdub
 slsrepo
 steven-tk
 sunshine-syz
+svector-anu
 svmhdvn
 tacherasasi
 -tangivis
@@ -309,9 +330,12 @@ tbrundige
 tdgroot
 tdslot
 thirstycrow
+-thomas-trijindev No human in the loop
+thomasfedb
 thoutbeckers
 ticclick
 tnagatomi
+toppk
 tothedarktowercame
 trag1c
 tristan957
@@ -333,6 +357,7 @@ vlsi
 voidnv
 williamhcarter
 wyounas
+xandris
 yabbal
 yak3d
 yamshta
@@ -342,4 +367,5 @@ zenangst
 zenyr
 zeshi09
 zlitus
+-zorzysty Meatproxying
 zubb

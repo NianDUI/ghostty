@@ -1484,16 +1484,12 @@ extension AppDelegate {
 
             return .terminateLater
         } else {
-            let alert = NSAlert()
-            alert.messageText = LocalizedString.format(
-                "You have %d windows with running processes. Do you want to review these windows before quitting?",
-                controllersNeedConfirmation.count,
+            let alert = NSAlert.reviewWindowsAlert(
+                messageText: LocalizedString.format(
+                    "You have %d windows with running processes. Do you want to review these windows before quitting?",
+                    controllersNeedConfirmation.count,
+                )
             )
-            alert.informativeText = LocalizedString.text("If you don't review your windows, any running processes will be terminated")
-            alert.addButton(withTitle: LocalizedString.text("Review Windows..."))
-            alert.addButton(withTitle: LocalizedString.text("Terminate Processes"))
-            alert.addButton(withTitle: LocalizedString.text("Cancel"))
-            alert.alertStyle = .warning
 
             switch alert.runModal() {
             case .alertFirstButtonReturn:

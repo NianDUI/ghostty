@@ -41,6 +41,7 @@ const paste = @import("paste.zig");
 const render = @import("render.zig");
 const result = @import("result.zig");
 const row = @import("row.zig");
+const search = @import("search.zig");
 const selection = @import("selection.zig");
 const selection_gesture = @import("selection_gesture.zig");
 const size_report = @import("size_report.zig");
@@ -202,8 +203,11 @@ const type_decls = [_]TypeDecl{
     .initStruct("GhosttyReader", io.Reader),
     .initStruct("GhosttyRenderStateColors", render.Colors),
     .initStruct("GhosttyRenderStateCursor", render.Cursor),
+    .initStruct("GhosttyRenderStateOverscan", render.Overscan),
+    .initStruct("GhosttyRenderStateRowId", render.RowId),
     .initStruct("GhosttyRenderStateRowSelection", render.RowSelection),
     .initStruct("GhosttySelection", selection.CSelection),
+    .initStruct("GhosttySelectionBuffer", selection.CSelectionBuffer),
     .initStruct("GhosttySelectionGestureBehaviors", selection_gesture.Behaviors),
     .initStruct("GhosttySelectionGestureGeometry", selection_gesture.Geometry),
     .initTaggedStruct("GhosttySgrAttribute", sgr.Attribute.C, "tag", "value", .generated),
@@ -287,6 +291,10 @@ const type_decls = [_]TypeDecl{
     .initEnum("GhosttyRenderStateRowOption", render.RowOption, "GHOSTTY_RENDER_STATE_ROW_OPTION_"),
     .initEnum("GhosttyRowData", row.RowData, "GHOSTTY_ROW_DATA_"),
     .initEnum("GhosttyRowSemanticPrompt", row.SemanticPrompt, "GHOSTTY_ROW_SEMANTIC_"),
+    .initEnum("GhosttySearchData", search.Data, "GHOSTTY_SEARCH_DATA_"),
+    .initEnum("GhosttySearchOption", search.Option, "GHOSTTY_SEARCH_OPT_"),
+    .initEnum("GhosttySearchScroll", search.Scroll, "GHOSTTY_SEARCH_SCROLL_"),
+    .initEnum("GhosttySearchStatus", search.Status, "GHOSTTY_SEARCH_STATUS_"),
     .initEnum("GhosttySelectionAdjust", Selection.Adjustment, "GHOSTTY_SELECTION_ADJUST_"),
     .initEnum("GhosttySelectionGestureAutoscroll", selection_gesture.Autoscroll, "GHOSTTY_SELECTION_GESTURE_AUTOSCROLL_"),
     .initEnum("GhosttySelectionGestureBehavior", selection_gesture.Behavior, "GHOSTTY_SELECTION_GESTURE_BEHAVIOR_"),
@@ -333,6 +341,7 @@ const type_decls = [_]TypeDecl{
     .initOpaque("GhosttyRenderState"),
     .initOpaque("GhosttyRenderStateRowCells"),
     .initOpaque("GhosttyRenderStateRowIterator"),
+    .initOpaque("GhosttySearch"),
     .initOpaque("GhosttySelectionGesture"),
     .initOpaque("GhosttySelectionGestureEvent"),
     .initOpaque("GhosttySgrParser"),
@@ -897,6 +906,39 @@ test "manifest describes enums, arrays, and tagged unions" {
     try std.testing.expectEqualStrings("tag", value.get("tag").?.string);
     try std.testing.expectEqualStrings("palette", value.get("arms").?.object.get("PALETTE").?.string);
     try std.testing.expect(value.get("arms").?.object.get("NONE").? == .null);
+}
+
+test "manifest describes render state overscan types" {
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, json, .{});
+    defer parsed.deinit();
+    const manifest_types = parsed.value.object.get("types").?.object;
+
+    const overscan = manifest_types.get("GhosttyRenderStateOverscan").?.object;
+    try std.testing.expectEqual(@as(i64, 4), overscan.get("size").?.integer);
+    const overscan_fields = overscan.get("fields").?.object;
+    try std.testing.expectEqual(@as(i64, 0), overscan_fields.get("above").?.object.get("offset").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), overscan_fields.get("below").?.object.get("offset").?.integer);
+
+    const row_id = manifest_types.get("GhosttyRenderStateRowId").?.object;
+    try std.testing.expectEqual(@as(i64, 16), row_id.get("size").?.integer);
+    const bits = row_id.get("fields").?.object.get("bits").?.object;
+    try std.testing.expectEqual(@as(i64, 0), bits.get("offset").?.integer);
+    try std.testing.expectEqualStrings("array", bits.get("type").?.string);
+    try std.testing.expectEqual(@as(i64, 2), bits.get("count").?.integer);
+
+    const data_values = manifest_types.get("GhosttyRenderStateData").?.object
+        .get("values").?.object;
+    try std.testing.expectEqual(@as(i64, 20), data_values.get("OVERSCAN").?.integer);
+    try std.testing.expectEqual(@as(i64, 21), data_values.get("OVERSCAN_REQUEST").?.integer);
+
+    const row_data_values = manifest_types.get("GhosttyRenderStateRowData").?.object
+        .get("values").?.object;
+    try std.testing.expectEqual(@as(i64, 6), row_data_values.get("VIEWPORT_Y").?.integer);
+    try std.testing.expectEqual(@as(i64, 7), row_data_values.get("ID").?.integer);
+
+    const option_values = manifest_types.get("GhosttyRenderStateOption").?.object
+        .get("values").?.object;
+    try std.testing.expectEqual(@as(i64, 1), option_values.get("OVERSCAN").?.integer);
 }
 
 test "manifest describes the complete packed cell layout" {
