@@ -22,10 +22,8 @@ extension Ghostty.SurfaceView {
     /// 接管输入 / 计数 / 上下翻页 / Esc。`total`/`selected` 由 C 回调回填到 searchState。
     func xghosttyStartSearch() {
         guard searchState == nil else { return }
-        var c = ghostty_action_start_search_s()
-        c.needle = nil
         searchState = Ghostty.OSSurfaceView.SearchState(
-            from: Ghostty.Action.StartSearch(c: c))
+            from: Ghostty.Action.StartSearch(needle: ""))
     }
 }
 

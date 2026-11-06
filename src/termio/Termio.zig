@@ -198,6 +198,20 @@ const ThreadEnterState = struct {
 /// The configuration for this IO that is derived from the main
 /// configuration. This must be exported so that we don't need to
 /// pass around Config pointers which makes memory management a pain.
+/// Convert the vt-xt-checksum-extension config, whose values are named for
+/// what they turn on, to the XTCHECKSUM bits, which turn things off.
+fn xtChecksumFlags(
+    ext: configpkg.Config.XtChecksumExtension,
+) terminalpkg.xt_checksum.Flags {
+    return .{
+        .positive = !ext.negate,
+        .no_attributes = !ext.attributes,
+        .no_trim = !ext.trim,
+        .undrawn = ext.undrawn,
+        .full = ext.full,
+    };
+}
+
 pub const DerivedConfig = struct {
     arena: ArenaAllocator,
 
@@ -212,6 +226,8 @@ pub const DerivedConfig = struct {
     clipboard_write: configpkg.ClipboardAccess,
     clipboard_write_limit: usize,
     enquiry_response: []const u8,
+    xt_checksum_report: bool,
+    xt_checksum_extension: terminalpkg.xt_checksum.Flags,
     conditional_state: configpkg.ConditionalState,
 
     pub fn init(
@@ -249,6 +265,8 @@ pub const DerivedConfig = struct {
             .clipboard_write = config.@"clipboard-write",
             .clipboard_write_limit = config.@"clipboard-write-limit-bytes".value,
             .enquiry_response = try alloc.dupe(u8, config.@"enquiry-response"),
+            .xt_checksum_report = config.@"vt-xt-checksum-report",
+            .xt_checksum_extension = xtChecksumFlags(config.@"vt-xt-checksum-extension"),
             .conditional_state = config._conditional_state,
 
             // This has to be last so that we copy AFTER the arena allocations
@@ -295,6 +313,7 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
             .default_modes = default_modes,
             .default_cursor_style = opts.config.cursor_style,
             .default_cursor_blink = opts.config.cursor_blink,
+            .default_xt_checksum = opts.config.xt_checksum_extension,
             .colors = .{
                 .background = .init(opts.config.background.toTerminalRGB()),
                 .foreground = .init(opts.config.foreground.toTerminalRGB()),
@@ -338,6 +357,7 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         .clipboard_write = opts.config.clipboard_write,
         .clipboard_write_limit = opts.config.clipboard_write_limit,
         .enquiry_response = opts.config.enquiry_response,
+        .xt_checksum_report = opts.config.xt_checksum_report,
     };
 
     const thread_enter_state = try ThreadEnterState.create(
@@ -532,6 +552,14 @@ pub fn changeConfig(self: *Termio, td: *ThreadData, config: *DerivedConfig) !voi
     // Set the image limits
     self.terminal.setKittyGraphicsSizeLimit(self.alloc, config.image_storage_limit);
     self.terminal.setKittyGraphicsLoadingLimits(.allWithTempDir(global.tmpDirPath()));
+
+    // The config could have changed any of our colors so update mode 2031.
+    // This is written directly rather than queued as a color_scheme_report
+    // message because we're on the io thread, the only reader of our
+    // mailbox: if the mailbox were full, queueing would wait forever.
+    self.colorSchemeReportLocked(td, false) catch |err| {
+        log.warn("error sending color scheme report err={}", .{err});
+    };
 }
 
 /// Resize the terminal.
@@ -543,13 +571,15 @@ pub fn resize(
     self.size = size;
     const grid_size = size.grid();
 
-    // Update the size of our pty.
-    try self.backend.resize(grid_size, size.terminal());
-
     // Enter the critical area that we want to keep small
     {
         self.renderer_state.mutex.lockUncancelable(global.io());
         defer self.renderer_state.mutex.unlock(global.io());
+
+        // Resizing the pty can immediately wake the shell with SIGWINCH.
+        // Hold the same lock used by processOutput before notifying it, so
+        // its redraw cannot be parsed against the old terminal dimensions.
+        try self.backend.resize(grid_size, size.terminal());
 
         // Update the size of our terminal state
         try self.terminal.resize(
@@ -737,7 +767,7 @@ pub fn processOutput(self: *Termio, buf: []const u8) void {
 /// through a single thread. The debug-only thread-ID check below
 /// fails fast if that invariant is broken.
 fn processOutputLocked(self: *Termio, buf: []const u8) void {
-    if (comptime builtin.mode == .Debug) {
+    if (comptime builtin.mode == .debug) {
         const tid = std.Thread.getCurrentId();
         if (self.processOutput_thread_id) |existing| {
             std.debug.assert(existing == tid);

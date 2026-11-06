@@ -29,7 +29,7 @@ test "OutputCallback invoke forwards bytes and userdata" {
     const Captured = struct {
         calls: usize = 0,
         last_userdata: ?*anyopaque = null,
-        last_bytes: [16]u8 = .{0} ** 16,
+        last_bytes: [16]u8 = @splat(0),
         last_len: usize = 0,
     };
     var captured: Captured = .{};

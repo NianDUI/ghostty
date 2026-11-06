@@ -165,19 +165,21 @@ test "writeReq round-trips empty bytes through write_small" {
 
 test "writeReq spills oversized bytes into write_alloc" {
     const testing = std.testing;
-    const big = "x" ** 256;
-    const msg = try Message.writeReq(testing.allocator, @as([]const u8, big));
+    const big: [256]u8 = @splat('x');
+    const data: []const u8 = &big;
+    const msg = try Message.writeReq(testing.allocator, data);
     defer switch (msg) {
         .write_alloc => |v| v.alloc.free(v.data),
         else => {},
     };
     try testing.expect(msg == .write_alloc);
-    try testing.expectEqualSlices(u8, big, msg.write_alloc.data);
+    try testing.expectEqualSlices(u8, big[0..], msg.write_alloc.data);
 }
 
 test "writeReq propagates allocator failure for oversized bytes" {
     const testing = std.testing;
-    const big = "x" ** 256;
-    const result = Message.writeReq(testing.failing_allocator, @as([]const u8, big));
+    const big: [256]u8 = @splat('x');
+    const data: []const u8 = &big;
+    const result = Message.writeReq(testing.failing_allocator, data);
     try testing.expectError(error.OutOfMemory, result);
 }

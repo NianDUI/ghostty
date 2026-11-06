@@ -18,7 +18,12 @@ options: *std.Build.Step.Options,
 help_strings: HelpStrings,
 metallib: ?*MetallibStep,
 unicode_tables: UnicodeTables,
-framedata: GhosttyFrameData,
+/// The animation data for `ghostty +boo`. Building it compiles a helper
+/// program that links zlib, so a libghostty-vt build leaves it null and
+/// never downloads zlib. `add` requires it, and the only artifacts a
+/// libghostty-vt build passes to `add` are the bench tools
+/// (-Demit-bench), so it is kept for those.
+framedata: ?GhosttyFrameData,
 uucode_tables: std.Build.LazyPath,
 
 /// Singleton uucode module, instantiated once in `init` and reused
@@ -87,7 +92,10 @@ pub fn init(b: *std.Build, cfg: *const Config) !SharedDeps {
         .config = cfg,
         .help_strings = try .init(b, cfg),
         .unicode_tables = try .init(b, uucode_tables),
-        .framedata = try .init(b),
+        .framedata = if (cfg.emit_lib_vt and !cfg.emit_bench)
+            null
+        else
+            try .init(b),
         .uucode_tables = uucode_tables,
         .uucode_mod = uucode_mod,
 
@@ -690,19 +698,19 @@ pub fn add(
 
         switch (self.config.app_runtime) {
             .none => {},
-            .gtk => try self.addGtkNg(step),
+            .gtk => try self.addGtk(step),
         }
     }
 
     self.help_strings.addImport(step);
     self.unicode_tables.addImport(step);
-    self.framedata.addImport(step);
+    self.framedata.?.addImport(step);
 
     return static_libs;
 }
 
 /// Setup the dependencies for the GTK apprt build.
-fn addGtkNg(
+fn addGtk(
     self: *const SharedDeps,
     step: *std.Build.Step.Compile,
 ) !void {
@@ -710,26 +718,24 @@ fn addGtkNg(
     const target = step.root_module.resolved_target.?;
     const optimize = step.root_module.optimize.?;
 
-    const gobject_ = b.lazyDependency("gobject", .{
+    const gobject = b.lazyDependency("gobject", .{
         .target = target,
         .optimize = optimize,
-    });
-    if (gobject_) |gobject| {
-        const gobject_imports = .{
-            .{ "adw", "adw1" },
-            .{ "gdk", "gdk4" },
-            .{ "gio", "gio2" },
-            .{ "glib", "glib2" },
-            .{ "glibunix", "glibunix2" },
-            .{ "gobject", "gobject2" },
-            .{ "graphene", "graphene1" },
-            .{ "gtk", "gtk4" },
-            .{ "xlib", "xlib2" },
-        };
-        inline for (gobject_imports) |import| {
-            const name, const module = import;
-            step.root_module.addImport(name, gobject.module(module));
-        }
+    }) orelse return;
+    const gobject_imports = .{
+        .{ "adw", "adw1" },
+        .{ "gdk", "gdk4" },
+        .{ "gio", "gio2" },
+        .{ "glib", "glib2" },
+        .{ "glibunix", "glibunix2" },
+        .{ "gobject", "gobject2" },
+        .{ "graphene", "graphene1" },
+        .{ "gtk", "gtk4" },
+        .{ "xlib", "xlib2" },
+    };
+    inline for (gobject_imports) |import| {
+        const name, const module = import;
+        step.root_module.addImport(name, gobject.module(module));
     }
 
     // GTK C translation
@@ -761,12 +767,10 @@ fn addGtkNg(
             .link_system_libs = &.{"X11"},
         });
 
-        if (gobject_) |gobject| {
-            step.root_module.addImport(
-                "gdk_x11",
-                gobject.module("gdkx114"),
-            );
-        }
+        step.root_module.addImport(
+            "gdk_x11",
+            gobject.module("gdkx114"),
+        );
     }
 
     if (self.config.wayland) wayland: {
@@ -828,7 +832,7 @@ fn addGtkNg(
         step.root_module.addImport("wayland", b.createModule(.{
             .root_source_file = scanner.result,
         }));
-        if (gobject_) |gobject| step.root_module.addImport(
+        step.root_module.addImport(
             "gdk_wayland",
             gobject.module("gdkwayland4"),
         );
@@ -838,10 +842,8 @@ fn addGtkNg(
             .optimize = optimize,
         })) |gtk4_layer_shell| {
             const layer_shell_module = gtk4_layer_shell.module("gtk4-layer-shell");
-            if (gobject_) |gobject| {
-                layer_shell_module.addImport("gtk", gobject.module("gtk4"));
-                layer_shell_module.addImport("gdk", gobject.module("gdk4"));
-            }
+            layer_shell_module.addImport("gtk", gobject.module("gtk4"));
+            layer_shell_module.addImport("gdk", gobject.module("gdk4"));
             step.root_module.addImport(
                 "gtk4-layer-shell",
                 layer_shell_module,
@@ -865,7 +867,7 @@ fn addGtkNg(
 
     {
         // Get our gresource c/h files and add them to our build.
-        const dist = gtkNgDistResources(b);
+        const dist = gtkDistResources(b);
         const translated = try translate_c.init(b, .{
             .source = .{ .includes = .{
                 .generated_name = "ghostty_gtk_resources_c.h",
@@ -935,7 +937,7 @@ pub fn addSimd(
         const HWY_AVX3_DL: c_int = 1 << 7;
         const HWY_AVX3: c_int = 1 << 8;
 
-        var flags: std.ArrayListUnmanaged([]const u8) = .empty;
+        var flags: std.ArrayList([]const u8) = .empty;
 
         // Zig 0.13 bug: https://github.com/ziglang/zig/issues/20414
         // To workaround this we just disable AVX512 support completely.
@@ -973,6 +975,12 @@ pub fn addSimd(
             "-DSIMDUTF_NO_LIBCXX",
         );
 
+        // Only our own Zig code calls the ghostty_simd_* functions, so they
+        // must not be exported from libghostty-vt. Its version script can't
+        // hide them because they match its ghostty_* pattern, and it doesn't
+        // apply to Mach-O.
+        try flags.append(b.allocator, "-fvisibility=hidden");
+
         // Disable ubsan for Windows C/C++ objects to avoid undefined
         // __ubsan_handle_* references. The Zig libraries on Windows don't
         // currently bundle a matching UBSan runtime for these objects in
@@ -999,14 +1007,14 @@ pub fn addSimd(
     }
 }
 
-pub const GtkNgResources = struct {
+pub const GtkResources = struct {
     resources_c: DistResource,
     resources_h: DistResource,
 };
 
-/// Memoized result of `gtkNgDistResources`, keyed on the `*std.Build`.
+/// Memoized result of `gtkDistResources`, keyed on the `*std.Build`.
 /// The configure pass is single-threaded, so a file-scope map is enough.
-var gtk_ng_resources: std.AutoHashMapUnmanaged(*std.Build, GtkNgResources) = .empty;
+var gtk_ng_resources: std.AutoHashMapUnmanaged(*std.Build, GtkResources) = .empty;
 
 /// Creates the resources that can be prebuilt for our dist build.
 ///
@@ -1014,14 +1022,14 @@ var gtk_ng_resources: std.AutoHashMapUnmanaged(*std.Build, GtkNgResources) = .em
 /// `GhosttyDist` calls it too. Each call used to build its own copy of the
 /// whole pipeline, and since Zig's cache hashes input *paths* as well as
 /// contents, the copies did not share results downstream.
-pub fn gtkNgDistResources(b: *std.Build) GtkNgResources {
+pub fn gtkDistResources(b: *std.Build) GtkResources {
     if (gtk_ng_resources.get(b)) |cached| return cached;
-    const resources = gtkNgDistResourcesUncached(b);
+    const resources = gtkDistResourcesUncached(b);
     gtk_ng_resources.put(b.allocator, b, resources) catch @panic("OOM");
     return resources;
 }
 
-fn gtkNgDistResourcesUncached(b: *std.Build) GtkNgResources {
+fn gtkDistResourcesUncached(b: *std.Build) GtkResources {
     const gresource = @import("../apprt/gtk/build/gresource.zig");
     const gresource_file_inputs = gresource.file_inputs;
 
@@ -1054,12 +1062,13 @@ fn gtkNgDistResourcesUncached(b: *std.Build) GtkNgResources {
         translate_c.addImportToModule(b, "adw_c", check_exe.root_module, .{
             .source = .{ .includes = .{ .files = &.{.{ .path = "adwaita.h" }} } },
             .target = b.graph.host,
-            .optimize = .Debug,
+            .optimize = .debug,
             .link_system_libs = &.{"libadwaita-1"},
         }) catch unreachable;
 
-        // The headers have to satisfy the newest blueprint.
-        var required: struct { major: u16, minor: u16 } = .{ .major = 0, .minor = 0 };
+        // The headers have to satisfy the newest blueprint, and never
+        // less than the oldest libadwaita we support.
+        var required = gresource.minimum_adwaita;
         for (gresource.blueprints) |bp| {
             if (bp.major > required.major or
                 (bp.major == required.major and bp.minor > required.minor))
@@ -1103,6 +1112,12 @@ fn gtkNgDistResourcesUncached(b: *std.Build) GtkNgResources {
                 },
             )));
             compile.step.dependOn(&check_run.step);
+
+            // A run step treats anything on an uncaptured stderr as an
+            // error, so a warning (an unused import, a widget deprecated by
+            // a newer GTK) would fail a blueprint that compiled. Captured,
+            // it is only shown if the compiler exits nonzero.
+            _ = compile.captureStdErr(.{});
 
             _ = ui_files.addCopyFile(ui_file, sub_path);
         }

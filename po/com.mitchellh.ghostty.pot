@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-10-27 18:07+0800\n"
+"POT-Creation-Date: 2026-11-06 11:39+0800\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -21,206 +21,234 @@ msgstr ""
 msgid "Open in Ghostty"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:12
-#: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:12
-#: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:197
-#: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:201
-msgid "Authorize Clipboard Access"
+#: src/apprt/gtk/ui/1.0/search-overlay.blp:29
+msgid "Find…"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:17
-#: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:17
-msgid "Deny"
+#: src/apprt/gtk/ui/1.0/search-overlay.blp:69
+msgid "Previous Match"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.0/clipboard-confirmation-dialog.blp:18
-#: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:18
-msgid "Allow"
+#: src/apprt/gtk/ui/1.0/search-overlay.blp:79
+msgid "Next Match"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:92
-msgid "Remember choice for this split"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.4/clipboard-confirmation-dialog.blp:93
-msgid "Reload configuration to show this prompt again"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:7
-#: src/apprt/gtk/ui/1.5/title-dialog.blp:8
-#: src/apprt/gtk/class/application.zig:2194
-msgid "Cancel"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:8
-#: src/apprt/gtk/ui/1.2/search-overlay.blp:90
+#: src/apprt/gtk/ui/1.0/search-overlay.blp:90
 #: src/apprt/gtk/ui/1.3/surface-child-exited.blp:17
+#: src/apprt/gtk/ui/1.5/close-confirmation-dialog.blp:7
 #: src/inspector/widgets/termio.zig:343
 msgid "Close"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:6
-msgid "Configuration Errors"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:8
-msgid ""
-"One or more configuration errors were found. Please review the errors below, "
-"and either reload your configuration or ignore these errors."
-msgstr ""
-
-#: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:12
-msgid "Ignore"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.2/config-errors-dialog.blp:13
-#: src/apprt/gtk/ui/1.2/surface.blp:434 src/apprt/gtk/ui/1.5/window.blp:318
-msgid "Reload Configuration"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.2/debug-warning.blp:7
-#: src/apprt/gtk/ui/1.3/debug-warning.blp:6
-msgid ""
-"⚠️ You're running a debug build of Ghostty! Performance will be degraded."
-msgstr ""
-
-#: src/apprt/gtk/ui/1.5/inspector-window.blp:5
-msgid "Ghostty: Terminal Inspector"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.2/search-overlay.blp:29
-msgid "Find…"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.2/search-overlay.blp:69
-msgid "Previous Match"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.2/search-overlay.blp:79
-msgid "Next Match"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.2/surface.blp:6
+#: src/apprt/gtk/ui/1.0/surface.blp:6
 msgid "Oh, no."
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:7
+#: src/apprt/gtk/ui/1.0/surface.blp:7
 msgid "Unable to acquire an OpenGL context for rendering."
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:96
+#: src/apprt/gtk/ui/1.0/surface.blp:96
 msgid ""
 "This terminal is in read-only mode. You can still view, select, and scroll "
 "through the content, but no input events will be sent to the running "
 "application."
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:107
+#: src/apprt/gtk/ui/1.0/surface.blp:107
 msgid "Read-only"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:311 src/apprt/gtk/ui/1.5/window.blp:203
+#: src/apprt/gtk/ui/1.0/surface.blp:311 src/apprt/gtk/ui/1.4/window.blp:205
 #: src/inspector/widgets/termio.zig:105
 msgid "Copy"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:316 src/apprt/gtk/ui/1.5/window.blp:208
+#: src/apprt/gtk/ui/1.0/surface.blp:316 src/apprt/gtk/ui/1.4/window.blp:210
 msgid "Paste"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:321
+#: src/apprt/gtk/ui/1.0/surface.blp:321
 msgid "Notify on Next Command Finish"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:328 src/apprt/gtk/ui/1.5/window.blp:281
+#: src/apprt/gtk/ui/1.0/surface.blp:328 src/apprt/gtk/ui/1.4/window.blp:283
 #: src/inspector/widgets/key.zig:289 src/inspector/widgets/termio.zig:96
 msgid "Clear"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:333 src/apprt/gtk/ui/1.5/window.blp:286
+#: src/apprt/gtk/ui/1.0/surface.blp:333 src/apprt/gtk/ui/1.4/window.blp:288
 msgid "Reset"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:340 src/apprt/gtk/ui/1.5/window.blp:250
+#: src/apprt/gtk/ui/1.0/surface.blp:340 src/apprt/gtk/ui/1.4/window.blp:252
 msgid "Split"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:343 src/apprt/gtk/ui/1.5/window.blp:253
+#: src/apprt/gtk/ui/1.0/surface.blp:343 src/apprt/gtk/ui/1.4/window.blp:255
 msgid "Change Title…"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:348 src/apprt/gtk/ui/1.5/window.blp:180
-#: src/apprt/gtk/ui/1.5/window.blp:258 src/input/command.zig:487
+#: src/apprt/gtk/ui/1.0/surface.blp:348 src/apprt/gtk/ui/1.4/window.blp:182
+#: src/apprt/gtk/ui/1.4/window.blp:260 src/input/command.zig:487
 msgid "Split Up"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:354 src/apprt/gtk/ui/1.5/window.blp:185
-#: src/apprt/gtk/ui/1.5/window.blp:263 src/input/command.zig:492
+#: src/apprt/gtk/ui/1.0/surface.blp:354 src/apprt/gtk/ui/1.4/window.blp:187
+#: src/apprt/gtk/ui/1.4/window.blp:265 src/input/command.zig:492
 msgid "Split Down"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:360 src/apprt/gtk/ui/1.5/window.blp:190
-#: src/apprt/gtk/ui/1.5/window.blp:268 src/input/command.zig:477
+#: src/apprt/gtk/ui/1.0/surface.blp:360 src/apprt/gtk/ui/1.4/window.blp:192
+#: src/apprt/gtk/ui/1.4/window.blp:270 src/input/command.zig:477
 msgid "Split Left"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:366 src/apprt/gtk/ui/1.5/window.blp:195
-#: src/apprt/gtk/ui/1.5/window.blp:273 src/input/command.zig:482
+#: src/apprt/gtk/ui/1.0/surface.blp:366 src/apprt/gtk/ui/1.4/window.blp:197
+#: src/apprt/gtk/ui/1.4/window.blp:275 src/input/command.zig:482
 msgid "Split Right"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:372
+#: src/apprt/gtk/ui/1.0/surface.blp:372
 msgid "Close Split"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:378
+#: src/apprt/gtk/ui/1.0/surface.blp:378
 msgid "Tab"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:381 src/apprt/gtk/ui/1.5/window.blp:232
-#: src/apprt/gtk/ui/1.5/window.blp:339 src/input/command.zig:464
+#: src/apprt/gtk/ui/1.0/surface.blp:381 src/apprt/gtk/ui/1.4/window.blp:234
+#: src/apprt/gtk/ui/1.4/window.blp:341 src/input/command.zig:464
 msgid "Change Tab Title…"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:386 src/apprt/gtk/ui/1.5/window.blp:60
-#: src/apprt/gtk/ui/1.5/window.blp:110 src/apprt/gtk/ui/1.5/window.blp:237
+#: src/apprt/gtk/ui/1.0/surface.blp:386 src/apprt/gtk/ui/1.4/window.blp:61
+#: src/apprt/gtk/ui/1.4/window.blp:112 src/apprt/gtk/ui/1.4/window.blp:239
 #: src/input/command.zig:427
 msgid "New Tab"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:391 src/apprt/gtk/ui/1.5/window.blp:242
-#: src/input/command.zig:613
+#: src/apprt/gtk/ui/1.0/surface.blp:391 src/apprt/gtk/ui/1.4/window.blp:244
+#: src/input/command.zig:636
 msgid "Close Tab"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:398
+#: src/apprt/gtk/ui/1.0/surface.blp:398
 msgid "Window"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:401 src/apprt/gtk/ui/1.5/window.blp:215
+#: src/apprt/gtk/ui/1.0/surface.blp:401 src/apprt/gtk/ui/1.4/window.blp:217
 msgid "Change Window Title…"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:406 src/apprt/gtk/ui/1.5/window.blp:220
+#: src/apprt/gtk/ui/1.0/surface.blp:406 src/apprt/gtk/ui/1.4/window.blp:222
 #: src/input/command.zig:421
 msgid "New Window"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:411 src/apprt/gtk/ui/1.5/window.blp:225
-#: src/input/command.zig:630
+#: src/apprt/gtk/ui/1.0/surface.blp:411 src/apprt/gtk/ui/1.4/window.blp:227
+#: src/input/command.zig:653
 msgid "Close Window"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:419 src/apprt/gtk/ui/1.5/window.blp:303
+#: src/apprt/gtk/ui/1.0/surface.blp:419 src/apprt/gtk/ui/1.4/window.blp:305
 msgid "Config"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:422 src/apprt/gtk/ui/1.5/window.blp:306
+#: src/apprt/gtk/ui/1.0/surface.blp:422 src/apprt/gtk/ui/1.4/window.blp:308
 msgid "Open Configuration in OS Editor"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.2/surface.blp:428 src/apprt/gtk/ui/1.5/window.blp:312
+#: src/apprt/gtk/ui/1.0/surface.blp:428 src/apprt/gtk/ui/1.4/window.blp:314
 msgid "Open Configuration in New Window"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.0/surface.blp:434 src/apprt/gtk/ui/1.4/window.blp:320
+#: src/apprt/gtk/ui/1.5/config-errors-dialog.blp:12
+msgid "Reload Configuration"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.3/debug-warning.blp:6
+msgid ""
+"⚠️ You're running a debug build of Ghostty! Performance will be degraded."
+msgstr ""
+
+#: src/apprt/gtk/ui/1.4/inspector-window.blp:5
+msgid "Ghostty: Terminal Inspector"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.4/window.blp:62 src/apprt/gtk/ui/1.4/window.blp:113
+msgid "New Split"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.4/window.blp:72 src/apprt/gtk/ui/1.4/window.blp:131
+msgid "View Open Tabs"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.4/window.blp:82 src/apprt/gtk/ui/1.4/window.blp:145
+msgid "Main Menu"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.4/window.blp:295
+msgid "Command Palette"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.4/window.blp:300
+msgid "Terminal Inspector"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.4/window.blp:328
+msgid "About Ghostty"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.4/window.blp:333 src/input/command.zig:725
+msgid "Quit"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.5/clipboard-confirmation-dialog.blp:11
+#: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:388
+#: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:392
+msgid "Authorize Clipboard Access"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.5/clipboard-confirmation-dialog.blp:16
+msgid "Deny"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.5/clipboard-confirmation-dialog.blp:17
+msgid "Allow"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.5/clipboard-confirmation-dialog.blp:107
+msgid "Remember choice for this split"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.5/clipboard-confirmation-dialog.blp:108
+msgid "Reload configuration to show this prompt again"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.5/close-confirmation-dialog.blp:6
+#: src/apprt/gtk/ui/1.5/title-dialog.blp:8
+#: src/apprt/gtk/class/application.zig:2182
+msgid "Cancel"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.5/command-palette.blp:17
+msgid "Execute a command…"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.5/config-errors-dialog.blp:5
+msgid "Configuration Errors"
+msgstr ""
+
+#: src/apprt/gtk/ui/1.5/config-errors-dialog.blp:7
+msgid ""
+"One or more configuration errors were found. Please review the errors below, "
+"and either reload your configuration or ignore these errors."
+msgstr ""
+
+#: src/apprt/gtk/ui/1.5/config-errors-dialog.blp:11
+msgid "Ignore"
 msgstr ""
 
 #: src/apprt/gtk/ui/1.5/title-dialog.blp:5
@@ -231,155 +259,131 @@ msgstr ""
 msgid "OK"
 msgstr ""
 
-#: src/apprt/gtk/ui/1.5/window.blp:61 src/apprt/gtk/ui/1.5/window.blp:111
-msgid "New Split"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.5/window.blp:71 src/apprt/gtk/ui/1.5/window.blp:129
-msgid "View Open Tabs"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.5/window.blp:81 src/apprt/gtk/ui/1.5/window.blp:143
-msgid "Main Menu"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.5/window.blp:293
-msgid "Command Palette"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.5/window.blp:298
-msgid "Terminal Inspector"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.5/window.blp:326 src/apprt/gtk/class/window.zig:2037
-msgid "About Ghostty"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.5/window.blp:331 src/input/command.zig:702
-msgid "Quit"
-msgstr ""
-
-#: src/apprt/gtk/ui/1.5/command-palette.blp:17
-msgid "Execute a command…"
-msgstr ""
-
-#: src/apprt/gtk/class/application.zig:1779
+#: src/apprt/gtk/class/application.zig:1766
 msgid "The keybind was revoked by the system."
 msgstr ""
 
-#: src/apprt/gtk/class/application.zig:1781
+#: src/apprt/gtk/class/application.zig:1768
 msgid "The keybind was denied by the system."
 msgstr ""
 
-#: src/apprt/gtk/class/application.zig:1792
+#: src/apprt/gtk/class/application.zig:1780
 msgid "Global keybind unavailable"
 msgstr ""
 
-#: src/apprt/gtk/class/application.zig:2190
+#: src/apprt/gtk/class/application.zig:2178
 msgid "Export Terminal IO Events"
 msgstr ""
 
-#: src/apprt/gtk/class/application.zig:2193
+#: src/apprt/gtk/class/application.zig:2181
 msgid "Export"
 msgstr ""
 
-#: src/apprt/gtk/class/application.zig:2692
+#: src/apprt/gtk/class/application.zig:2682
 msgid "Editing configuration file"
 msgstr ""
 
-#: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:198
+#: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:389
 msgid ""
 "An application is attempting to write to the clipboard. The current "
 "clipboard contents are shown below."
 msgstr ""
 
-#: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:202
+#: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:393
 msgid ""
 "An application is attempting to read from the clipboard. The current "
 "clipboard contents are shown below."
 msgstr ""
 
-#: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:205
+#: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:396
 msgid "Warning: Potentially Unsafe Paste"
 msgstr ""
 
-#: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:206
+#: src/apprt/gtk/class/clipboard_confirmation_dialog.zig:397
 msgid ""
 "Pasting this text into the terminal may be dangerous as it looks like some "
 "commands may be executed."
 msgstr ""
 
-#: src/apprt/gtk/class/close_confirmation_dialog.zig:184
+#: src/apprt/gtk/class/close_confirmation_dialog.zig:183
 msgid "Quit Ghostty?"
 msgstr ""
 
-#: src/apprt/gtk/class/close_confirmation_dialog.zig:185
+#: src/apprt/gtk/class/close_confirmation_dialog.zig:184
 msgid "Close Tab?"
 msgstr ""
 
-#: src/apprt/gtk/class/close_confirmation_dialog.zig:186
+#: src/apprt/gtk/class/close_confirmation_dialog.zig:185
 msgid "Close Window?"
 msgstr ""
 
-#: src/apprt/gtk/class/close_confirmation_dialog.zig:187
+#: src/apprt/gtk/class/close_confirmation_dialog.zig:186
 msgid "Close Split?"
 msgstr ""
 
-#: src/apprt/gtk/class/close_confirmation_dialog.zig:193
+#: src/apprt/gtk/class/close_confirmation_dialog.zig:192
 msgid "All terminal sessions will be terminated."
 msgstr ""
 
-#: src/apprt/gtk/class/close_confirmation_dialog.zig:194
+#: src/apprt/gtk/class/close_confirmation_dialog.zig:193
 msgid "All terminal sessions in this tab will be terminated."
 msgstr ""
 
-#: src/apprt/gtk/class/close_confirmation_dialog.zig:195
+#: src/apprt/gtk/class/close_confirmation_dialog.zig:194
 msgid "All terminal sessions in this window will be terminated."
 msgstr ""
 
-#: src/apprt/gtk/class/close_confirmation_dialog.zig:196
+#: src/apprt/gtk/class/close_confirmation_dialog.zig:195
 msgid "The currently running process in this split will be terminated."
 msgstr ""
 
-#: src/apprt/gtk/class/surface.zig:1186
+#: src/apprt/gtk/class/command_palette.zig:693
+msgid "Untitled"
+msgstr ""
+
+#: src/apprt/gtk/class/command_palette.zig:697
+msgid "Focus"
+msgstr ""
+
+#: src/apprt/gtk/class/surface.zig:1206
 msgid "Command Finished"
 msgstr ""
 
-#: src/apprt/gtk/class/surface.zig:1187
-#: src/apprt/gtk/class/surface_child_exited.zig:109
+#: src/apprt/gtk/class/surface.zig:1207
+#: src/apprt/gtk/class/surface_child_exited.zig:102
 msgid "Command Succeeded"
 msgstr ""
 
-#: src/apprt/gtk/class/surface.zig:1188
-#: src/apprt/gtk/class/surface_child_exited.zig:113
+#: src/apprt/gtk/class/surface.zig:1208
+#: src/apprt/gtk/class/surface_child_exited.zig:106
 msgid "Command Failed"
 msgstr ""
 
-#: src/apprt/gtk/class/title_dialog.zig:227
+#: src/apprt/gtk/class/title_dialog.zig:226
 msgid "Change Terminal Title"
 msgstr ""
 
-#: src/apprt/gtk/class/title_dialog.zig:228
+#: src/apprt/gtk/class/title_dialog.zig:227
 msgid "Change Tab Title"
 msgstr ""
 
-#: src/apprt/gtk/class/title_dialog.zig:229
+#: src/apprt/gtk/class/title_dialog.zig:228
 msgid "Change Window Title"
 msgstr ""
 
-#: src/apprt/gtk/class/window.zig:1192
+#: src/apprt/gtk/class/window.zig:1184
 msgid "Reloaded the configuration"
 msgstr ""
 
-#: src/apprt/gtk/class/window.zig:1876
+#: src/apprt/gtk/class/window.zig:1887
 msgid "Copied to clipboard"
 msgstr ""
 
-#: src/apprt/gtk/class/window.zig:1878
+#: src/apprt/gtk/class/window.zig:1889
 msgid "Cleared clipboard"
 msgstr ""
 
-#: src/apprt/gtk/class/window.zig:2018
+#: src/apprt/gtk/class/window.zig:2028
 msgid "Ghostty Developers"
 msgstr ""
 
@@ -419,10 +423,10 @@ msgstr ""
 msgid "Composing"
 msgstr ""
 
-#: src/inspector/widgets/key.zig:160 src/inspector/widgets/pagelist.zig:395
-#: src/inspector/widgets/pagelist.zig:764
-#: src/inspector/widgets/pagelist.zig:777
-#: src/inspector/widgets/pagelist.zig:890
+#: src/inspector/widgets/key.zig:160 src/inspector/widgets/pagelist.zig:398
+#: src/inspector/widgets/pagelist.zig:768
+#: src/inspector/widgets/pagelist.zig:781
+#: src/inspector/widgets/pagelist.zig:894
 msgid "(empty)"
 msgstr ""
 
@@ -451,7 +455,7 @@ msgstr ""
 msgid "Managed Memory"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:15 src/inspector/widgets/page.zig:160
+#: src/inspector/widgets/page.zig:15 src/inspector/widgets/page.zig:161
 msgid "Styles"
 msgstr ""
 
@@ -459,169 +463,169 @@ msgstr ""
 msgid "Hyperlinks"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:21 src/inspector/widgets/page.zig:150
+#: src/inspector/widgets/page.zig:21 src/inspector/widgets/page.zig:151
 msgid "Rows"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:50 src/inspector/widgets/page.zig:51
+#: src/inspector/widgets/page.zig:50 src/inspector/widgets/page.zig:52
 msgid "Page"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:74
+#: src/inspector/widgets/page.zig:75
 #, c-format
 msgid "rows %d..%d"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:79 src/inspector/widgets/terminal.zig:205
+#: src/inspector/widgets/page.zig:80 src/inspector/widgets/terminal.zig:206
 msgid "active"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:83
+#: src/inspector/widgets/page.zig:84
 msgid "viewport"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:87 src/inspector/widgets/pagelist.zig:195
-#: src/inspector/widgets/pagelist.zig:465
+#: src/inspector/widgets/page.zig:88 src/inspector/widgets/pagelist.zig:195
+#: src/inspector/widgets/pagelist.zig:468
 msgid "compressed"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:91 src/inspector/widgets/pagelist.zig:458
+#: src/inspector/widgets/page.zig:92 src/inspector/widgets/pagelist.zig:461
 msgid "dirty"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:109
+#: src/inspector/widgets/page.zig:110
 msgid "Memory Size"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:112
+#: src/inspector/widgets/page.zig:113
 msgid ""
 "Memory allocated for this page. Note the backing memory may be a larger "
 "allocation from which this page uses a portion."
 msgstr ""
 
-#: src/inspector/widgets/page.zig:130
+#: src/inspector/widgets/page.zig:131
 msgid "Resource"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:132
+#: src/inspector/widgets/page.zig:133
 msgid "Used"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:133
+#: src/inspector/widgets/page.zig:134
 msgid "Capacity"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:140
+#: src/inspector/widgets/page.zig:141
 msgid "Columns"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:142
+#: src/inspector/widgets/page.zig:143
 msgid "Number of columns in the terminal grid."
 msgstr ""
 
-#: src/inspector/widgets/page.zig:152
+#: src/inspector/widgets/page.zig:153
 msgid "Number of rows in this page."
 msgstr ""
 
-#: src/inspector/widgets/page.zig:162
+#: src/inspector/widgets/page.zig:163
 msgid "Unique text styles (colors, attributes) currently in use."
 msgstr ""
 
-#: src/inspector/widgets/page.zig:170
+#: src/inspector/widgets/page.zig:171
 msgid "Graphemes"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:172
+#: src/inspector/widgets/page.zig:173
 msgid "Extended grapheme clusters for multi-codepoint characters."
 msgstr ""
 
-#: src/inspector/widgets/page.zig:180
+#: src/inspector/widgets/page.zig:181
 msgid "Strings (bytes)"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:182
+#: src/inspector/widgets/page.zig:183
 msgid "String storage for hyperlink URIs and other text data."
 msgstr ""
 
-#: src/inspector/widgets/page.zig:191
+#: src/inspector/widgets/page.zig:192
 msgid "Hyperlink Map"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:193
+#: src/inspector/widgets/page.zig:194
 msgid "Maps cell positions to hyperlink IDs."
 msgstr ""
 
-#: src/inspector/widgets/page.zig:201
+#: src/inspector/widgets/page.zig:202
 msgid "Hyperlink IDs"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:203
+#: src/inspector/widgets/page.zig:204
 msgid "Unique hyperlink definitions (URI + optional ID)."
 msgstr ""
 
-#: src/inspector/widgets/page.zig:236
+#: src/inspector/widgets/page.zig:237
 msgid "Row"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:237
+#: src/inspector/widgets/page.zig:238
 msgid "Text"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:238 src/inspector/widgets/pagelist.zig:421
+#: src/inspector/widgets/page.zig:239 src/inspector/widgets/pagelist.zig:424
 msgid "Dirty"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:239
+#: src/inspector/widgets/page.zig:240
 msgid "Wrap"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:240
+#: src/inspector/widgets/page.zig:241
 msgid "Cont"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:241
+#: src/inspector/widgets/page.zig:242
 msgid "Styled"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:242 src/inspector/widgets/pagelist.zig:721
-#: src/inspector/widgets/pagelist.zig:899
+#: src/inspector/widgets/page.zig:243 src/inspector/widgets/pagelist.zig:725
+#: src/inspector/widgets/pagelist.zig:903
 msgid "Grapheme"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:243
+#: src/inspector/widgets/page.zig:244
 msgid "Link"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:244 src/inspector/widgets/renderer.zig:118
+#: src/inspector/widgets/page.zig:245 src/inspector/widgets/renderer.zig:118
 msgid "Prompt"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:307
+#: src/inspector/widgets/page.zig:308
 msgid "(no styles in use)"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:334 src/inspector/widgets/page.zig:398
+#: src/inspector/widgets/page.zig:335 src/inspector/widgets/page.zig:399
 msgid "Refs"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:335 src/inspector/widgets/pagelist.zig:707
-#: src/inspector/widgets/pagelist.zig:984
+#: src/inspector/widgets/page.zig:336 src/inspector/widgets/pagelist.zig:711
+#: src/inspector/widgets/pagelist.zig:988
 msgid "Style"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:353
+#: src/inspector/widgets/page.zig:354
 msgid "Details"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:371
+#: src/inspector/widgets/page.zig:372
 msgid "(no hyperlinks in use)"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:399
+#: src/inspector/widgets/page.zig:400
 msgid "Explicit ID"
 msgstr ""
 
-#: src/inspector/widgets/page.zig:432
+#: src/inspector/widgets/page.zig:433
 msgid "yes"
 msgstr ""
 
@@ -667,7 +671,7 @@ msgid ""
 msgstr ""
 
 #: src/inspector/widgets/pagelist.zig:107
-#: src/inspector/widgets/pagelist.zig:690
+#: src/inspector/widgets/pagelist.zig:694
 msgid "(unable to copy compressed page)"
 msgstr ""
 
@@ -733,364 +737,364 @@ msgstr ""
 msgid "resident"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:198
+#: src/inspector/widgets/pagelist.zig:199
 msgid "Page States"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:199
+#: src/inspector/widgets/pagelist.zig:200
 msgid ""
 "Compressed pages retain an encoded allocation while their raw mapping is "
 "decommitted. Resident pages still have physical raw backing. Active, "
 "visible, and recently changed pages are expected to be resident."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:205
+#: src/inspector/widgets/pagelist.zig:206
 msgid "Uncompressed Size"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:206
+#: src/inspector/widgets/pagelist.zig:207
 msgid ""
 "Total size of all raw page mappings. This is the approximate page backing "
 "memory required if no pages were compressed and is also the virtual address "
 "space retained across compression."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:222
+#: src/inspector/widgets/pagelist.zig:223
 msgid "encoded"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:224
+#: src/inspector/widgets/pagelist.zig:225
 msgid "raw"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:232 src/inspector/widgets/surface.zig:437
+#: src/inspector/widgets/pagelist.zig:234 src/inspector/widgets/surface.zig:437
 msgid "none"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:234
+#: src/inspector/widgets/pagelist.zig:236
 msgid "Compressed Storage"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:235
+#: src/inspector/widgets/pagelist.zig:237
 msgid ""
 "Encoded allocation size compared with the original raw size of only the "
 "compressed pages. The percentage is the compression ratio, so smaller is "
 "better. Raw physical pages have been discarded."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:241
+#: src/inspector/widgets/pagelist.zig:243
 msgid "Estimated Resident"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:242
+#: src/inspector/widgets/pagelist.zig:244
 msgid ""
 "Physical page backing estimated to remain after compression: resident raw "
 "allocations, including unused pool tails, plus encoded storage. Node and "
 "allocator metadata and unrelated terminal memory are excluded."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:254
+#: src/inspector/widgets/pagelist.zig:256
 msgid "Share of raw page memory"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:259
+#: src/inspector/widgets/pagelist.zig:262
 msgid "Estimated Savings"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:260
+#: src/inspector/widgets/pagelist.zig:263
 msgid ""
 "Physical page backing avoided across the complete PageList. This is "
 "decommitted raw memory minus replacement encoded storage and is not a "
 "measurement of total process RSS."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:323
+#: src/inspector/widgets/pagelist.zig:326
 msgid "Total"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:325
+#: src/inspector/widgets/pagelist.zig:328
 msgid "Total number of scrollable rows including scrollback and active area."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:331
+#: src/inspector/widgets/pagelist.zig:334
 msgid "Offset"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:333
+#: src/inspector/widgets/pagelist.zig:336
 msgid "Current scroll position as row offset from the top of scrollback."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:339
+#: src/inspector/widgets/pagelist.zig:342
 msgid "Length"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:341
+#: src/inspector/widgets/pagelist.zig:344
 msgid "Number of rows visible in the viewport."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:356
+#: src/inspector/widgets/pagelist.zig:359
 msgid "Region"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:358
+#: src/inspector/widgets/pagelist.zig:361
 msgid "Top-Left"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:359
+#: src/inspector/widgets/pagelist.zig:362
 msgid "Bottom-Right"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:383
-#: src/inspector/widgets/pagelist.zig:392
+#: src/inspector/widgets/pagelist.zig:386
+#: src/inspector/widgets/pagelist.zig:395
 msgid "(n/a)"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:401
+#: src/inspector/widgets/pagelist.zig:404
 msgid ""
 "The active area where a running program can jump the cursor and make "
 "changes. This is the 'editable' part of the screen. Bottom-right includes "
 "the full height of the screen, including rows that may not be written yet."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:402
+#: src/inspector/widgets/pagelist.zig:405
 msgid ""
 "The visible viewport. If the user has scrolled, top-left changes. Bottom-"
 "right is the last written row from the top-left."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:403
+#: src/inspector/widgets/pagelist.zig:406
 msgid ""
 "Top-left is the furthest back in scrollback history. Bottom-right is the "
 "last written row. Unlike 'active', this only contains written rows."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:404
+#: src/inspector/widgets/pagelist.zig:407
 msgid ""
 "Same top-left as 'screen' but bottom-right is the line just before the top "
 "of 'active'. Contains only the scrollback history."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:418
+#: src/inspector/widgets/pagelist.zig:421
 msgid "Index"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:419
+#: src/inspector/widgets/pagelist.zig:422
 msgid "Pin"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:420
+#: src/inspector/widgets/pagelist.zig:423
 msgid "Context"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:422
+#: src/inspector/widgets/pagelist.zig:425
 msgid "State"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:445
+#: src/inspector/widgets/pagelist.zig:448
 #, c-format
 msgid "screen (%d, %d)"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:450
+#: src/inspector/widgets/pagelist.zig:453
 msgid "screen (out of range)"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:460
+#: src/inspector/widgets/pagelist.zig:463
 msgid "clean"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:470
+#: src/inspector/widgets/pagelist.zig:473
 msgid "active top"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:472
+#: src/inspector/widgets/pagelist.zig:475
 msgid "viewport top"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:474
+#: src/inspector/widgets/pagelist.zig:477
 msgid "garbage"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:476
+#: src/inspector/widgets/pagelist.zig:479
 msgid "viewport pin"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:478
+#: src/inspector/widgets/pagelist.zig:481
 msgid "tracked"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:575
+#: src/inspector/widgets/pagelist.zig:578
 msgid ""
 "Inspect a cell by choosing a coordinate space and entering the X/Y position. "
 "The inspector resolves the point into the page list and displays the cell "
 "contents."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:578
+#: src/inspector/widgets/pagelist.zig:581
 msgid "Cell Inspector"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:651
+#: src/inspector/widgets/pagelist.zig:655
 msgid "Choose the coordinate space and X/Y position (0-indexed)."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:663
+#: src/inspector/widgets/pagelist.zig:667
 #, c-format
 msgid "Range: x 0..%d, y 0..%d"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:668
+#: src/inspector/widgets/pagelist.zig:672
 msgid "(region has no rows)"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:680
+#: src/inspector/widgets/pagelist.zig:684
 msgid "(cell out of range)"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:716
-#: src/inspector/widgets/pagelist.zig:998 src/inspector/widgets/screen.zig:183
+#: src/inspector/widgets/pagelist.zig:720
+#: src/inspector/widgets/pagelist.zig:1002 src/inspector/widgets/screen.zig:183
 msgid "Hyperlink"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:747
-#: src/inspector/widgets/pagelist.zig:801
-#: src/inspector/widgets/terminal.zig:162
-#: src/inspector/widgets/terminal.zig:180
+#: src/inspector/widgets/pagelist.zig:751
+#: src/inspector/widgets/pagelist.zig:805
+#: src/inspector/widgets/terminal.zig:163
+#: src/inspector/widgets/terminal.zig:181
 msgid "Status"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:749
+#: src/inspector/widgets/pagelist.zig:753
 msgid "(missing link data)"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:760
+#: src/inspector/widgets/pagelist.zig:764
 #, c-format
 msgid "implicit %d"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:784
+#: src/inspector/widgets/pagelist.zig:788
 msgid "Ref Count"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:803
+#: src/inspector/widgets/pagelist.zig:807
 msgid "(missing grapheme data)"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:809
+#: src/inspector/widgets/pagelist.zig:813
 msgid "Extra Codepoints"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:812
-#: src/inspector/widgets/pagelist.zig:967 src/inspector/widgets/screen.zig:190
-#: src/inspector/widgets/screen.zig:401 src/inspector/widgets/terminal.zig:260
-#: src/inspector/widgets/terminal.zig:293
+#: src/inspector/widgets/pagelist.zig:816
+#: src/inspector/widgets/pagelist.zig:971 src/inspector/widgets/screen.zig:190
+#: src/inspector/widgets/screen.zig:401 src/inspector/widgets/terminal.zig:261
+#: src/inspector/widgets/terminal.zig:294
 msgid "(none)"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:853
+#: src/inspector/widgets/pagelist.zig:857
 msgid "Grid Position"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:855
+#: src/inspector/widgets/pagelist.zig:859
 msgid "The cell's X/Y coordinates in the selected region."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:864
+#: src/inspector/widgets/pagelist.zig:868
 msgid "Page Location"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:866
+#: src/inspector/widgets/pagelist.zig:870
 msgid "Row and column indices within the backing page."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:868
+#: src/inspector/widgets/pagelist.zig:872
 #, c-format
 msgid "row=%d col=%d"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:874
+#: src/inspector/widgets/pagelist.zig:878
 msgid "Content"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:876
+#: src/inspector/widgets/pagelist.zig:880
 msgid "Content tag describing how the cell data is stored."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:884
+#: src/inspector/widgets/pagelist.zig:888
 msgid "Codepoint"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:886
+#: src/inspector/widgets/pagelist.zig:890
 msgid "Primary Unicode codepoint for the cell."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:901
+#: src/inspector/widgets/pagelist.zig:905
 msgid ""
 "Extra codepoints that combine with the primary codepoint to form the "
 "grapheme cluster."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:918
+#: src/inspector/widgets/pagelist.zig:922
 msgid "(missing)"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:930
+#: src/inspector/widgets/pagelist.zig:934
 msgid "Width Property"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:932
+#: src/inspector/widgets/pagelist.zig:936
 msgid "Character width property (narrow, wide, spacer, etc.)."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:940
+#: src/inspector/widgets/pagelist.zig:944
 msgid "Row Flags"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:942
+#: src/inspector/widgets/pagelist.zig:946
 msgid "Flags set on the row containing this cell."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:947
+#: src/inspector/widgets/pagelist.zig:951
 msgid "wrap"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:951
+#: src/inspector/widgets/pagelist.zig:955
 msgid "cont"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:955
+#: src/inspector/widgets/pagelist.zig:959
 msgid "grapheme"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:959
+#: src/inspector/widgets/pagelist.zig:963
 msgid "styled"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:963
+#: src/inspector/widgets/pagelist.zig:967
 msgid "link"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:974
+#: src/inspector/widgets/pagelist.zig:978
 msgid "Style ID"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:976
+#: src/inspector/widgets/pagelist.zig:980
 msgid "Internal style reference ID for this cell."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:986
+#: src/inspector/widgets/pagelist.zig:990
 msgid "Resolved style for the cell (colors, attributes, etc.)."
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:989
+#: src/inspector/widgets/pagelist.zig:993
 msgid "(default)"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:991
+#: src/inspector/widgets/pagelist.zig:995
 msgid "(see below)"
 msgstr ""
 
-#: src/inspector/widgets/pagelist.zig:1000
+#: src/inspector/widgets/pagelist.zig:1004
 msgid "OSC8 hyperlink ID associated with this cell."
 msgstr ""
 
@@ -1138,7 +1142,7 @@ msgstr ""
 msgid "PageList###PageList"
 msgstr ""
 
-#: src/inspector/widgets/screen.zig:60 src/inspector/widgets/terminal.zig:543
+#: src/inspector/widgets/screen.zig:60 src/inspector/widgets/terminal.zig:544
 msgid "Cursor"
 msgstr ""
 
@@ -1255,7 +1259,7 @@ msgid ""
 "options in OSC 133."
 msgstr ""
 
-#: src/inspector/widgets/style.zig:22 src/inspector/widgets/terminal.zig:526
+#: src/inspector/widgets/style.zig:22 src/inspector/widgets/terminal.zig:527
 msgid "Foreground"
 msgstr ""
 
@@ -1263,7 +1267,7 @@ msgstr ""
 msgid "The foreground (text) color"
 msgstr ""
 
-#: src/inspector/widgets/style.zig:32 src/inspector/widgets/terminal.zig:509
+#: src/inspector/widgets/style.zig:32 src/inspector/widgets/terminal.zig:510
 msgid "Background"
 msgstr ""
 
@@ -1360,7 +1364,7 @@ msgstr ""
 msgid "Font"
 msgstr ""
 
-#: src/inspector/widgets/surface.zig:238 src/inspector/widgets/terminal.zig:136
+#: src/inspector/widgets/surface.zig:238 src/inspector/widgets/terminal.zig:137
 msgid "Mouse"
 msgstr ""
 
@@ -1437,194 +1441,194 @@ msgstr ""
 msgid "256-Color Palette###256-Color Palette"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:96 src/inspector/widgets/terminal.zig:97
-#: src/inspector/widgets/terminal.zig:161
-#: src/inspector/widgets/terminal.zig:176
+#: src/inspector/widgets/terminal.zig:96 src/inspector/widgets/terminal.zig:98
+#: src/inspector/widgets/terminal.zig:162
+#: src/inspector/widgets/terminal.zig:177
 msgid "Screen"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:134
+#: src/inspector/widgets/terminal.zig:135
 msgid "Misc"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:135
+#: src/inspector/widgets/terminal.zig:136
 msgid "Layout"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:137
+#: src/inspector/widgets/terminal.zig:138
 msgid "Color"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:138
+#: src/inspector/widgets/terminal.zig:139
 msgid "Modes"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:172
+#: src/inspector/widgets/terminal.zig:173
 msgid ""
 "A terminal can have multiple screens, only one of which is active at a time. "
 "Each screen has its own grid, contents, and other state. This section allows "
 "you to inspect the different screens managed by the terminal."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:196
+#: src/inspector/widgets/terminal.zig:197
 msgid "primary"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:197
+#: src/inspector/widgets/terminal.zig:198
 msgid "alternate"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:210
+#: src/inspector/widgets/terminal.zig:211
 msgid "initialized"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:215
+#: src/inspector/widgets/terminal.zig:216
 msgid "(not initialized)"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:225
-#: src/inspector/widgets/terminal.zig:566
+#: src/inspector/widgets/terminal.zig:226
+#: src/inspector/widgets/terminal.zig:567
 msgid "View"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:247
+#: src/inspector/widgets/terminal.zig:248
 msgid "Working Directory"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:249
+#: src/inspector/widgets/terminal.zig:250
 msgid "The current working directory reported by the shell."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:269
+#: src/inspector/widgets/terminal.zig:270
 msgid "Focused"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:271
+#: src/inspector/widgets/terminal.zig:272
 msgid "Whether the terminal itself is currently focused."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:284
+#: src/inspector/widgets/terminal.zig:285
 msgid "Previous Char"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:286
+#: src/inspector/widgets/terminal.zig:287
 msgid "The previously printed character, used only for the REP sequence."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:312
+#: src/inspector/widgets/terminal.zig:313
 msgid "Grid"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:314
+#: src/inspector/widgets/terminal.zig:315
 msgid "The size of the terminal grid in columns and rows."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:330
+#: src/inspector/widgets/terminal.zig:331
 msgid "Pixels"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:332
+#: src/inspector/widgets/terminal.zig:333
 msgid "The size of the terminal grid in pixels."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:337
+#: src/inspector/widgets/terminal.zig:338
 #, c-format
 msgid "%dw x %dh"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:348 src/inspector/widgets/termio.zig:260
+#: src/inspector/widgets/terminal.zig:349 src/inspector/widgets/termio.zig:260
 msgid "Scroll Region"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:350
+#: src/inspector/widgets/terminal.zig:351
 msgid "The scrolling region boundaries (top, bottom, left, right)."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:431
+#: src/inspector/widgets/terminal.zig:432
 msgid "Event Mode"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:433
+#: src/inspector/widgets/terminal.zig:434
 msgid "The mouse event reporting mode set by the application."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:445
+#: src/inspector/widgets/terminal.zig:446
 msgid "Format"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:447
+#: src/inspector/widgets/terminal.zig:448
 msgid "The mouse event encoding format."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:459
+#: src/inspector/widgets/terminal.zig:460
 msgid "Shape"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:461
+#: src/inspector/widgets/terminal.zig:462
 msgid "The current mouse cursor shape set by the application."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:473
+#: src/inspector/widgets/terminal.zig:474
 msgid "Shift Capture"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:475
+#: src/inspector/widgets/terminal.zig:476
 msgid "XTSHIFTESCAPE state for capturing shift in mouse protocol."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:480
-#: src/inspector/widgets/terminal.zig:681
+#: src/inspector/widgets/terminal.zig:481
+#: src/inspector/widgets/terminal.zig:682
 msgid "(unset)"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:494
+#: src/inspector/widgets/terminal.zig:495
 msgid ""
 "Color state for the terminal. Note these colors only apply to the palette "
 "and unstyled colors. Many modern terminal applications use direct RGB colors "
 "which are not reflected here."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:511
+#: src/inspector/widgets/terminal.zig:512
 msgid "Unstyled cell background color."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:528
+#: src/inspector/widgets/terminal.zig:529
 msgid "Unstyled cell foreground color."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:545
+#: src/inspector/widgets/terminal.zig:546
 msgid "Cursor coloring set by escape sequences."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:560
+#: src/inspector/widgets/terminal.zig:561
 msgid "Palette"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:562
+#: src/inspector/widgets/terminal.zig:563
 msgid "The 256-color palette."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:585
+#: src/inspector/widgets/terminal.zig:586
 msgid "Number"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:586
+#: src/inspector/widgets/terminal.zig:587
 msgid "Name"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:642
+#: src/inspector/widgets/terminal.zig:643
 msgid "override:"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:644
+#: src/inspector/widgets/terminal.zig:645
 msgid "Overridden color set by escape sequences."
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:663
+#: src/inspector/widgets/terminal.zig:664
 msgid "default:"
 msgstr ""
 
-#: src/inspector/widgets/terminal.zig:665
+#: src/inspector/widgets/terminal.zig:666
 msgid "Default color from configuration."
 msgstr ""
 
@@ -2253,134 +2257,162 @@ msgstr ""
 msgid "Reload the config file."
 msgstr ""
 
-#: src/input/command.zig:606
-msgid "Close Terminal"
-msgstr ""
-
 #: src/input/command.zig:607
-msgid "Close the current terminal."
+msgid "Switch to Configured Appearance"
 msgstr ""
 
-#: src/input/command.zig:614
-msgid "Close the current tab."
+#: src/input/command.zig:608
+msgid "Use the application appearance from the configuration."
+msgstr ""
+
+#: src/input/command.zig:612
+msgid "Switch to System Appearance"
+msgstr ""
+
+#: src/input/command.zig:613
+msgid "Use the system application appearance for this session."
+msgstr ""
+
+#: src/input/command.zig:617
+msgid "Switch to Light Appearance"
 msgstr ""
 
 #: src/input/command.zig:618
-msgid "Close Other Tabs"
+msgid "Use a light application appearance for this session."
 msgstr ""
 
-#: src/input/command.zig:619
-msgid "Close all tabs in this window except the current one."
+#: src/input/command.zig:622
+msgid "Switch to Dark Appearance"
 msgstr ""
 
 #: src/input/command.zig:623
-msgid "Close Tabs to the Right"
+msgid "Use a dark application appearance for this session."
 msgstr ""
 
-#: src/input/command.zig:624
-msgid "Close all tabs to the right of the current one."
+#: src/input/command.zig:629
+msgid "Close Terminal"
 msgstr ""
 
-#: src/input/command.zig:631
-msgid "Close the current window."
-msgstr ""
-
-#: src/input/command.zig:636
-msgid "Close All Windows"
+#: src/input/command.zig:630
+msgid "Close the current terminal."
 msgstr ""
 
 #: src/input/command.zig:637
-msgid "Close all windows."
+msgid "Close the current tab."
+msgstr ""
+
+#: src/input/command.zig:641
+msgid "Close Other Tabs"
 msgstr ""
 
 #: src/input/command.zig:642
-msgid "Toggle Maximize"
+msgid "Close all tabs in this window except the current one."
 msgstr ""
 
-#: src/input/command.zig:643
-msgid "Toggle the maximized state of the current window."
+#: src/input/command.zig:646
+msgid "Close Tabs to the Right"
 msgstr ""
 
-#: src/input/command.zig:648
-msgid "Toggle Fullscreen"
-msgstr ""
-
-#: src/input/command.zig:649
-msgid "Toggle the fullscreen state of the current window."
+#: src/input/command.zig:647
+msgid "Close all tabs to the right of the current one."
 msgstr ""
 
 #: src/input/command.zig:654
-msgid "Toggle Window Decorations"
+msgid "Close the current window."
 msgstr ""
 
-#: src/input/command.zig:655
-msgid "Toggle the window decorations."
+#: src/input/command.zig:659
+msgid "Close All Windows"
 msgstr ""
 
 #: src/input/command.zig:660
-msgid "Toggle Float on Top"
+msgid "Close all windows."
 msgstr ""
 
-#: src/input/command.zig:661
-msgid "Toggle the float on top state of the current window."
+#: src/input/command.zig:665
+msgid "Toggle Maximize"
 msgstr ""
 
 #: src/input/command.zig:666
-msgid "Toggle Secure Input"
+msgid "Toggle the maximized state of the current window."
 msgstr ""
 
-#: src/input/command.zig:667
-msgid "Toggle secure input mode."
+#: src/input/command.zig:671
+msgid "Toggle Fullscreen"
 msgstr ""
 
 #: src/input/command.zig:672
-msgid "Toggle Mouse Reporting"
+msgid "Toggle the fullscreen state of the current window."
 msgstr ""
 
-#: src/input/command.zig:673
-msgid "Toggle whether mouse events are reported to terminal applications."
+#: src/input/command.zig:677
+msgid "Toggle Window Decorations"
 msgstr ""
 
 #: src/input/command.zig:678
-msgid "Toggle Background Opacity"
+msgid "Toggle the window decorations."
 msgstr ""
 
-#: src/input/command.zig:679
-msgid "Toggle the background opacity of a window that started transparent."
+#: src/input/command.zig:683
+msgid "Toggle Float on Top"
 msgstr ""
 
 #: src/input/command.zig:684
-msgid "Check for Updates"
+msgid "Toggle the float on top state of the current window."
 msgstr ""
 
-#: src/input/command.zig:685
-msgid "Check for updates to the application."
+#: src/input/command.zig:689
+msgid "Toggle Secure Input"
 msgstr ""
 
 #: src/input/command.zig:690
-msgid "Undo"
+msgid "Toggle secure input mode."
 msgstr ""
 
-#: src/input/command.zig:691
-msgid "Undo the last action."
+#: src/input/command.zig:695
+msgid "Toggle Mouse Reporting"
 msgstr ""
 
 #: src/input/command.zig:696
-msgid "Redo"
+msgid "Toggle whether mouse events are reported to terminal applications."
 msgstr ""
 
-#: src/input/command.zig:697
-msgid "Redo the last undone action."
+#: src/input/command.zig:701
+msgid "Toggle Background Opacity"
 msgstr ""
 
-#: src/input/command.zig:703
-msgid "Quit the application."
+#: src/input/command.zig:702
+msgid "Toggle the background opacity of a window that started transparent."
+msgstr ""
+
+#: src/input/command.zig:707
+msgid "Check for Updates"
 msgstr ""
 
 #: src/input/command.zig:708
-msgid "Ghostty"
+msgid "Check for updates to the application."
 msgstr ""
 
-#: src/input/command.zig:709
+#: src/input/command.zig:713
+msgid "Undo"
+msgstr ""
+
+#: src/input/command.zig:714
+msgid "Undo the last action."
+msgstr ""
+
+#: src/input/command.zig:719
+msgid "Redo"
+msgstr ""
+
+#: src/input/command.zig:720
+msgid "Redo the last undone action."
+msgstr ""
+
+#: src/input/command.zig:726
+msgid "Quit the application."
+msgstr ""
+
+#: src/input/command.zig:732
 msgid "Put a little Ghostty in your terminal."
 msgstr ""

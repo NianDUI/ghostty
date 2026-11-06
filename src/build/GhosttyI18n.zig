@@ -103,7 +103,7 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
             source_files.deinit(b.allocator);
         }
 
-        var source_handle = try b.build_root.handle.openDir(
+        var source_handle = try b.root.openDir(
             b.graph.io,
             source_dir,
             .{ .iterate = true },

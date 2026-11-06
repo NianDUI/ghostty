@@ -189,10 +189,11 @@ fn compressionTable(pages: *const PageList) void {
     );
 
     var state_buf: [96]u8 = undefined;
-    const state = std.fmt.bufPrintZ(
+    const state = std.mem.printSentinel(
         &state_buf,
         "{s}: {d}, {s}: {d}",
         .{ i18n._("compressed"), memory.compressed_pages, i18n._("resident"), memory.resident_pages },
+        0,
     ) catch unreachable;
     compressionTextRow(
         i18n._("Page States"),
@@ -215,7 +216,7 @@ fn compressionTable(pages: *const PageList) void {
             memory.encoded_bytes,
             memory.decommitted_raw_bytes,
         );
-        break :storage std.fmt.bufPrintZ(
+        break :storage std.mem.printSentinel(
             &storage_buf,
             "{s}: {s} / {s}: {s} ({d:.1}%)",
             .{
@@ -228,6 +229,7 @@ fn compressionTable(pages: *const PageList) void {
                 ),
                 ratio,
             },
+            0,
         ) catch unreachable;
     } else i18n._("none");
     compressionTextRow(
@@ -246,7 +248,7 @@ fn compressionTable(pages: *const PageList) void {
     var savings_bytes_buf: [64]u8 = undefined;
     var savings_buf: [128]u8 = undefined;
     const savings = memory.estimatedSavings();
-    const savings_text = std.fmt.bufPrintZ(
+    const savings_text = std.mem.printSentinel(
         &savings_buf,
         "{s} ({s}: {d:.1}%)",
         .{
@@ -254,6 +256,7 @@ fn compressionTable(pages: *const PageList) void {
             i18n._("Share of raw page memory"),
             percentage(savings, memory.raw_bytes),
         },
+        0,
     ) catch unreachable;
     compressionTextRow(
         i18n._("Estimated Savings"),
@@ -279,15 +282,15 @@ fn compressionTextRow(
 fn formatBytes(buf: []u8, bytes: usize) [:0]const u8 {
     if (bytes >= 1024 * 1024) {
         const value: f64 = @as(f64, @floatFromInt(bytes)) / (1024 * 1024);
-        return std.fmt.bufPrintZ(buf, "{d:.2} MiB", .{value}) catch unreachable;
+        return std.mem.printSentinel(buf, "{d:.2} MiB", .{value}, 0) catch unreachable;
     }
 
     if (bytes >= 1024) {
         const value: f64 = @as(f64, @floatFromInt(bytes)) / 1024;
-        return std.fmt.bufPrintZ(buf, "{d:.1} KiB", .{value}) catch unreachable;
+        return std.mem.printSentinel(buf, "{d:.1} KiB", .{value}, 0) catch unreachable;
     }
 
-    return std.fmt.bufPrintZ(buf, "{d} B", .{bytes}) catch unreachable;
+    return std.mem.printSentinel(buf, "{d} B", .{bytes}, 0) catch unreachable;
 }
 
 fn percentage(numerator: usize, denominator: usize) f64 {
@@ -598,7 +601,8 @@ pub const CellChooser = struct {
                 }
                 break :blk max_len + 4;
             };
-            cimgui.c.ImGui_SetNextItemWidth(cimgui.c.ImGui_CalcTextSize("X" ** combo_width).x);
+            const xs: [combo_width]u8 = @splat('X');
+            cimgui.c.ImGui_SetNextItemWidth(cimgui.c.ImGui_CalcTextSize(&xs).x);
             if (cimgui.c.ImGui_BeginCombo(
                 "##grid_region",
                 preview.ptr,
@@ -817,7 +821,7 @@ fn graphemeTable(cell: InspectedCell, page: *const terminal.Page) void {
     if (cimgui.c.ImGui_BeginListBox("##grapheme_list", .{ .x = 0, .y = 0 })) {
         defer cimgui.c.ImGui_EndListBox();
         for (cps) |cp| {
-            const label = std.fmt.bufPrintZ(&buf, "U+{X}", .{cp}) catch "U+?";
+            const label = std.mem.printSentinel(&buf, "U+{X}", .{cp}, 0) catch "U+?";
             _ = cimgui.c.ImGui_SelectableEx(
                 label.ptr,
                 false,
@@ -905,7 +909,7 @@ pub const CellInfo = struct {
                 if (page.lookupGrapheme(cell.cell)) |cps| {
                     var buf: [96]u8 = undefined;
                     for (cps) |cp| {
-                        const label = std.fmt.bufPrintZ(&buf, "U+{X}", .{cp}) catch "U+?";
+                        const label = std.mem.printSentinel(&buf, "U+{X}", .{cp}, 0) catch "U+?";
                         _ = cimgui.c.ImGui_SelectableEx(
                             label.ptr,
                             false,

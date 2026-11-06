@@ -86,7 +86,7 @@ pub fn color(
     cimgui.c.ImGui_PushID(id);
     defer cimgui.c.ImGui_PopID();
 
-    switch (c) {
+    switch (c.value()) {
         .none => cimgui.c.ImGui_Text(i18n._("default")),
 
         .palette => |idx| {
