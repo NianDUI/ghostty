@@ -1,3 +1,4 @@
+const i18n = @import("../i18n.zig");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const cimgui = @import("dcimgui");
@@ -49,19 +50,19 @@ pub const Info = struct {
         if (!open) return;
 
         cimgui.c.ImGui_SetNextItemOpen(true, cimgui.c.ImGuiCond_Once);
-        if (!cimgui.c.ImGui_CollapsingHeader("Overlays", cimgui.c.ImGuiTreeNodeFlags_None)) return;
+        if (!cimgui.c.ImGui_CollapsingHeader(i18n._("Overlays"), cimgui.c.ImGuiTreeNodeFlags_None)) return;
 
-        cimgui.c.ImGui_SeparatorText("Hyperlinks");
+        cimgui.c.ImGui_SeparatorText(i18n._("Hyperlinks"));
         self.overlayHyperlinks(alloc);
-        cimgui.c.ImGui_SeparatorText("Semantic Prompts");
+        cimgui.c.ImGui_SeparatorText(i18n._("Semantic Prompts"));
         self.overlaySemanticPrompts(alloc);
     }
 
     fn overlayHyperlinks(self: *Info, alloc: Allocator) void {
         var hyperlinks: bool = self.features.contains(.highlight_hyperlinks);
-        _ = cimgui.c.ImGui_Checkbox("Overlay Hyperlinks", &hyperlinks);
+        _ = cimgui.c.ImGui_Checkbox(i18n._("Overlay Hyperlinks"), &hyperlinks);
         cimgui.c.ImGui_SameLine();
-        widgets.helpMarker("When enabled, highlights OSC8 hyperlinks.");
+        widgets.helpMarker(i18n._("When enabled, highlights OSC8 hyperlinks."));
 
         if (!hyperlinks) {
             _ = self.features.swapRemove(.highlight_hyperlinks);
@@ -76,9 +77,9 @@ pub const Info = struct {
 
     fn overlaySemanticPrompts(self: *Info, alloc: Allocator) void {
         var semantic_prompts: bool = self.features.contains(.semantic_prompts);
-        _ = cimgui.c.ImGui_Checkbox("Overlay Semantic Prompts", &semantic_prompts);
+        _ = cimgui.c.ImGui_Checkbox(i18n._("Overlay Semantic Prompts"), &semantic_prompts);
         cimgui.c.ImGui_SameLine();
-        widgets.helpMarker("When enabled, highlights OSC 133 semantic prompts.");
+        widgets.helpMarker(i18n._("When enabled, highlights OSC 133 semantic prompts."));
 
         // Handle the checkbox results
         if (!semantic_prompts) {
@@ -95,7 +96,7 @@ pub const Info = struct {
         cimgui.c.ImGui_Indent();
         defer cimgui.c.ImGui_Unindent();
 
-        cimgui.c.ImGui_TextDisabled("Colors:");
+        cimgui.c.ImGui_TextDisabled(i18n._("Colors:"));
 
         const prompt_rgb = renderer.Overlay.Color.semantic_prompt.rgb();
         const input_rgb = renderer.Overlay.Color.semantic_input.rgb();
@@ -114,10 +115,10 @@ pub const Info = struct {
 
         _ = cimgui.c.ImGui_ColorButton("##prompt_color", prompt_col, cimgui.c.ImGuiColorEditFlags_NoTooltip);
         cimgui.c.ImGui_SameLine();
-        cimgui.c.ImGui_Text("Prompt");
+        cimgui.c.ImGui_Text(i18n._("Prompt"));
 
         _ = cimgui.c.ImGui_ColorButton("##input_color", input_col, cimgui.c.ImGuiColorEditFlags_NoTooltip);
         cimgui.c.ImGui_SameLine();
-        cimgui.c.ImGui_Text("Input");
+        cimgui.c.ImGui_Text(i18n._("Input"));
     }
 };

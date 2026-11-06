@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: com.mitchellh.ghostty\n"
 "Report-Msgid-Bugs-To: m@mitchellh.com\n"
-"POT-Creation-Date: 2026-09-28 14:56+0800\n"
+"POT-Creation-Date: 2026-10-27 18:07+0800\n"
 "PO-Revision-Date: 2026-08-13 12:00+0200\n"
 "Last-Translator: Carl Villads Priisholm <carl.priisholm@gmail.com>\n"
 "Language-Team: Danish <dansk@dansk-gruppen.dk>\n"
@@ -55,6 +55,7 @@ msgstr "Annullér"
 #: src/apprt/gtk/ui/1.2/close-confirmation-dialog.blp:8
 #: src/apprt/gtk/ui/1.2/search-overlay.blp:90
 #: src/apprt/gtk/ui/1.3/surface-child-exited.blp:17
+#: src/inspector/widgets/termio.zig:343
 msgid "Close"
 msgstr "Luk"
 
@@ -126,6 +127,7 @@ msgid "Read-only"
 msgstr "Skrivebeskyttet"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:311 src/apprt/gtk/ui/1.5/window.blp:203
+#: src/inspector/widgets/termio.zig:105
 msgid "Copy"
 msgstr "Kopiér"
 
@@ -138,6 +140,7 @@ msgid "Notify on Next Command Finish"
 msgstr "Giv mig besked når den næste kommando er færdig"
 
 #: src/apprt/gtk/ui/1.2/surface.blp:328 src/apprt/gtk/ui/1.5/window.blp:281
+#: src/inspector/widgets/key.zig:289 src/inspector/widgets/termio.zig:96
 msgid "Clear"
 msgstr "Ryd"
 
@@ -395,6 +398,1298 @@ msgstr "Udklipsholderen blev ryddet"
 #: src/apprt/gtk/class/window.zig:2018
 msgid "Ghostty Developers"
 msgstr "Ghostty udviklerne"
+
+#: src/inspector/widgets.zig:134
+msgid "Detach into separate window"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:86
+msgid "Triggered Binding"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:110
+msgid "Encoding to Pty"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:113
+msgid "(no data)"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:118
+msgid "(error rendering pty data)"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:126 src/inspector/widgets/key.zig:306
+msgid "Action"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:133 src/inspector/widgets/key.zig:307
+msgid "Key"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:140 src/inspector/widgets/key.zig:308
+msgid "Mods"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:150
+msgid "Composing"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:160 src/inspector/widgets/pagelist.zig:395
+#: src/inspector/widgets/pagelist.zig:764
+#: src/inspector/widgets/pagelist.zig:777
+#: src/inspector/widgets/pagelist.zig:890
+msgid "(empty)"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:165
+msgid "(error rendering utf-8)"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:285
+msgid ""
+"No recorded key events. Press a key with the terminal focused to record it."
+msgstr ""
+
+#: src/inspector/widgets/key.zig:310
+msgid "PTY Encoding"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:311
+msgid "Binding"
+msgstr ""
+
+#: src/inspector/widgets/key.zig:354
+msgid "Composing (dead key)"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:12
+msgid "Managed Memory"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:15 src/inspector/widgets/page.zig:160
+msgid "Styles"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:18 src/inspector/widgets/renderer.zig:55
+msgid "Hyperlinks"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:21 src/inspector/widgets/page.zig:150
+msgid "Rows"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:50 src/inspector/widgets/page.zig:51
+msgid "Page"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:74
+#, c-format
+msgid "rows %d..%d"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:79 src/inspector/widgets/terminal.zig:205
+msgid "active"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:83
+msgid "viewport"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:87 src/inspector/widgets/pagelist.zig:195
+#: src/inspector/widgets/pagelist.zig:465
+msgid "compressed"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:91 src/inspector/widgets/pagelist.zig:458
+msgid "dirty"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:109
+msgid "Memory Size"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:112
+msgid ""
+"Memory allocated for this page. Note the backing memory may be a larger "
+"allocation from which this page uses a portion."
+msgstr ""
+
+#: src/inspector/widgets/page.zig:130
+msgid "Resource"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:132
+msgid "Used"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:133
+msgid "Capacity"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:140
+msgid "Columns"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:142
+msgid "Number of columns in the terminal grid."
+msgstr ""
+
+#: src/inspector/widgets/page.zig:152
+msgid "Number of rows in this page."
+msgstr ""
+
+#: src/inspector/widgets/page.zig:162
+msgid "Unique text styles (colors, attributes) currently in use."
+msgstr ""
+
+#: src/inspector/widgets/page.zig:170
+msgid "Graphemes"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:172
+msgid "Extended grapheme clusters for multi-codepoint characters."
+msgstr ""
+
+#: src/inspector/widgets/page.zig:180
+msgid "Strings (bytes)"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:182
+msgid "String storage for hyperlink URIs and other text data."
+msgstr ""
+
+#: src/inspector/widgets/page.zig:191
+msgid "Hyperlink Map"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:193
+msgid "Maps cell positions to hyperlink IDs."
+msgstr ""
+
+#: src/inspector/widgets/page.zig:201
+msgid "Hyperlink IDs"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:203
+msgid "Unique hyperlink definitions (URI + optional ID)."
+msgstr ""
+
+#: src/inspector/widgets/page.zig:236
+msgid "Row"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:237
+msgid "Text"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:238 src/inspector/widgets/pagelist.zig:421
+msgid "Dirty"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:239
+msgid "Wrap"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:240
+msgid "Cont"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:241
+msgid "Styled"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:242 src/inspector/widgets/pagelist.zig:721
+#: src/inspector/widgets/pagelist.zig:899
+msgid "Grapheme"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:243
+msgid "Link"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:244 src/inspector/widgets/renderer.zig:118
+msgid "Prompt"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:307
+msgid "(no styles in use)"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:334 src/inspector/widgets/page.zig:398
+msgid "Refs"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:335 src/inspector/widgets/pagelist.zig:707
+#: src/inspector/widgets/pagelist.zig:984
+msgid "Style"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:353
+msgid "Details"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:371
+msgid "(no hyperlinks in use)"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:399
+msgid "Explicit ID"
+msgstr ""
+
+#: src/inspector/widgets/page.zig:432
+msgid "yes"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:28
+msgid ""
+"PageList manages the backing pages that hold scrollback and the active "
+"terminal grid. Each page is a contiguous memory buffer with its own rows, "
+"cells, style set, grapheme map, and hyperlink storage."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:32
+msgid "Overview"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:39
+msgid "Page Compression"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:46
+msgid "Scrollbar & Regions"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:49
+msgid "Scrollbar"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:51
+msgid "Regions"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:56
+msgid "Tracked Pins"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:63 src/inspector/widgets/pagelist.zig:138
+msgid "Pages"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:67
+msgid ""
+"Pages are shown most-recent first. Each page holds a grid of rows/cells plus "
+"metadata tables for styles, graphemes, strings, and hyperlinks."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:107
+#: src/inspector/widgets/pagelist.zig:690
+msgid "(unable to copy compressed page)"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:130
+msgid "Active Grid"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:132
+msgid "Active viewport size in columns x rows."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:140
+msgid "Total number of pages in the linked list."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:146
+msgid "Total Rows"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:148
+msgid "Total rows represented by scrollback + active area."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:154
+msgid "Scrollback Limit"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:157
+msgid ""
+"Maximum uncompressed logical page memory before the oldest history is "
+"evicted. Minimum page allocation sizes can make current usage temporarily "
+"exceed this value."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:166
+msgid "Viewport"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:168
+msgid "Current viewport anchoring mode."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:186
+msgid "Platform Support"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:187
+msgid ""
+"Whether this target can discard physical page memory while retaining its "
+"virtual address range. The scrollback-compression setting may still disable "
+"automatic compression on a supported platform."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:188
+msgid "supported"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:188
+msgid "unsupported"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:195
+msgid "resident"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:198
+msgid "Page States"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:199
+msgid ""
+"Compressed pages retain an encoded allocation while their raw mapping is "
+"decommitted. Resident pages still have physical raw backing. Active, "
+"visible, and recently changed pages are expected to be resident."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:205
+msgid "Uncompressed Size"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:206
+msgid ""
+"Total size of all raw page mappings. This is the approximate page backing "
+"memory required if no pages were compressed and is also the virtual address "
+"space retained across compression."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:222
+msgid "encoded"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:224
+msgid "raw"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:232 src/inspector/widgets/surface.zig:437
+msgid "none"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:234
+msgid "Compressed Storage"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:235
+msgid ""
+"Encoded allocation size compared with the original raw size of only the "
+"compressed pages. The percentage is the compression ratio, so smaller is "
+"better. Raw physical pages have been discarded."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:241
+msgid "Estimated Resident"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:242
+msgid ""
+"Physical page backing estimated to remain after compression: resident raw "
+"allocations, including unused pool tails, plus encoded storage. Node and "
+"allocator metadata and unrelated terminal memory are excluded."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:254
+msgid "Share of raw page memory"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:259
+msgid "Estimated Savings"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:260
+msgid ""
+"Physical page backing avoided across the complete PageList. This is "
+"decommitted raw memory minus replacement encoded storage and is not a "
+"measurement of total process RSS."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:323
+msgid "Total"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:325
+msgid "Total number of scrollable rows including scrollback and active area."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:331
+msgid "Offset"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:333
+msgid "Current scroll position as row offset from the top of scrollback."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:339
+msgid "Length"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:341
+msgid "Number of rows visible in the viewport."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:356
+msgid "Region"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:358
+msgid "Top-Left"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:359
+msgid "Bottom-Right"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:383
+#: src/inspector/widgets/pagelist.zig:392
+msgid "(n/a)"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:401
+msgid ""
+"The active area where a running program can jump the cursor and make "
+"changes. This is the 'editable' part of the screen. Bottom-right includes "
+"the full height of the screen, including rows that may not be written yet."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:402
+msgid ""
+"The visible viewport. If the user has scrolled, top-left changes. Bottom-"
+"right is the last written row from the top-left."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:403
+msgid ""
+"Top-left is the furthest back in scrollback history. Bottom-right is the "
+"last written row. Unlike 'active', this only contains written rows."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:404
+msgid ""
+"Same top-left as 'screen' but bottom-right is the line just before the top "
+"of 'active'. Contains only the scrollback history."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:418
+msgid "Index"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:419
+msgid "Pin"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:420
+msgid "Context"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:422
+msgid "State"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:445
+#, c-format
+msgid "screen (%d, %d)"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:450
+msgid "screen (out of range)"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:460
+msgid "clean"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:470
+msgid "active top"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:472
+msgid "viewport top"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:474
+msgid "garbage"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:476
+msgid "viewport pin"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:478
+msgid "tracked"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:575
+msgid ""
+"Inspect a cell by choosing a coordinate space and entering the X/Y position. "
+"The inspector resolves the point into the page list and displays the cell "
+"contents."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:578
+msgid "Cell Inspector"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:651
+msgid "Choose the coordinate space and X/Y position (0-indexed)."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:663
+#, c-format
+msgid "Range: x 0..%d, y 0..%d"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:668
+msgid "(region has no rows)"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:680
+msgid "(cell out of range)"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:716
+#: src/inspector/widgets/pagelist.zig:998 src/inspector/widgets/screen.zig:183
+msgid "Hyperlink"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:747
+#: src/inspector/widgets/pagelist.zig:801
+#: src/inspector/widgets/terminal.zig:162
+#: src/inspector/widgets/terminal.zig:180
+msgid "Status"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:749
+msgid "(missing link data)"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:760
+#, c-format
+msgid "implicit %d"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:784
+msgid "Ref Count"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:803
+msgid "(missing grapheme data)"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:809
+msgid "Extra Codepoints"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:812
+#: src/inspector/widgets/pagelist.zig:967 src/inspector/widgets/screen.zig:190
+#: src/inspector/widgets/screen.zig:401 src/inspector/widgets/terminal.zig:260
+#: src/inspector/widgets/terminal.zig:293
+msgid "(none)"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:853
+msgid "Grid Position"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:855
+msgid "The cell's X/Y coordinates in the selected region."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:864
+msgid "Page Location"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:866
+msgid "Row and column indices within the backing page."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:868
+#, c-format
+msgid "row=%d col=%d"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:874
+msgid "Content"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:876
+msgid "Content tag describing how the cell data is stored."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:884
+msgid "Codepoint"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:886
+msgid "Primary Unicode codepoint for the cell."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:901
+msgid ""
+"Extra codepoints that combine with the primary codepoint to form the "
+"grapheme cluster."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:918
+msgid "(missing)"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:930
+msgid "Width Property"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:932
+msgid "Character width property (narrow, wide, spacer, etc.)."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:940
+msgid "Row Flags"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:942
+msgid "Flags set on the row containing this cell."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:947
+msgid "wrap"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:951
+msgid "cont"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:955
+msgid "grapheme"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:959
+msgid "styled"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:963
+msgid "link"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:974
+msgid "Style ID"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:976
+msgid "Internal style reference ID for this cell."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:986
+msgid "Resolved style for the cell (colors, attributes, etc.)."
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:989
+msgid "(default)"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:991
+msgid "(see below)"
+msgstr ""
+
+#: src/inspector/widgets/pagelist.zig:1000
+msgid "OSC8 hyperlink ID associated with this cell."
+msgstr ""
+
+#: src/inspector/widgets/renderer.zig:53
+msgid "Overlays"
+msgstr ""
+
+#: src/inspector/widgets/renderer.zig:57
+msgid "Semantic Prompts"
+msgstr ""
+
+#: src/inspector/widgets/renderer.zig:63
+msgid "Overlay Hyperlinks"
+msgstr ""
+
+#: src/inspector/widgets/renderer.zig:65
+msgid "When enabled, highlights OSC8 hyperlinks."
+msgstr ""
+
+#: src/inspector/widgets/renderer.zig:80
+msgid "Overlay Semantic Prompts"
+msgstr ""
+
+#: src/inspector/widgets/renderer.zig:82
+msgid "When enabled, highlights OSC 133 semantic prompts."
+msgstr ""
+
+#: src/inspector/widgets/renderer.zig:99
+msgid "Colors:"
+msgstr ""
+
+#: src/inspector/widgets/renderer.zig:122
+msgid "Input"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:13
+msgid "Info###Info"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:14
+msgid "Cell###Cell"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:15
+msgid "PageList###PageList"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:60 src/inspector/widgets/terminal.zig:543
+msgid "Cursor"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:72
+msgid "Keyboard"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:80
+msgid "Semantic Prompt"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:85
+msgid "Kitty Graphics"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:90
+msgid "Other Screen State"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:124
+msgid "⚠ Viewing inactive screen"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:175
+msgid "Position (x, y)"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:177
+msgid "The current cursor position in the terminal grid (0-indexed)."
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:185
+msgid "The active OSC8 hyperlink for newly printed characters."
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:196
+msgid "Pending Wrap"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:198
+msgid ""
+"The 'last column flag' (LCF). If set, the next character will force a soft-"
+"wrap to the next line."
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:207
+msgid "Protected"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:209
+msgid ""
+"If enabled, new characters will have the protected attribute set, preventing "
+"erasure by certain sequences."
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:239
+msgid "Mode"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:274
+msgid "Xterm modify keys"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:292
+msgid "(Kitty graphics are disabled)"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:305 src/inspector/widgets/screen.zig:349
+msgid "Memory Usage"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:307 src/inspector/widgets/screen.zig:313
+#: src/inspector/widgets/screen.zig:351 src/inspector/widgets/screen.zig:359
+#, c-format
+msgid "%d bytes (%d KiB)"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:311 src/inspector/widgets/screen.zig:355
+msgid "Memory Limit"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:317
+msgid "Image Count"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:323
+msgid "Placement Count"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:329
+msgid "Image Loading"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:366
+msgid "Viewport Location"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:385
+msgid "Seen"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:387
+msgid ""
+"Whether any semantic prompt markers (OSC 133) have been seen in this screen."
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:396
+msgid "Click Handling"
+msgstr ""
+
+#: src/inspector/widgets/screen.zig:398
+msgid ""
+"How click events are handled in prompts. Set via 'cl' or 'click_events' "
+"options in OSC 133."
+msgstr ""
+
+#: src/inspector/widgets/style.zig:22 src/inspector/widgets/terminal.zig:526
+msgid "Foreground"
+msgstr ""
+
+#: src/inspector/widgets/style.zig:24
+msgid "The foreground (text) color"
+msgstr ""
+
+#: src/inspector/widgets/style.zig:32 src/inspector/widgets/terminal.zig:509
+msgid "Background"
+msgstr ""
+
+#: src/inspector/widgets/style.zig:34
+msgid "The background (cell) color"
+msgstr ""
+
+#: src/inspector/widgets/style.zig:42
+msgid "Underline"
+msgstr ""
+
+#: src/inspector/widgets/style.zig:44
+msgid "The underline color, if underlines are enabled."
+msgstr ""
+
+#: src/inspector/widgets/style.zig:50
+msgid "Text will be rendered with bold weight."
+msgstr ""
+
+#: src/inspector/widgets/style.zig:51
+msgid "Text will be rendered in italic style."
+msgstr ""
+
+#: src/inspector/widgets/style.zig:52
+msgid "Text will be rendered with reduced intensity."
+msgstr ""
+
+#: src/inspector/widgets/style.zig:53
+msgid "Text will blink."
+msgstr ""
+
+#: src/inspector/widgets/style.zig:54
+msgid "Foreground and background colors are swapped."
+msgstr ""
+
+#: src/inspector/widgets/style.zig:55
+msgid "Text will be invisible (hidden)."
+msgstr ""
+
+#: src/inspector/widgets/style.zig:56
+msgid "Text will have a line through it."
+msgstr ""
+
+#: src/inspector/widgets/style.zig:77
+msgid "(Any styles not shown are not currently set)"
+msgstr ""
+
+#: src/inspector/widgets/style.zig:90
+msgid "default"
+msgstr ""
+
+#: src/inspector/widgets/style.zig:93
+#, c-format
+msgid "Palette %d"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:18
+msgid "Keyboard###Keyboard"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:19
+msgid "Terminal###Terminal"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:20
+msgid "Surface###Surface"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:21
+msgid "Terminal IO###Terminal IO"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:22
+msgid "Renderer###Renderer"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:224
+msgid "Help"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:228
+msgid ""
+"This window displays information about the surface (window). A surface is "
+"the graphical area that displays the terminal content. It includes "
+"dimensions, font sizing, and mouse state information specific to this window "
+"instance."
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:232
+msgid "Dimensions"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:235
+msgid "Font"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:238 src/inspector/widgets/terminal.zig:136
+msgid "Mouse"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:256
+msgid "Screen Size"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:273
+msgid "Grid Size"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:291
+msgid "Cell Size"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:308
+msgid "Window Padding"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:335
+msgid "Size (Points)"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:350
+msgid "Size (Pixels)"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:389
+msgid "Hover Grid"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:394 src/inspector/widgets/surface.zig:482
+#, c-format
+msgid "row=%d, col=%d"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:412
+msgid "Hover Point"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:432
+msgid "Click State"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:477
+msgid "Click Grid"
+msgstr ""
+
+#: src/inspector/widgets/surface.zig:493
+msgid "Click Point"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:48
+msgid "Terminal Misc###Terminal Misc"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:52
+msgid "Terminal Layout###Terminal Layout"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:56
+msgid "Terminal Mouse###Terminal Mouse"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:60
+msgid "Terminal Color###Terminal Color"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:64
+msgid "Terminal Modes###Terminal Modes"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:73
+msgid "256-Color Palette###256-Color Palette"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:96 src/inspector/widgets/terminal.zig:97
+#: src/inspector/widgets/terminal.zig:161
+#: src/inspector/widgets/terminal.zig:176
+msgid "Screen"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:134
+msgid "Misc"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:135
+msgid "Layout"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:137
+msgid "Color"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:138
+msgid "Modes"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:172
+msgid ""
+"A terminal can have multiple screens, only one of which is active at a time. "
+"Each screen has its own grid, contents, and other state. This section allows "
+"you to inspect the different screens managed by the terminal."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:196
+msgid "primary"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:197
+msgid "alternate"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:210
+msgid "initialized"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:215
+msgid "(not initialized)"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:225
+#: src/inspector/widgets/terminal.zig:566
+msgid "View"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:247
+msgid "Working Directory"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:249
+msgid "The current working directory reported by the shell."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:269
+msgid "Focused"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:271
+msgid "Whether the terminal itself is currently focused."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:284
+msgid "Previous Char"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:286
+msgid "The previously printed character, used only for the REP sequence."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:312
+msgid "Grid"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:314
+msgid "The size of the terminal grid in columns and rows."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:330
+msgid "Pixels"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:332
+msgid "The size of the terminal grid in pixels."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:337
+#, c-format
+msgid "%dw x %dh"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:348 src/inspector/widgets/termio.zig:260
+msgid "Scroll Region"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:350
+msgid "The scrolling region boundaries (top, bottom, left, right)."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:431
+msgid "Event Mode"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:433
+msgid "The mouse event reporting mode set by the application."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:445
+msgid "Format"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:447
+msgid "The mouse event encoding format."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:459
+msgid "Shape"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:461
+msgid "The current mouse cursor shape set by the application."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:473
+msgid "Shift Capture"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:475
+msgid "XTSHIFTESCAPE state for capturing shift in mouse protocol."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:480
+#: src/inspector/widgets/terminal.zig:681
+msgid "(unset)"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:494
+msgid ""
+"Color state for the terminal. Note these colors only apply to the palette "
+"and unstyled colors. Many modern terminal applications use direct RGB colors "
+"which are not reflected here."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:511
+msgid "Unstyled cell background color."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:528
+msgid "Unstyled cell foreground color."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:545
+msgid "Cursor coloring set by escape sequences."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:560
+msgid "Palette"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:562
+msgid "The 256-color palette."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:585
+msgid "Number"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:586
+msgid "Name"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:642
+msgid "override:"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:644
+msgid "Overridden color set by escape sequences."
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:663
+msgid "default:"
+msgstr ""
+
+#: src/inspector/widgets/terminal.zig:665
+msgid "Default color from configuration."
+msgstr ""
+
+#: src/inspector/widgets/termio.zig:74
+msgid "Filter###VT Event Filter"
+msgstr ""
+
+#: src/inspector/widgets/termio.zig:79
+msgid "Pause###pause_play"
+msgstr ""
+
+#: src/inspector/widgets/termio.zig:81
+msgid "Resume###pause_play"
+msgstr ""
+
+#: src/inspector/widgets/termio.zig:87
+msgid "Filter"
+msgstr ""
+
+#: src/inspector/widgets/termio.zig:110
+msgid "Export to file"
+msgstr ""
+
+#: src/inspector/widgets/termio.zig:118
+msgid "Waiting for events..."
+msgstr ""
+
+#: src/inspector/widgets/termio.zig:136 src/inspector/widgets/termio.zig:444
+msgid "Seq"
+msgstr ""
+
+#: src/inspector/widgets/termio.zig:140 src/inspector/widgets/termio.zig:448
+msgid "Kind"
+msgstr ""
+
+#: src/inspector/widgets/termio.zig:144 src/inspector/widgets/termio.zig:452
+msgid "Description"
+msgstr ""
+
+#: src/inspector/widgets/termio.zig:303
+msgid "Changed filter settings will only affect future events."
+msgstr ""
+
+#: src/inspector/widgets/termio.zig:334
+msgid ""
+"Filter by string. Empty displays all, \"abc\" finds lines\n"
+"containing \"abc\", \"abc,xyz\" finds lines containing \"abc\"\n"
+"or \"xyz\", \"-abc\" excludes lines containing \"abc\"."
+msgstr ""
 
 #: src/input/command.zig:149
 msgid "Reset Terminal"

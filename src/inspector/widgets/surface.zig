@@ -1,3 +1,4 @@
+const i18n = @import("../i18n.zig");
 const std = @import("std");
 const builtin = @import("builtin");
 const assert = @import("../../quirks.zig").inlineAssert;
@@ -13,11 +14,12 @@ const global = @import("../../global.zig");
 
 /// This is discovered via the hardcoded string in the ImGui demo window.
 const window_imgui_demo = "Dear ImGui Demo";
-const window_keyboard = "Keyboard";
-const window_terminal = "Terminal";
-const window_surface = "Surface";
-const window_termio = "Terminal IO";
-const window_renderer = "Renderer";
+// Translators: In inspector window titles, preserve the ### suffix and everything after it; it is an internal window ID.
+const window_keyboard = i18n.N_("Keyboard###Keyboard");
+const window_terminal = i18n.N_("Terminal###Terminal");
+const window_surface = i18n.N_("Surface###Surface");
+const window_termio = i18n.N_("Terminal IO###Terminal IO");
+const window_renderer = i18n.N_("Renderer###Renderer");
 
 pub const Inspector = struct {
     /// Internal GUI state
@@ -64,7 +66,7 @@ pub const Inspector = struct {
             // Terminal info window
             {
                 const open = cimgui.c.ImGui_Begin(
-                    window_terminal,
+                    i18n._(window_terminal),
                     null,
                     cimgui.c.ImGuiWindowFlags_NoFocusOnAppearing,
                 );
@@ -75,7 +77,7 @@ pub const Inspector = struct {
             // Surface info window
             {
                 const open = cimgui.c.ImGui_Begin(
-                    window_surface,
+                    i18n._(window_surface),
                     null,
                     cimgui.c.ImGuiWindowFlags_NoFocusOnAppearing,
                 );
@@ -90,7 +92,7 @@ pub const Inspector = struct {
             // Keyboard info window
             {
                 const open = cimgui.c.ImGui_Begin(
-                    window_keyboard,
+                    i18n._(window_keyboard),
                     null,
                     cimgui.c.ImGuiWindowFlags_NoFocusOnAppearing,
                 );
@@ -104,7 +106,7 @@ pub const Inspector = struct {
             // Terminal IO window
             {
                 const open = cimgui.c.ImGui_Begin(
-                    window_termio,
+                    i18n._(window_termio),
                     null,
                     cimgui.c.ImGuiWindowFlags_NoFocusOnAppearing,
                 );
@@ -120,7 +122,7 @@ pub const Inspector = struct {
             // Renderer info window
             {
                 const open = cimgui.c.ImGui_Begin(
-                    window_renderer,
+                    i18n._(window_renderer),
                     null,
                     cimgui.c.ImGuiWindowFlags_NoFocusOnAppearing,
                 );
@@ -144,7 +146,7 @@ pub const Inspector = struct {
             // On first render, setup our initial focus state. We only
             // do this on first render so that we can let the user change
             // focus afterward without it snapping back.
-            cimgui.c.ImGui_SetWindowFocusStr(window_terminal);
+            cimgui.c.ImGui_SetWindowFocusStr(i18n._(window_terminal));
         }
     }
 
@@ -176,11 +178,11 @@ pub const Inspector = struct {
             // layout.
             const dock_id_main: cimgui.c.ImGuiID = dockspace_id;
             cimgui.ImGui_DockBuilderDockWindow(window_imgui_demo, dock_id_main);
-            cimgui.ImGui_DockBuilderDockWindow(window_terminal, dock_id_main);
-            cimgui.ImGui_DockBuilderDockWindow(window_surface, dock_id_main);
-            cimgui.ImGui_DockBuilderDockWindow(window_keyboard, dock_id_main);
-            cimgui.ImGui_DockBuilderDockWindow(window_termio, dock_id_main);
-            cimgui.ImGui_DockBuilderDockWindow(window_renderer, dock_id_main);
+            cimgui.ImGui_DockBuilderDockWindow(i18n._(window_terminal), dock_id_main);
+            cimgui.ImGui_DockBuilderDockWindow(i18n._(window_surface), dock_id_main);
+            cimgui.ImGui_DockBuilderDockWindow(i18n._(window_keyboard), dock_id_main);
+            cimgui.ImGui_DockBuilderDockWindow(i18n._(window_termio), dock_id_main);
+            cimgui.ImGui_DockBuilderDockWindow(i18n._(window_renderer), dock_id_main);
             cimgui.ImGui_DockBuilderFinish(dockspace_id);
         }
 
@@ -219,24 +221,21 @@ pub const Info = struct {
         if (!open) return;
 
         if (cimgui.c.ImGui_CollapsingHeader(
-            "Help",
+            i18n._("Help"),
             cimgui.c.ImGuiTreeNodeFlags_None,
         )) {
             cimgui.c.ImGui_TextWrapped(
-                "This window displays information about the surface (window). " ++
-                    "A surface is the graphical area that displays the terminal " ++
-                    "content. It includes dimensions, font sizing, and mouse state " ++
-                    "information specific to this window instance.",
+                i18n._("This window displays information about the surface (window). A surface is the graphical area that displays the terminal content. It includes dimensions, font sizing, and mouse state information specific to this window instance."),
             );
         }
 
-        cimgui.c.ImGui_SeparatorText("Dimensions");
+        cimgui.c.ImGui_SeparatorText(i18n._("Dimensions"));
         dimensionsTable(surface);
 
-        cimgui.c.ImGui_SeparatorText("Font");
+        cimgui.c.ImGui_SeparatorText(i18n._("Font"));
         fontTable(surface);
 
-        cimgui.c.ImGui_SeparatorText("Mouse");
+        cimgui.c.ImGui_SeparatorText(i18n._("Mouse"));
         mouseTable(surface, mouse);
     }
 };
@@ -254,7 +253,7 @@ fn dimensionsTable(surface: *const Surface) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Screen Size");
+            cimgui.c.ImGui_Text(i18n._("Screen Size"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -271,7 +270,7 @@ fn dimensionsTable(surface: *const Surface) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Grid Size");
+            cimgui.c.ImGui_Text(i18n._("Grid Size"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -289,7 +288,7 @@ fn dimensionsTable(surface: *const Surface) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Cell Size");
+            cimgui.c.ImGui_Text(i18n._("Cell Size"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -306,7 +305,7 @@ fn dimensionsTable(surface: *const Surface) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Window Padding");
+            cimgui.c.ImGui_Text(i18n._("Window Padding"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -333,7 +332,7 @@ fn fontTable(surface: *const Surface) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Size (Points)");
+            cimgui.c.ImGui_Text(i18n._("Size (Points)"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -348,7 +347,7 @@ fn fontTable(surface: *const Surface) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Size (Pixels)");
+            cimgui.c.ImGui_Text(i18n._("Size (Pixels)"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -387,12 +386,12 @@ fn mouseTable(
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Hover Grid");
+            cimgui.c.ImGui_Text(i18n._("Hover Grid"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             cimgui.c.ImGui_Text(
-                "row=%d, col=%d",
+                i18n._("row=%d, col=%d"),
                 hover_point.y,
                 hover_point.x,
             );
@@ -410,7 +409,7 @@ fn mouseTable(
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Hover Point");
+            cimgui.c.ImGui_Text(i18n._("Hover Point"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -430,12 +429,12 @@ fn mouseTable(
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Click State");
+            cimgui.c.ImGui_Text(i18n._("Click State"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             if (!any_click) {
-                cimgui.c.ImGui_Text("none");
+                cimgui.c.ImGui_Text(i18n._("none"));
                 break :click;
             }
 
@@ -475,12 +474,12 @@ fn mouseTable(
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Click Grid");
+            cimgui.c.ImGui_Text(i18n._("Click Grid"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             cimgui.c.ImGui_Text(
-                "row=%d, col=%d",
+                i18n._("row=%d, col=%d"),
                 left_click_point.y,
                 left_click_point.x,
             );
@@ -491,7 +490,7 @@ fn mouseTable(
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Click Point");
+            cimgui.c.ImGui_Text(i18n._("Click Point"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);

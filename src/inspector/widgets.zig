@@ -1,3 +1,4 @@
+const i18n = @import("i18n.zig");
 const cimgui = @import("dcimgui");
 
 pub const page = @import("widgets/page.zig");
@@ -130,7 +131,7 @@ pub const DetachableHeader = struct {
         }
 
         if (cimgui.c.ImGui_IsItemHovered(cimgui.c.ImGuiHoveredFlags_DelayShort)) {
-            cimgui.c.ImGui_SetTooltip("Detach into separate window");
+            cimgui.c.ImGui_SetTooltip(i18n._("Detach into separate window"));
         }
 
         return is_open;

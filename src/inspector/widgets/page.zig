@@ -1,3 +1,4 @@
+const i18n = @import("../i18n.zig");
 const std = @import("std");
 const cimgui = @import("dcimgui");
 const terminal = @import("../../terminal/main.zig");
@@ -8,16 +9,16 @@ const PageList = terminal.PageList;
 const Page = terminal.Page;
 
 pub fn inspector(page: *const terminal.Page) void {
-    cimgui.c.ImGui_SeparatorText("Managed Memory");
+    cimgui.c.ImGui_SeparatorText(i18n._("Managed Memory"));
     managedMemory(page);
 
-    cimgui.c.ImGui_SeparatorText("Styles");
+    cimgui.c.ImGui_SeparatorText(i18n._("Styles"));
     stylesList(page);
 
-    cimgui.c.ImGui_SeparatorText("Hyperlinks");
+    cimgui.c.ImGui_SeparatorText(i18n._("Hyperlinks"));
     hyperlinksList(page);
 
-    cimgui.c.ImGui_SeparatorText("Rows");
+    cimgui.c.ImGui_SeparatorText(i18n._("Rows"));
     rowsTable(page);
 }
 
@@ -45,9 +46,9 @@ pub fn treeNode(state: struct {
         var label_buf: [160]u8 = undefined;
         const label = std.fmt.bufPrintZ(
             &label_buf,
-            "Page {d}",
-            .{state.index},
-        ) catch "Page";
+            "{s} {d}",
+            .{ i18n._("Page"), state.index },
+        ) catch i18n._("Page");
 
         const flags = cimgui.c.ImGuiTreeNodeFlags_AllowOverlap |
             cimgui.c.ImGuiTreeNodeFlags_SpanFullWidth |
@@ -70,24 +71,24 @@ pub fn treeNode(state: struct {
         state.rows,
     );
     cimgui.c.ImGui_SameLine();
-    cimgui.c.ImGui_Text("rows %d..%d", state.row_range[0], state.row_range[1]);
+    cimgui.c.ImGui_Text(i18n._("rows %d..%d"), state.row_range[0], state.row_range[1]);
 
     // Labels
     if (state.active) {
         cimgui.c.ImGui_SameLine();
-        cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.9, .z = 0.4, .w = 1.0 }, "active");
+        cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.9, .z = 0.4, .w = 1.0 }, i18n._("active"));
     }
     if (state.viewport) {
         cimgui.c.ImGui_SameLine();
-        cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, "viewport");
+        cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, i18n._("viewport"));
     }
     if (state.compressed) {
         cimgui.c.ImGui_SameLine();
-        cimgui.c.ImGui_TextColored(.{ .x = 0.8, .y = 0.6, .z = 1.0, .w = 1.0 }, "compressed");
+        cimgui.c.ImGui_TextColored(.{ .x = 0.8, .y = 0.6, .z = 1.0, .w = 1.0 }, i18n._("compressed"));
     }
     if (state.dirty orelse false) {
         cimgui.c.ImGui_SameLine();
-        cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.4, .z = 0.4, .w = 1.0 }, "dirty");
+        cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.4, .z = 0.4, .w = 1.0 }, i18n._("dirty"));
     }
 
     return open;
@@ -105,12 +106,10 @@ pub fn managedMemory(page: *const Page) void {
 
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Memory Size");
+        cimgui.c.ImGui_Text(i18n._("Memory Size"));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
         widgets.helpMarker(
-            "Memory allocated for this page. Note the backing memory " ++
-                "may be a larger allocation from which this page " ++
-                "uses a portion.",
+            i18n._("Memory allocated for this page. Note the backing memory may be a larger allocation from which this page uses a portion."),
         );
         _ = cimgui.c.ImGui_TableSetColumnIndex(2);
         cimgui.c.ImGui_Text(
@@ -128,19 +127,19 @@ pub fn managedMemory(page: *const Page) void {
     )) {
         defer cimgui.c.ImGui_EndTable();
 
-        cimgui.c.ImGui_TableSetupColumn("Resource", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+        cimgui.c.ImGui_TableSetupColumn(i18n._("Resource"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
         cimgui.c.ImGui_TableSetupColumn("", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-        cimgui.c.ImGui_TableSetupColumn("Used", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-        cimgui.c.ImGui_TableSetupColumn("Capacity", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+        cimgui.c.ImGui_TableSetupColumn(i18n._("Used"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+        cimgui.c.ImGui_TableSetupColumn(i18n._("Capacity"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
         cimgui.c.ImGui_TableHeadersRow();
 
         const size = page.size;
         const cap = page.capacity;
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Columns");
+        cimgui.c.ImGui_Text(i18n._("Columns"));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-        widgets.helpMarker("Number of columns in the terminal grid.");
+        widgets.helpMarker(i18n._("Number of columns in the terminal grid."));
         _ = cimgui.c.ImGui_TableSetColumnIndex(2);
         cimgui.c.ImGui_Text("%d", size.cols);
         _ = cimgui.c.ImGui_TableSetColumnIndex(3);
@@ -148,9 +147,9 @@ pub fn managedMemory(page: *const Page) void {
 
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Rows");
+        cimgui.c.ImGui_Text(i18n._("Rows"));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-        widgets.helpMarker("Number of rows in this page.");
+        widgets.helpMarker(i18n._("Number of rows in this page."));
         _ = cimgui.c.ImGui_TableSetColumnIndex(2);
         cimgui.c.ImGui_Text("%d", size.rows);
         _ = cimgui.c.ImGui_TableSetColumnIndex(3);
@@ -158,9 +157,9 @@ pub fn managedMemory(page: *const Page) void {
 
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Styles");
+        cimgui.c.ImGui_Text(i18n._("Styles"));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-        widgets.helpMarker("Unique text styles (colors, attributes) currently in use.");
+        widgets.helpMarker(i18n._("Unique text styles (colors, attributes) currently in use."));
         _ = cimgui.c.ImGui_TableSetColumnIndex(2);
         cimgui.c.ImGui_Text("%d", page.styles.count());
         _ = cimgui.c.ImGui_TableSetColumnIndex(3);
@@ -168,9 +167,9 @@ pub fn managedMemory(page: *const Page) void {
 
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Graphemes");
+        cimgui.c.ImGui_Text(i18n._("Graphemes"));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-        widgets.helpMarker("Extended grapheme clusters for multi-codepoint characters.");
+        widgets.helpMarker(i18n._("Extended grapheme clusters for multi-codepoint characters."));
         _ = cimgui.c.ImGui_TableSetColumnIndex(2);
         cimgui.c.ImGui_Text("%d", page.graphemeCount());
         _ = cimgui.c.ImGui_TableSetColumnIndex(3);
@@ -178,9 +177,9 @@ pub fn managedMemory(page: *const Page) void {
 
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Strings (bytes)");
+        cimgui.c.ImGui_Text(i18n._("Strings (bytes)"));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-        widgets.helpMarker("String storage for hyperlink URIs and other text data.");
+        widgets.helpMarker(i18n._("String storage for hyperlink URIs and other text data."));
         _ = cimgui.c.ImGui_TableSetColumnIndex(2);
         cimgui.c.ImGui_Text("%d", page.string_alloc.usedBytes(page.memory));
         _ = cimgui.c.ImGui_TableSetColumnIndex(3);
@@ -189,9 +188,9 @@ pub fn managedMemory(page: *const Page) void {
         const hyperlink_map = page.hyperlink_map.map(page.memory);
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Hyperlink Map");
+        cimgui.c.ImGui_Text(i18n._("Hyperlink Map"));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-        widgets.helpMarker("Maps cell positions to hyperlink IDs.");
+        widgets.helpMarker(i18n._("Maps cell positions to hyperlink IDs."));
         _ = cimgui.c.ImGui_TableSetColumnIndex(2);
         cimgui.c.ImGui_Text("%d", hyperlink_map.count());
         _ = cimgui.c.ImGui_TableSetColumnIndex(3);
@@ -199,9 +198,9 @@ pub fn managedMemory(page: *const Page) void {
 
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Hyperlink IDs");
+        cimgui.c.ImGui_Text(i18n._("Hyperlink IDs"));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-        widgets.helpMarker("Unique hyperlink definitions (URI + optional ID).");
+        widgets.helpMarker(i18n._("Unique hyperlink definitions (URI + optional ID)."));
         _ = cimgui.c.ImGui_TableSetColumnIndex(2);
         cimgui.c.ImGui_Text("%d", page.hyperlink_set.count());
         _ = cimgui.c.ImGui_TableSetColumnIndex(3);
@@ -234,15 +233,15 @@ fn rowsTable(page: *const terminal.Page) void {
     defer cimgui.c.ImGui_EndTable();
 
     cimgui.c.ImGui_TableSetupScrollFreeze(0, 1);
-    cimgui.c.ImGui_TableSetupColumn("Row", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Text", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Dirty", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Wrap", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Cont", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Styled", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Grapheme", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Link", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Prompt", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Row"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Text"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Dirty"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Wrap"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Cont"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Styled"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Grapheme"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Link"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Prompt"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
     cimgui.c.ImGui_TableSetupColumn("Kitty", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
     cimgui.c.ImGui_TableHeadersRow();
 
@@ -305,7 +304,7 @@ fn stylesList(page: *const Page) void {
     }
 
     if (count == 0) {
-        cimgui.c.ImGui_TextDisabled("(no styles in use)");
+        cimgui.c.ImGui_TextDisabled(i18n._("(no styles in use)"));
         return;
     }
 
@@ -332,8 +331,8 @@ fn stylesList(page: *const Page) void {
 
     cimgui.c.ImGui_TableSetupScrollFreeze(0, 1);
     cimgui.c.ImGui_TableSetupColumn("ID", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Refs", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Style", cimgui.c.ImGuiTableColumnFlags_WidthStretch);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Refs"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Style"), cimgui.c.ImGuiTableColumnFlags_WidthStretch);
     cimgui.c.ImGui_TableHeadersRow();
 
     for (items, 0..) |item, index| {
@@ -351,7 +350,7 @@ fn stylesList(page: *const Page) void {
         cimgui.c.ImGui_Text("%d", item.meta.ref);
 
         _ = cimgui.c.ImGui_TableSetColumnIndex(2);
-        if (cimgui.c.ImGui_TreeNodeEx("Details", cimgui.c.ImGuiTreeNodeFlags_None)) {
+        if (cimgui.c.ImGui_TreeNodeEx(i18n._("Details"), cimgui.c.ImGuiTreeNodeFlags_None)) {
             defer cimgui.c.ImGui_TreePop();
             widgets.style.table(item.value, null);
         }
@@ -369,7 +368,7 @@ fn hyperlinksList(page: *const Page) void {
     }
 
     if (count == 0) {
-        cimgui.c.ImGui_TextDisabled("(no hyperlinks in use)");
+        cimgui.c.ImGui_TextDisabled(i18n._("(no hyperlinks in use)"));
         return;
     }
 
@@ -396,8 +395,8 @@ fn hyperlinksList(page: *const Page) void {
 
     cimgui.c.ImGui_TableSetupScrollFreeze(0, 1);
     cimgui.c.ImGui_TableSetupColumn("ID", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Refs", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Explicit ID", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Refs"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Explicit ID"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
     cimgui.c.ImGui_TableSetupColumn("URI", cimgui.c.ImGuiTableColumnFlags_WidthStretch);
     cimgui.c.ImGui_TableHeadersRow();
 
@@ -430,7 +429,7 @@ fn hyperlinksList(page: *const Page) void {
 
 fn flagCell(value: bool) void {
     if (value) {
-        cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.9, .z = 0.4, .w = 1.0 }, "yes");
+        cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.9, .z = 0.4, .w = 1.0 }, i18n._("yes"));
     } else {
         cimgui.c.ImGui_TextDisabled("-");
     }

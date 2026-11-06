@@ -1,3 +1,4 @@
+const i18n = @import("../i18n.zig");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const input = @import("../../input.zig");
@@ -82,7 +83,7 @@ pub const Event = struct {
         if (self.binding.len > 0) {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Triggered Binding");
+            cimgui.c.ImGui_Text(i18n._("Triggered Binding"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
 
             const height: f32 = height: {
@@ -106,15 +107,15 @@ pub const Event = struct {
         pty: {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Encoding to Pty");
+            cimgui.c.ImGui_Text(i18n._("Encoding to Pty"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             if (self.pty.len == 0) {
-                cimgui.c.ImGui_TextDisabled("(no data)");
+                cimgui.c.ImGui_TextDisabled(i18n._("(no data)"));
                 break :pty;
             }
 
             self.renderPty() catch {
-                cimgui.c.ImGui_TextDisabled("(error rendering pty data)");
+                cimgui.c.ImGui_TextDisabled(i18n._("(error rendering pty data)"));
                 break :pty;
             };
         }
@@ -122,21 +123,21 @@ pub const Event = struct {
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Action");
+            cimgui.c.ImGui_Text(i18n._("Action"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             cimgui.c.ImGui_Text("%s", @tagName(self.event.action).ptr);
         }
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Key");
+            cimgui.c.ImGui_Text(i18n._("Key"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             cimgui.c.ImGui_Text("%s", @tagName(self.event.key).ptr);
         }
         if (!self.event.mods.empty()) {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Mods");
+            cimgui.c.ImGui_Text(i18n._("Mods"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             if (self.event.mods.shift) cimgui.c.ImGui_Text("shift ");
             if (self.event.mods.ctrl) cimgui.c.ImGui_Text("ctrl ");
@@ -146,7 +147,7 @@ pub const Event = struct {
         if (self.event.composing) {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Composing");
+            cimgui.c.ImGui_Text(i18n._("Composing"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             cimgui.c.ImGui_Text("true");
         }
@@ -156,12 +157,12 @@ pub const Event = struct {
             cimgui.c.ImGui_Text("UTF-8");
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             if (self.event.utf8.len == 0) {
-                cimgui.c.ImGui_TextDisabled("(empty)");
+                cimgui.c.ImGui_TextDisabled(i18n._("(empty)"));
                 break :utf8;
             }
 
             self.renderUtf8(self.event.utf8) catch {
-                cimgui.c.ImGui_TextDisabled("(error rendering utf-8)");
+                cimgui.c.ImGui_TextDisabled(i18n._("(error rendering utf-8)"));
                 break :utf8;
             };
         }
@@ -281,12 +282,11 @@ pub const Stream = struct {
         if (!open) return;
 
         if (self.events.empty()) {
-            cimgui.c.ImGui_Text("No recorded key events. Press a key with the " ++
-                "terminal focused to record it.");
+            cimgui.c.ImGui_Text(i18n._("No recorded key events. Press a key with the terminal focused to record it."));
             return;
         }
 
-        if (cimgui.c.ImGui_Button("Clear")) {
+        if (cimgui.c.ImGui_Button(i18n._("Clear"))) {
             var it = self.events.iterator(.forward);
             while (it.next()) |v| v.deinit(alloc);
             self.events.clear();
@@ -303,12 +303,12 @@ pub const Stream = struct {
         defer cimgui.c.ImGui_EndTable();
 
         cimgui.c.ImGui_TableSetupScrollFreeze(0, 1);
-        cimgui.c.ImGui_TableSetupColumnEx("Action", cimgui.c.ImGuiTableColumnFlags_WidthFixed, 80, 0);
-        cimgui.c.ImGui_TableSetupColumnEx("Key", cimgui.c.ImGuiTableColumnFlags_WidthFixed, 160, 0);
-        cimgui.c.ImGui_TableSetupColumnEx("Mods", cimgui.c.ImGuiTableColumnFlags_WidthFixed, 150, 0);
+        cimgui.c.ImGui_TableSetupColumnEx(i18n._("Action"), cimgui.c.ImGuiTableColumnFlags_WidthFixed, 80, 0);
+        cimgui.c.ImGui_TableSetupColumnEx(i18n._("Key"), cimgui.c.ImGuiTableColumnFlags_WidthFixed, 160, 0);
+        cimgui.c.ImGui_TableSetupColumnEx(i18n._("Mods"), cimgui.c.ImGuiTableColumnFlags_WidthFixed, 150, 0);
         cimgui.c.ImGui_TableSetupColumnEx("UTF-8", cimgui.c.ImGuiTableColumnFlags_WidthFixed, 80, 0);
-        cimgui.c.ImGui_TableSetupColumnEx("PTY Encoding", cimgui.c.ImGuiTableColumnFlags_WidthStretch, 0, 0);
-        cimgui.c.ImGui_TableSetupColumnEx("Binding", cimgui.c.ImGuiTableColumnFlags_WidthStretch, 0, 0);
+        cimgui.c.ImGui_TableSetupColumnEx(i18n._("PTY Encoding"), cimgui.c.ImGuiTableColumnFlags_WidthStretch, 0, 0);
+        cimgui.c.ImGui_TableSetupColumnEx(i18n._("Binding"), cimgui.c.ImGuiTableColumnFlags_WidthStretch, 0, 0);
         cimgui.c.ImGui_TableHeadersRow();
 
         var it = self.events.iterator(.reverse);
@@ -351,7 +351,7 @@ pub const Stream = struct {
                 cimgui.c.ImGui_SameLine();
                 cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.6, .z = 0.0, .w = 1.0 }, "*");
                 if (cimgui.c.ImGui_IsItemHovered(cimgui.c.ImGuiHoveredFlags_None)) {
-                    cimgui.c.ImGui_SetTooltip("Composing (dead key)");
+                    cimgui.c.ImGui_SetTooltip(i18n._("Composing (dead key)"));
                 }
             }
 

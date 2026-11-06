@@ -1,3 +1,4 @@
+const i18n = @import("../i18n.zig");
 const std = @import("std");
 const cimgui = @import("dcimgui");
 const terminal = @import("../../terminal/main.zig");
@@ -18,9 +19,9 @@ pub fn table(
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Foreground");
+            cimgui.c.ImGui_Text(i18n._("Foreground"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("The foreground (text) color");
+            widgets.helpMarker(i18n._("The foreground (text) color"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             color("fg", st.fg_color, palette);
         }
@@ -28,9 +29,9 @@ pub fn table(
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Background");
+            cimgui.c.ImGui_Text(i18n._("Background"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("The background (cell) color");
+            widgets.helpMarker(i18n._("The background (cell) color"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             color("bg", st.bg_color, palette);
         }
@@ -38,21 +39,21 @@ pub fn table(
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Underline");
+            cimgui.c.ImGui_Text(i18n._("Underline"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("The underline color, if underlines are enabled.");
+            widgets.helpMarker(i18n._("The underline color, if underlines are enabled."));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             color("underline", st.underline_color, palette);
         }
 
         const style_flags = .{
-            .{ "bold", "Text will be rendered with bold weight." },
-            .{ "italic", "Text will be rendered in italic style." },
-            .{ "faint", "Text will be rendered with reduced intensity." },
-            .{ "blink", "Text will blink." },
-            .{ "inverse", "Foreground and background colors are swapped." },
-            .{ "invisible", "Text will be invisible (hidden)." },
-            .{ "strikethrough", "Text will have a line through it." },
+            .{ "bold", i18n.N_("Text will be rendered with bold weight.") },
+            .{ "italic", i18n.N_("Text will be rendered in italic style.") },
+            .{ "faint", i18n.N_("Text will be rendered with reduced intensity.") },
+            .{ "blink", i18n.N_("Text will blink.") },
+            .{ "inverse", i18n.N_("Foreground and background colors are swapped.") },
+            .{ "invisible", i18n.N_("Text will be invisible (hidden).") },
+            .{ "strikethrough", i18n.N_("Text will have a line through it.") },
         };
         inline for (style_flags) |entry| entry: {
             const style = entry[0];
@@ -64,7 +65,7 @@ pub fn table(
                 _ = cimgui.c.ImGui_TableSetColumnIndex(0);
                 cimgui.c.ImGui_Text(style.ptr);
                 cimgui.c.ImGui_SameLine();
-                widgets.helpMarker(help);
+                widgets.helpMarker(i18n._(help));
             }
             {
                 _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -73,7 +74,7 @@ pub fn table(
         }
     }
 
-    cimgui.c.ImGui_TextDisabled("(Any styles not shown are not currently set)");
+    cimgui.c.ImGui_TextDisabled(i18n._("(Any styles not shown are not currently set)"));
 }
 
 /// Render a style color.
@@ -86,10 +87,10 @@ pub fn color(
     defer cimgui.c.ImGui_PopID();
 
     switch (c) {
-        .none => cimgui.c.ImGui_Text("default"),
+        .none => cimgui.c.ImGui_Text(i18n._("default")),
 
         .palette => |idx| {
-            cimgui.c.ImGui_Text("Palette %d", idx);
+            cimgui.c.ImGui_Text(i18n._("Palette %d"), idx);
             if (palette) |p| {
                 const rgb = p[idx];
                 var data: [3]f32 = .{

@@ -1,3 +1,4 @@
+const i18n = @import("../i18n.zig");
 const std = @import("std");
 const builtin = @import("builtin");
 const assert = @import("../../quirks.zig").inlineAssert;
@@ -9,9 +10,9 @@ const terminal = @import("../../terminal/main.zig");
 const stylepkg = @import("../../terminal/style.zig");
 
 /// Window names for the screen dockspace.
-const window_info = "Info";
-const window_cell = "Cell";
-const window_pagelist = "PageList";
+const window_info = i18n.N_("Info###Info");
+const window_cell = i18n.N_("Cell###Cell");
+const window_pagelist = i18n.N_("PageList###PageList");
 
 /// Screen information inspector widget.
 pub const Info = struct {
@@ -50,13 +51,13 @@ pub const Info = struct {
         info: {
             defer cimgui.c.ImGui_End();
             if (!cimgui.c.ImGui_Begin(
-                window_info,
+                i18n._(window_info),
                 null,
                 cimgui.c.ImGuiWindowFlags_NoFocusOnAppearing,
             )) break :info;
 
             if (cimgui.c.ImGui_CollapsingHeader(
-                "Cursor",
+                i18n._("Cursor"),
                 cimgui.c.ImGuiTreeNodeFlags_DefaultOpen,
             )) {
                 cursorTable(&screen.cursor);
@@ -68,7 +69,7 @@ pub const Info = struct {
             }
 
             if (cimgui.c.ImGui_CollapsingHeader(
-                "Keyboard",
+                i18n._("Keyboard"),
                 cimgui.c.ImGuiTreeNodeFlags_DefaultOpen,
             )) keyboardTable(
                 screen,
@@ -76,17 +77,17 @@ pub const Info = struct {
             );
 
             if (cimgui.c.ImGui_CollapsingHeader(
-                "Semantic Prompt",
+                i18n._("Semantic Prompt"),
                 cimgui.c.ImGuiTreeNodeFlags_DefaultOpen,
             )) semanticPromptTable(&screen.semantic_prompt);
 
             if (cimgui.c.ImGui_CollapsingHeader(
-                "Kitty Graphics",
+                i18n._("Kitty Graphics"),
                 cimgui.c.ImGuiTreeNodeFlags_DefaultOpen,
             )) kittyGraphicsTable(&screen.kitty_images);
 
             if (cimgui.c.ImGui_CollapsingHeader(
-                "Other Screen State",
+                i18n._("Other Screen State"),
                 cimgui.c.ImGuiTreeNodeFlags_DefaultOpen,
             )) internalStateTable(screen);
         }
@@ -95,7 +96,7 @@ pub const Info = struct {
         cell: {
             defer cimgui.c.ImGui_End();
             if (!cimgui.c.ImGui_Begin(
-                window_cell,
+                i18n._(window_cell),
                 null,
                 cimgui.c.ImGuiWindowFlags_NoFocusOnAppearing,
             )) break :cell;
@@ -106,7 +107,7 @@ pub const Info = struct {
         pagelist: {
             defer cimgui.c.ImGui_End();
             if (!cimgui.c.ImGui_Begin(
-                window_pagelist,
+                i18n._(window_pagelist),
                 null,
                 cimgui.c.ImGuiWindowFlags_NoFocusOnAppearing,
             )) break :pagelist;
@@ -120,7 +121,7 @@ pub const Info = struct {
         if (data.key != data.active_key) {
             cimgui.c.ImGui_TextColored(
                 .{ .x = 1.0, .y = 0.8, .z = 0.0, .w = 1.0 },
-                "⚠ Viewing inactive screen",
+                i18n._("⚠ Viewing inactive screen"),
             );
             cimgui.c.ImGui_Separator();
         }
@@ -141,9 +142,9 @@ pub const Info = struct {
             ) == dockspace_id);
 
             // Dock windows into the space
-            cimgui.ImGui_DockBuilderDockWindow(window_info, dockspace_id);
-            cimgui.ImGui_DockBuilderDockWindow(window_cell, dockspace_id);
-            cimgui.ImGui_DockBuilderDockWindow(window_pagelist, dockspace_id);
+            cimgui.ImGui_DockBuilderDockWindow(i18n._(window_info), dockspace_id);
+            cimgui.ImGui_DockBuilderDockWindow(i18n._(window_cell), dockspace_id);
+            cimgui.ImGui_DockBuilderDockWindow(i18n._(window_pagelist), dockspace_id);
             cimgui.ImGui_DockBuilderFinish(dockspace_id);
         }
 
@@ -171,30 +172,30 @@ pub fn cursorTable(
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Position (x, y)");
+    cimgui.c.ImGui_Text(i18n._("Position (x, y)"));
     cimgui.c.ImGui_SameLine();
-    widgets.helpMarker("The current cursor position in the terminal grid (0-indexed).");
+    widgets.helpMarker(i18n._("The current cursor position in the terminal grid (0-indexed)."));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     cimgui.c.ImGui_Text("(%d, %d)", cursor.x, cursor.y);
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Hyperlink");
+    cimgui.c.ImGui_Text(i18n._("Hyperlink"));
     cimgui.c.ImGui_SameLine();
-    widgets.helpMarker("The active OSC8 hyperlink for newly printed characters.");
+    widgets.helpMarker(i18n._("The active OSC8 hyperlink for newly printed characters."));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     if (cursor.hyperlink) |link| {
         cimgui.c.ImGui_Text("%.*s", link.uri.len, link.uri.ptr);
     } else {
-        cimgui.c.ImGui_TextDisabled("(none)");
+        cimgui.c.ImGui_TextDisabled(i18n._("(none)"));
     }
 
     {
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Pending Wrap");
+        cimgui.c.ImGui_Text(i18n._("Pending Wrap"));
         cimgui.c.ImGui_SameLine();
-        widgets.helpMarker("The 'last column flag' (LCF). If set, the next character will force a soft-wrap to the next line.");
+        widgets.helpMarker(i18n._("The 'last column flag' (LCF). If set, the next character will force a soft-wrap to the next line."));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
         var value: bool = cursor.pending_wrap;
         _ = cimgui.c.ImGui_Checkbox("##pending_wrap", &value);
@@ -203,9 +204,9 @@ pub fn cursorTable(
     {
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Protected");
+        cimgui.c.ImGui_Text(i18n._("Protected"));
         cimgui.c.ImGui_SameLine();
-        widgets.helpMarker("If enabled, new characters will have the protected attribute set, preventing erasure by certain sequences.");
+        widgets.helpMarker(i18n._("If enabled, new characters will have the protected attribute set, preventing erasure by certain sequences."));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
         var value: bool = cursor.protected;
         _ = cimgui.c.ImGui_Checkbox("##protected", &value);
@@ -235,7 +236,7 @@ fn keyboardTable(
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Mode");
+            cimgui.c.ImGui_Text(i18n._("Mode"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -270,7 +271,7 @@ fn keyboardTable(
             cimgui.c.ImGui_TableNextRow();
             {
                 _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-                cimgui.c.ImGui_Text("Xterm modify keys");
+                cimgui.c.ImGui_Text(i18n._("Xterm modify keys"));
             }
             {
                 _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -288,7 +289,7 @@ pub fn kittyGraphicsTable(
     kitty_images: *const terminal.kitty.graphics.ImageStorage,
 ) void {
     if (!kitty_images.enabled()) {
-        cimgui.c.ImGui_TextDisabled("(Kitty graphics are disabled)");
+        cimgui.c.ImGui_TextDisabled(i18n._("(Kitty graphics are disabled)"));
         return;
     }
 
@@ -301,31 +302,31 @@ pub fn kittyGraphicsTable(
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Memory Usage");
+    cimgui.c.ImGui_Text(i18n._("Memory Usage"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-    cimgui.c.ImGui_Text("%d bytes (%d KiB)", kitty_images.total_bytes, units.toKibiBytes(kitty_images.total_bytes));
+    cimgui.c.ImGui_Text(i18n._("%d bytes (%d KiB)"), kitty_images.total_bytes, units.toKibiBytes(kitty_images.total_bytes));
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Memory Limit");
+    cimgui.c.ImGui_Text(i18n._("Memory Limit"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-    cimgui.c.ImGui_Text("%d bytes (%d KiB)", kitty_images.total_limit, units.toKibiBytes(kitty_images.total_limit));
+    cimgui.c.ImGui_Text(i18n._("%d bytes (%d KiB)"), kitty_images.total_limit, units.toKibiBytes(kitty_images.total_limit));
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Image Count");
+    cimgui.c.ImGui_Text(i18n._("Image Count"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     cimgui.c.ImGui_Text("%d", kitty_images.images.count());
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Placement Count");
+    cimgui.c.ImGui_Text(i18n._("Placement Count"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     cimgui.c.ImGui_Text("%d", kitty_images.placements.count());
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Image Loading");
+    cimgui.c.ImGui_Text(i18n._("Image Loading"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     cimgui.c.ImGui_Text("%s", if (kitty_images.loading != null) "true".ptr else "false".ptr);
 }
@@ -345,24 +346,24 @@ pub fn internalStateTable(
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Memory Usage");
+    cimgui.c.ImGui_Text(i18n._("Memory Usage"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-    cimgui.c.ImGui_Text("%d bytes (%d KiB)", pages.page_size, units.toKibiBytes(pages.page_size));
+    cimgui.c.ImGui_Text(i18n._("%d bytes (%d KiB)"), pages.page_size, units.toKibiBytes(pages.page_size));
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Memory Limit");
+    cimgui.c.ImGui_Text(i18n._("Memory Limit"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     const max_bytes = pages.limits.max(.bytes);
     cimgui.c.ImGui_Text(
-        "%d bytes (%d KiB)",
+        i18n._("%d bytes (%d KiB)"),
         max_bytes,
         units.toKibiBytes(max_bytes),
     );
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Viewport Location");
+    cimgui.c.ImGui_Text(i18n._("Viewport Location"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     cimgui.c.ImGui_Text("%s", @tagName(pages.viewport).ptr);
 }
@@ -381,9 +382,9 @@ pub fn semanticPromptTable(
     {
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Seen");
+        cimgui.c.ImGui_Text(i18n._("Seen"));
         cimgui.c.ImGui_SameLine();
-        widgets.helpMarker("Whether any semantic prompt markers (OSC 133) have been seen in this screen.");
+        widgets.helpMarker(i18n._("Whether any semantic prompt markers (OSC 133) have been seen in this screen."));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
         var value: bool = semantic_prompt.seen;
         _ = cimgui.c.ImGui_Checkbox("##seen", &value);
@@ -392,12 +393,12 @@ pub fn semanticPromptTable(
     {
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Click Handling");
+        cimgui.c.ImGui_Text(i18n._("Click Handling"));
         cimgui.c.ImGui_SameLine();
-        widgets.helpMarker("How click events are handled in prompts. Set via 'cl' or 'click_events' options in OSC 133.");
+        widgets.helpMarker(i18n._("How click events are handled in prompts. Set via 'cl' or 'click_events' options in OSC 133."));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
         switch (semantic_prompt.click) {
-            .none => cimgui.c.ImGui_TextDisabled("(none)"),
+            .none => cimgui.c.ImGui_TextDisabled(i18n._("(none)")),
             .click_events => |click_events| cimgui.c.ImGui_Text("click_events=%s", @tagName(click_events).ptr),
             .cl => |cl| cimgui.c.ImGui_Text("cl=%s", @tagName(cl).ptr),
         }

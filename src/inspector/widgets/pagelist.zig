@@ -1,3 +1,4 @@
+const i18n = @import("../i18n.zig");
 const std = @import("std");
 const cimgui = @import("dcimgui");
 const terminal = @import("../../terminal/main.zig");
@@ -24,49 +25,46 @@ pub const Inspector = struct {
 
     pub fn draw(_: *const Inspector, pages: *PageList) void {
         cimgui.c.ImGui_TextWrapped(
-            "PageList manages the backing pages that hold scrollback and the active " ++
-                "terminal grid. Each page is a contiguous memory buffer with its " ++
-                "own rows, cells, style set, grapheme map, and hyperlink storage.",
+            i18n._("PageList manages the backing pages that hold scrollback and the active terminal grid. Each page is a contiguous memory buffer with its own rows, cells, style set, grapheme map, and hyperlink storage."),
         );
 
         if (cimgui.c.ImGui_CollapsingHeader(
-            "Overview",
+            i18n._("Overview"),
             cimgui.c.ImGuiTreeNodeFlags_DefaultOpen,
         )) {
             summaryTable(pages);
         }
 
         if (cimgui.c.ImGui_CollapsingHeader(
-            "Page Compression",
+            i18n._("Page Compression"),
             cimgui.c.ImGuiTreeNodeFlags_DefaultOpen,
         )) {
             compressionTable(pages);
         }
 
         if (cimgui.c.ImGui_CollapsingHeader(
-            "Scrollbar & Regions",
+            i18n._("Scrollbar & Regions"),
             cimgui.c.ImGuiTreeNodeFlags_DefaultOpen,
         )) {
-            cimgui.c.ImGui_SeparatorText("Scrollbar");
+            cimgui.c.ImGui_SeparatorText(i18n._("Scrollbar"));
             scrollbarInfo(pages);
-            cimgui.c.ImGui_SeparatorText("Regions");
+            cimgui.c.ImGui_SeparatorText(i18n._("Regions"));
             regionsTable(pages);
         }
 
         if (cimgui.c.ImGui_CollapsingHeader(
-            "Tracked Pins",
+            i18n._("Tracked Pins"),
             cimgui.c.ImGuiTreeNodeFlags_DefaultOpen,
         )) {
             trackedPinsTable(pages);
         }
 
         if (cimgui.c.ImGui_CollapsingHeader(
-            "Pages",
+            i18n._("Pages"),
             cimgui.c.ImGuiTreeNodeFlags_DefaultOpen,
         )) {
             widgets.helpMarker(
-                "Pages are shown most-recent first. Each page holds a grid of rows/cells " ++
-                    "plus metadata tables for styles, graphemes, strings, and hyperlinks.",
+                i18n._("Pages are shown most-recent first. Each page holds a grid of rows/cells plus metadata tables for styles, graphemes, strings, and hyperlinks."),
             );
 
             const active_pin = pages.getTopLeft(.active);
@@ -106,7 +104,7 @@ pub const Inspector = struct {
                     std.heap.page_allocator,
                 ) catch {
                     cimgui.c.ImGui_TextDisabled(
-                        "(unable to copy compressed page)",
+                        i18n._("(unable to copy compressed page)"),
                     );
                     continue;
                 };
@@ -129,36 +127,34 @@ fn summaryTable(pages: *const PageList) void {
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Active Grid");
+    cimgui.c.ImGui_Text(i18n._("Active Grid"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-    widgets.helpMarker("Active viewport size in columns x rows.");
+    widgets.helpMarker(i18n._("Active viewport size in columns x rows."));
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
     cimgui.c.ImGui_Text("%dc x %dr", pages.cols, pages.rows);
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Pages");
+    cimgui.c.ImGui_Text(i18n._("Pages"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-    widgets.helpMarker("Total number of pages in the linked list.");
+    widgets.helpMarker(i18n._("Total number of pages in the linked list."));
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
     cimgui.c.ImGui_Text("%zu", pages.totalPages());
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Total Rows");
+    cimgui.c.ImGui_Text(i18n._("Total Rows"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-    widgets.helpMarker("Total rows represented by scrollback + active area.");
+    widgets.helpMarker(i18n._("Total rows represented by scrollback + active area."));
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
     cimgui.c.ImGui_Text("%zu", pages.total_rows);
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Scrollback Limit");
+    cimgui.c.ImGui_Text(i18n._("Scrollback Limit"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     widgets.helpMarker(
-        \\Maximum uncompressed logical page memory before the oldest
-        \\history is evicted. Minimum page allocation sizes can make
-        \\current usage temporarily exceed this value.
+        i18n._("Maximum uncompressed logical page memory before the oldest history is evicted. Minimum page allocation sizes can make current usage temporarily exceed this value."),
     );
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
     var limit_buf: [64]u8 = undefined;
@@ -167,9 +163,9 @@ fn summaryTable(pages: *const PageList) void {
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Viewport");
+    cimgui.c.ImGui_Text(i18n._("Viewport"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-    widgets.helpMarker("Current viewport anchoring mode.");
+    widgets.helpMarker(i18n._("Current viewport anchoring mode."));
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
     cimgui.c.ImGui_Text("%s", @tagName(pages.viewport).ptr);
 }
@@ -187,33 +183,27 @@ fn compressionTable(pages: *const PageList) void {
     defer cimgui.c.ImGui_EndTable();
 
     compressionTextRow(
-        "Platform Support",
-        "Whether this target can discard physical page memory while retaining " ++
-            "its virtual address range. The scrollback-compression setting may " ++
-            "still disable automatic compression on a supported platform.",
-        if (terminal.compression_enabled) "supported" else "unsupported",
+        i18n._("Platform Support"),
+        i18n._("Whether this target can discard physical page memory while retaining its virtual address range. The scrollback-compression setting may still disable automatic compression on a supported platform."),
+        if (terminal.compression_enabled) i18n._("supported") else i18n._("unsupported"),
     );
 
     var state_buf: [96]u8 = undefined;
     const state = std.fmt.bufPrintZ(
         &state_buf,
-        "{d} compressed, {d} resident",
-        .{ memory.compressed_pages, memory.resident_pages },
+        "{s}: {d}, {s}: {d}",
+        .{ i18n._("compressed"), memory.compressed_pages, i18n._("resident"), memory.resident_pages },
     ) catch unreachable;
     compressionTextRow(
-        "Page States",
-        "Compressed pages retain an encoded allocation while their raw mapping " ++
-            "is decommitted. Resident pages still have physical raw backing. " ++
-            "Active, visible, and recently changed pages are expected to be resident.",
+        i18n._("Page States"),
+        i18n._("Compressed pages retain an encoded allocation while their raw mapping is decommitted. Resident pages still have physical raw backing. Active, visible, and recently changed pages are expected to be resident."),
         state,
     );
 
     var raw_buf: [64]u8 = undefined;
     compressionTextRow(
-        "Uncompressed Size",
-        "Total size of all raw page mappings. This is the approximate page " ++
-            "backing memory required if no pages were compressed and is also " ++
-            "the virtual address space retained across compression.",
+        i18n._("Uncompressed Size"),
+        i18n._("Total size of all raw page mappings. This is the approximate page backing memory required if no pages were compressed and is also the virtual address space retained across compression."),
         formatBytes(&raw_buf, memory.raw_bytes),
     );
 
@@ -227,9 +217,11 @@ fn compressionTable(pages: *const PageList) void {
         );
         break :storage std.fmt.bufPrintZ(
             &storage_buf,
-            "{s} encoded / {s} raw ({d:.1}%)",
+            "{s}: {s} / {s}: {s} ({d:.1}%)",
             .{
+                i18n._("encoded"),
                 formatBytes(&encoded_buf, memory.encoded_bytes),
+                i18n._("raw"),
                 formatBytes(
                     &compressed_raw_buf,
                     memory.decommitted_raw_bytes,
@@ -237,21 +229,17 @@ fn compressionTable(pages: *const PageList) void {
                 ratio,
             },
         ) catch unreachable;
-    } else "none";
+    } else i18n._("none");
     compressionTextRow(
-        "Compressed Storage",
-        "Encoded allocation size compared with the original raw size of only " ++
-            "the compressed pages. The percentage is the compression ratio, " ++
-            "so smaller is better. Raw physical pages have been discarded.",
+        i18n._("Compressed Storage"),
+        i18n._("Encoded allocation size compared with the original raw size of only the compressed pages. The percentage is the compression ratio, so smaller is better. Raw physical pages have been discarded."),
         storage,
     );
 
     var resident_buf: [64]u8 = undefined;
     compressionTextRow(
-        "Estimated Resident",
-        "Physical page backing estimated to remain after compression: resident " ++
-            "raw allocations, including unused pool tails, plus encoded storage. " ++
-            "Node and allocator metadata and unrelated terminal memory are excluded.",
+        i18n._("Estimated Resident"),
+        i18n._("Physical page backing estimated to remain after compression: resident raw allocations, including unused pool tails, plus encoded storage. Node and allocator metadata and unrelated terminal memory are excluded."),
         formatBytes(&resident_buf, memory.estimatedResidentBytes()),
     );
 
@@ -260,17 +248,16 @@ fn compressionTable(pages: *const PageList) void {
     const savings = memory.estimatedSavings();
     const savings_text = std.fmt.bufPrintZ(
         &savings_buf,
-        "{s} ({d:.1}% of raw page memory)",
+        "{s} ({s}: {d:.1}%)",
         .{
             formatBytes(&savings_bytes_buf, savings),
+            i18n._("Share of raw page memory"),
             percentage(savings, memory.raw_bytes),
         },
     ) catch unreachable;
     compressionTextRow(
-        "Estimated Savings",
-        "Physical page backing avoided across the complete PageList. This is " ++
-            "decommitted raw memory minus replacement encoded storage and is " ++
-            "not a measurement of total process RSS.",
+        i18n._("Estimated Savings"),
+        i18n._("Physical page backing avoided across the complete PageList. This is decommitted raw memory minus replacement encoded storage and is not a measurement of total process RSS."),
         savings_text,
     );
 }
@@ -333,25 +320,25 @@ fn scrollbarInfo(pages: *PageList) void {
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Total");
+    cimgui.c.ImGui_Text(i18n._("Total"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-    widgets.helpMarker("Total number of scrollable rows including scrollback and active area.");
+    widgets.helpMarker(i18n._("Total number of scrollable rows including scrollback and active area."));
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
     cimgui.c.ImGui_Text("%d", scrollbar.total);
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Offset");
+    cimgui.c.ImGui_Text(i18n._("Offset"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-    widgets.helpMarker("Current scroll position as row offset from the top of scrollback.");
+    widgets.helpMarker(i18n._("Current scroll position as row offset from the top of scrollback."));
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
     cimgui.c.ImGui_Text("%d", scrollbar.offset);
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Length");
+    cimgui.c.ImGui_Text(i18n._("Length"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-    widgets.helpMarker("Number of rows visible in the viewport.");
+    widgets.helpMarker(i18n._("Number of rows visible in the viewport."));
     _ = cimgui.c.ImGui_TableSetColumnIndex(2);
     cimgui.c.ImGui_Text("%d", scrollbar.len);
 }
@@ -366,10 +353,10 @@ fn regionsTable(pages: *PageList) void {
     )) return;
     defer cimgui.c.ImGui_EndTable();
 
-    cimgui.c.ImGui_TableSetupColumn("Region", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Region"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
     cimgui.c.ImGui_TableSetupColumn("", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Top-Left", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Bottom-Right", cimgui.c.ImGuiTableColumnFlags_WidthStretch);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Top-Left"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Bottom-Right"), cimgui.c.ImGuiTableColumnFlags_WidthStretch);
     cimgui.c.ImGui_TableHeadersRow();
 
     inline for (comptime std.meta.tags(terminal.point.Tag)) |tag| {
@@ -393,7 +380,7 @@ fn regionRow(pages: *const PageList, comptime tag: terminal.point.Tag) void {
         const coord = pt.coord();
         cimgui.c.ImGui_Text("(%d, %d)", coord.x, coord.y);
     } else {
-        cimgui.c.ImGui_TextDisabled("(n/a)");
+        cimgui.c.ImGui_TextDisabled(i18n._("(n/a)"));
     }
 
     _ = cimgui.c.ImGui_TableSetColumnIndex(3);
@@ -402,26 +389,19 @@ fn regionRow(pages: *const PageList, comptime tag: terminal.point.Tag) void {
             const coord = pt.coord();
             cimgui.c.ImGui_Text("(%d, %d)", coord.x, coord.y);
         } else {
-            cimgui.c.ImGui_TextDisabled("(n/a)");
+            cimgui.c.ImGui_TextDisabled(i18n._("(n/a)"));
         }
     } else {
-        cimgui.c.ImGui_TextDisabled("(empty)");
+        cimgui.c.ImGui_TextDisabled(i18n._("(empty)"));
     }
 }
 
 fn regionHelpText(comptime tag: terminal.point.Tag) [:0]const u8 {
     return switch (tag) {
-        .active => "The active area where a running program can jump the cursor " ++
-            "and make changes. This is the 'editable' part of the screen. " ++
-            "Bottom-right includes the full height of the screen, including " ++
-            "rows that may not be written yet.",
-        .viewport => "The visible viewport. If the user has scrolled, top-left changes. " ++
-            "Bottom-right is the last written row from the top-left.",
-        .screen => "Top-left is the furthest back in scrollback history. Bottom-right " ++
-            "is the last written row. Unlike 'active', this only contains " ++
-            "written rows.",
-        .history => "Same top-left as 'screen' but bottom-right is the line just before " ++
-            "the top of 'active'. Contains only the scrollback history.",
+        .active => i18n._("The active area where a running program can jump the cursor and make changes. This is the 'editable' part of the screen. Bottom-right includes the full height of the screen, including rows that may not be written yet."),
+        .viewport => i18n._("The visible viewport. If the user has scrolled, top-left changes. Bottom-right is the last written row from the top-left."),
+        .screen => i18n._("Top-left is the furthest back in scrollback history. Bottom-right is the last written row. Unlike 'active', this only contains written rows."),
+        .history => i18n._("Same top-left as 'screen' but bottom-right is the line just before the top of 'active'. Contains only the scrollback history."),
     };
 }
 
@@ -435,11 +415,11 @@ fn trackedPinsTable(pages: *const PageList) void {
     )) return;
     defer cimgui.c.ImGui_EndTable();
 
-    cimgui.c.ImGui_TableSetupColumn("Index", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Pin", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Context", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Dirty", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("State", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Index"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Pin"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Context"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Dirty"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("State"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
     cimgui.c.ImGui_TableHeadersRow();
 
     const active_pin = pages.getTopLeft(.active);
@@ -462,12 +442,12 @@ fn trackedPinsTable(pages: *const PageList) void {
         if (pages.pointFromPin(.screen, pin)) |pt| {
             const coord = pt.coord();
             cimgui.c.ImGui_Text(
-                "screen (%d, %d)",
+                i18n._("screen (%d, %d)"),
                 coord.x,
                 coord.y,
             );
         } else {
-            cimgui.c.ImGui_TextDisabled("screen (out of range)");
+            cimgui.c.ImGui_TextDisabled(i18n._("screen (out of range)"));
         }
 
         _ = cimgui.c.ImGui_TableSetColumnIndex(3);
@@ -475,27 +455,27 @@ fn trackedPinsTable(pages: *const PageList) void {
             const dirty = page.dirty or
                 page.getRowAndCell(pin.x, pin.y).row.dirty;
             if (dirty) {
-                cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.4, .z = 0.4, .w = 1.0 }, "dirty");
+                cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.4, .z = 0.4, .w = 1.0 }, i18n._("dirty"));
             } else {
-                cimgui.c.ImGui_TextDisabled("clean");
+                cimgui.c.ImGui_TextDisabled(i18n._("clean"));
             }
         } else {
             // Dirty state lives in the discarded mapping. Keep inspector
             // traversal metadata-only rather than restoring this page.
-            cimgui.c.ImGui_TextDisabled("compressed");
+            cimgui.c.ImGui_TextDisabled(i18n._("compressed"));
         }
 
         _ = cimgui.c.ImGui_TableSetColumnIndex(4);
         if (pin.eql(active_pin)) {
-            cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.9, .z = 0.4, .w = 1.0 }, "active top");
+            cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.9, .z = 0.4, .w = 1.0 }, i18n._("active top"));
         } else if (pin.eql(viewport_pin)) {
-            cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, "viewport top");
+            cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, i18n._("viewport top"));
         } else if (pin.garbage) {
-            cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.5, .z = 0.3, .w = 1.0 }, "garbage");
+            cimgui.c.ImGui_TextColored(.{ .x = 1.0, .y = 0.5, .z = 0.3, .w = 1.0 }, i18n._("garbage"));
         } else if (tracked == pages.viewport_pin) {
-            cimgui.c.ImGui_Text("viewport pin");
+            cimgui.c.ImGui_Text(i18n._("viewport pin"));
         } else {
-            cimgui.c.ImGui_TextDisabled("tracked");
+            cimgui.c.ImGui_TextDisabled(i18n._("tracked"));
         }
     }
 }
@@ -592,11 +572,10 @@ pub const CellChooser = struct {
         pages: *const PageList,
     ) void {
         cimgui.c.ImGui_TextWrapped(
-            "Inspect a cell by choosing a coordinate space and entering the X/Y position. " ++
-                "The inspector resolves the point into the page list and displays the cell contents.",
+            i18n._("Inspect a cell by choosing a coordinate space and entering the X/Y position. The inspector resolves the point into the page list and displays the cell contents."),
         );
 
-        cimgui.c.ImGui_SeparatorText("Cell Inspector");
+        cimgui.c.ImGui_SeparatorText(i18n._("Cell Inspector"));
 
         const region_max = maxCoord(pages, self.lookup_region);
         if (region_max) |coord| {
@@ -669,7 +648,7 @@ pub const CellChooser = struct {
             )) changed = true;
 
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("Choose the coordinate space and X/Y position (0-indexed).");
+            widgets.helpMarker(i18n._("Choose the coordinate space and X/Y position (0-indexed)."));
 
             if (changed) {
                 if (region_max) |coord| {
@@ -681,12 +660,12 @@ pub const CellChooser = struct {
 
         if (region_max) |coord| {
             cimgui.c.ImGui_TextDisabled(
-                "Range: x 0..%d, y 0..%d",
+                i18n._("Range: x 0..%d, y 0..%d"),
                 coord.x,
                 coord.y,
             );
         } else {
-            cimgui.c.ImGui_TextDisabled("(region has no rows)");
+            cimgui.c.ImGui_TextDisabled(i18n._("(region has no rows)"));
             return;
         }
 
@@ -698,7 +677,7 @@ pub const CellChooser = struct {
         };
 
         const pin = pages.pin(pt) orelse {
-            cimgui.c.ImGui_TextDisabled("(cell out of range)");
+            cimgui.c.ImGui_TextDisabled(i18n._("(cell out of range)"));
             return;
         };
 
@@ -708,7 +687,7 @@ pub const CellChooser = struct {
         var preserved = pin.node.pagePreservingState(
             std.heap.page_allocator,
         ) catch {
-            cimgui.c.ImGui_TextDisabled("(unable to copy compressed page)");
+            cimgui.c.ImGui_TextDisabled(i18n._("(unable to copy compressed page)"));
             return;
         };
         defer preserved.deinit();
@@ -725,7 +704,7 @@ pub const CellChooser = struct {
         self.cell_info.draw(cell, pt, page);
 
         if (cell.cell.style_id != stylepkg.default_id) {
-            cimgui.c.ImGui_SeparatorText("Style");
+            cimgui.c.ImGui_SeparatorText(i18n._("Style"));
             const style = page.styles.get(
                 page.memory,
                 cell.cell.style_id,
@@ -734,12 +713,12 @@ pub const CellChooser = struct {
         }
 
         if (cell.cell.hyperlink) {
-            cimgui.c.ImGui_SeparatorText("Hyperlink");
+            cimgui.c.ImGui_SeparatorText(i18n._("Hyperlink"));
             hyperlinkTable(cell, page);
         }
 
         if (cell.cell.hasGrapheme()) {
-            cimgui.c.ImGui_SeparatorText("Grapheme");
+            cimgui.c.ImGui_SeparatorText(i18n._("Grapheme"));
             graphemeTable(cell, page);
         }
     }
@@ -765,9 +744,9 @@ fn hyperlinkTable(cell: InspectedCell, page: *const terminal.Page) void {
     const link_id = page.lookupHyperlink(cell.cell) orelse {
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Status");
+        cimgui.c.ImGui_Text(i18n._("Status"));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-        cimgui.c.ImGui_TextDisabled("(missing link data)");
+        cimgui.c.ImGui_TextDisabled(i18n._("(missing link data)"));
         return;
     };
 
@@ -778,11 +757,11 @@ fn hyperlinkTable(cell: InspectedCell, page: *const terminal.Page) void {
     cimgui.c.ImGui_Text("ID");
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     switch (entry.id) {
-        .implicit => |value| cimgui.c.ImGui_Text("implicit %d", value),
+        .implicit => |value| cimgui.c.ImGui_Text(i18n._("implicit %d"), value),
         .explicit => |slice| {
             const id = slice.slice(page.memory);
             if (id.len == 0) {
-                cimgui.c.ImGui_TextDisabled("(empty)");
+                cimgui.c.ImGui_TextDisabled(i18n._("(empty)"));
             } else {
                 cimgui.c.ImGui_Text("%.*s", id.len, id.ptr);
             }
@@ -795,14 +774,14 @@ fn hyperlinkTable(cell: InspectedCell, page: *const terminal.Page) void {
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     const uri = entry.uri.slice(page.memory);
     if (uri.len == 0) {
-        cimgui.c.ImGui_TextDisabled("(empty)");
+        cimgui.c.ImGui_TextDisabled(i18n._("(empty)"));
     } else {
         cimgui.c.ImGui_Text("%.*s", uri.len, uri.ptr);
     }
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Ref Count");
+    cimgui.c.ImGui_Text(i18n._("Ref Count"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     const refs = page.hyperlink_set.refCount(page.memory, link_id);
     cimgui.c.ImGui_Text("%d", refs);
@@ -819,18 +798,18 @@ fn graphemeTable(cell: InspectedCell, page: *const terminal.Page) void {
     const cps = page.lookupGrapheme(cell.cell) orelse {
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("Status");
+        cimgui.c.ImGui_Text(i18n._("Status"));
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-        cimgui.c.ImGui_TextDisabled("(missing grapheme data)");
+        cimgui.c.ImGui_TextDisabled(i18n._("(missing grapheme data)"));
         return;
     };
 
     cimgui.c.ImGui_TableNextRow();
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-    cimgui.c.ImGui_Text("Extra Codepoints");
+    cimgui.c.ImGui_Text(i18n._("Extra Codepoints"));
     _ = cimgui.c.ImGui_TableSetColumnIndex(1);
     if (cps.len == 0) {
-        cimgui.c.ImGui_TextDisabled("(none)");
+        cimgui.c.ImGui_TextDisabled(i18n._("(none)"));
         return;
     }
 
@@ -871,9 +850,9 @@ pub const CellInfo = struct {
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Grid Position");
+            cimgui.c.ImGui_Text(i18n._("Grid Position"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-            widgets.helpMarker("The cell's X/Y coordinates in the selected region.");
+            widgets.helpMarker(i18n._("The cell's X/Y coordinates in the selected region."));
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
             const coord = point.coord();
             cimgui.c.ImGui_Text("(%d, %d)", coord.x, coord.y);
@@ -882,19 +861,19 @@ pub const CellInfo = struct {
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Page Location");
+            cimgui.c.ImGui_Text(i18n._("Page Location"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-            widgets.helpMarker("Row and column indices within the backing page.");
+            widgets.helpMarker(i18n._("Row and column indices within the backing page."));
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
-            cimgui.c.ImGui_Text("row=%d col=%d", cell.row_idx, cell.col_idx);
+            cimgui.c.ImGui_Text(i18n._("row=%d col=%d"), cell.row_idx, cell.col_idx);
         }
 
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Content");
+            cimgui.c.ImGui_Text(i18n._("Content"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-            widgets.helpMarker("Content tag describing how the cell data is stored.");
+            widgets.helpMarker(i18n._("Content tag describing how the cell data is stored."));
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
             cimgui.c.ImGui_Text("%s", @tagName(cell.cell.content_tag).ptr);
         }
@@ -902,13 +881,13 @@ pub const CellInfo = struct {
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Codepoint");
+            cimgui.c.ImGui_Text(i18n._("Codepoint"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-            widgets.helpMarker("Primary Unicode codepoint for the cell.");
+            widgets.helpMarker(i18n._("Primary Unicode codepoint for the cell."));
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
             const cp = cell.cell.codepoint();
             if (cp == 0) {
-                cimgui.c.ImGui_TextDisabled("(empty)");
+                cimgui.c.ImGui_TextDisabled(i18n._("(empty)"));
             } else {
                 cimgui.c.ImGui_Text("U+%04X", @as(u32, cp));
             }
@@ -917,9 +896,9 @@ pub const CellInfo = struct {
         if (cell.cell.hasGrapheme()) {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Grapheme");
+            cimgui.c.ImGui_Text(i18n._("Grapheme"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-            widgets.helpMarker("Extra codepoints that combine with the primary codepoint to form the grapheme cluster.");
+            widgets.helpMarker(i18n._("Extra codepoints that combine with the primary codepoint to form the grapheme cluster."));
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
             if (cimgui.c.ImGui_BeginListBox("##cell_grapheme", .{ .x = 0, .y = 0 })) {
                 defer cimgui.c.ImGui_EndListBox();
@@ -936,7 +915,7 @@ pub const CellInfo = struct {
                     }
                 } else {
                     _ = cimgui.c.ImGui_SelectableEx(
-                        "(missing)",
+                        i18n._("(missing)"),
                         false,
                         cimgui.c.ImGuiSelectableFlags_None,
                         .{ .x = 0, .y = 0 },
@@ -948,9 +927,9 @@ pub const CellInfo = struct {
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Width Property");
+            cimgui.c.ImGui_Text(i18n._("Width Property"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-            widgets.helpMarker("Character width property (narrow, wide, spacer, etc.).");
+            widgets.helpMarker(i18n._("Character width property (narrow, wide, spacer, etc.)."));
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
             cimgui.c.ImGui_Text("%s", @tagName(cell.cell.wide).ptr);
         }
@@ -958,43 +937,43 @@ pub const CellInfo = struct {
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Row Flags");
+            cimgui.c.ImGui_Text(i18n._("Row Flags"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-            widgets.helpMarker("Flags set on the row containing this cell.");
+            widgets.helpMarker(i18n._("Flags set on the row containing this cell."));
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
             const row = cell.row;
             if (row.wrap or row.wrap_continuation or row.grapheme or row.styled or row.hyperlink) {
                 if (row.wrap) {
-                    cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, "wrap");
+                    cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, i18n._("wrap"));
                     cimgui.c.ImGui_SameLine();
                 }
                 if (row.wrap_continuation) {
-                    cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, "cont");
+                    cimgui.c.ImGui_TextColored(.{ .x = 0.4, .y = 0.8, .z = 1.0, .w = 1.0 }, i18n._("cont"));
                     cimgui.c.ImGui_SameLine();
                 }
                 if (row.grapheme) {
-                    cimgui.c.ImGui_TextColored(.{ .x = 0.9, .y = 0.7, .z = 0.3, .w = 1.0 }, "grapheme");
+                    cimgui.c.ImGui_TextColored(.{ .x = 0.9, .y = 0.7, .z = 0.3, .w = 1.0 }, i18n._("grapheme"));
                     cimgui.c.ImGui_SameLine();
                 }
                 if (row.styled) {
-                    cimgui.c.ImGui_TextColored(.{ .x = 0.7, .y = 0.9, .z = 0.5, .w = 1.0 }, "styled");
+                    cimgui.c.ImGui_TextColored(.{ .x = 0.7, .y = 0.9, .z = 0.5, .w = 1.0 }, i18n._("styled"));
                     cimgui.c.ImGui_SameLine();
                 }
                 if (row.hyperlink) {
-                    cimgui.c.ImGui_TextColored(.{ .x = 0.8, .y = 0.6, .z = 1.0, .w = 1.0 }, "link");
+                    cimgui.c.ImGui_TextColored(.{ .x = 0.8, .y = 0.6, .z = 1.0, .w = 1.0 }, i18n._("link"));
                     cimgui.c.ImGui_SameLine();
                 }
             } else {
-                cimgui.c.ImGui_TextDisabled("(none)");
+                cimgui.c.ImGui_TextDisabled(i18n._("(none)"));
             }
         }
 
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Style ID");
+            cimgui.c.ImGui_Text(i18n._("Style ID"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-            widgets.helpMarker("Internal style reference ID for this cell.");
+            widgets.helpMarker(i18n._("Internal style reference ID for this cell."));
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
             cimgui.c.ImGui_Text("%d", cell.cell.style_id);
         }
@@ -1002,23 +981,23 @@ pub const CellInfo = struct {
         {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Style");
+            cimgui.c.ImGui_Text(i18n._("Style"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-            widgets.helpMarker("Resolved style for the cell (colors, attributes, etc.).");
+            widgets.helpMarker(i18n._("Resolved style for the cell (colors, attributes, etc.)."));
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
             if (cell.cell.style_id == stylepkg.default_id) {
-                cimgui.c.ImGui_TextDisabled("(default)");
+                cimgui.c.ImGui_TextDisabled(i18n._("(default)"));
             } else {
-                cimgui.c.ImGui_TextDisabled("(see below)");
+                cimgui.c.ImGui_TextDisabled(i18n._("(see below)"));
             }
         }
 
         if (cell.cell.hyperlink) {
             cimgui.c.ImGui_TableNextRow();
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Hyperlink");
+            cimgui.c.ImGui_Text(i18n._("Hyperlink"));
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-            widgets.helpMarker("OSC8 hyperlink ID associated with this cell.");
+            widgets.helpMarker(i18n._("OSC8 hyperlink ID associated with this cell."));
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
 
             const link_id = page.lookupHyperlink(cell.cell) orelse 0;

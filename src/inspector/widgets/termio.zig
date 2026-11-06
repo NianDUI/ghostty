@@ -1,3 +1,4 @@
+const i18n = @import("../i18n.zig");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArenaAllocator = std.heap.ArenaAllocator;
@@ -70,20 +71,20 @@ pub const Stream = struct {
         const alloc = surface.alloc;
         const events = &self.events;
         const handler = &self.parser_stream.handler;
-        const popup_filter = "Filter";
+        const popup_filter = i18n._("Filter###VT Event Filter");
 
         // Controls
         {
             const pause_play: [:0]const u8 = if (!handler.paused)
-                "Pause##pause_play"
+                i18n._("Pause###pause_play")
             else
-                "Resume##pause_play";
+                i18n._("Resume###pause_play");
             if (cimgui.c.ImGui_Button(pause_play.ptr)) {
                 handler.paused = !handler.paused;
             }
 
             cimgui.c.ImGui_SameLineEx(0, cimgui.c.ImGui_GetStyle().*.ItemInnerSpacing.x);
-            if (cimgui.c.ImGui_Button("Filter")) {
+            if (cimgui.c.ImGui_Button(i18n._("Filter"))) {
                 cimgui.c.ImGui_OpenPopup(
                     popup_filter,
                     cimgui.c.ImGuiPopupFlags_None,
@@ -92,7 +93,7 @@ pub const Stream = struct {
 
             if (!events.empty()) {
                 cimgui.c.ImGui_SameLineEx(0, cimgui.c.ImGui_GetStyle().*.ItemInnerSpacing.x);
-                if (cimgui.c.ImGui_Button("Clear")) {
+                if (cimgui.c.ImGui_Button(i18n._("Clear"))) {
                     var it = events.iterator(.forward);
                     while (it.next()) |v| v.deinit(alloc);
                     events.clear();
@@ -101,12 +102,12 @@ pub const Stream = struct {
                 }
 
                 cimgui.c.ImGui_SameLineEx(0, cimgui.c.ImGui_GetStyle().*.ItemInnerSpacing.x);
-                if (cimgui.c.ImGui_Button("Copy")) {
+                if (cimgui.c.ImGui_Button(i18n._("Copy"))) {
                     self.copyEvents(surface);
                 }
 
                 cimgui.c.ImGui_SameLineEx(0, cimgui.c.ImGui_GetStyle().*.ItemInnerSpacing.x);
-                if (cimgui.c.ImGui_Button("Export to file")) {
+                if (cimgui.c.ImGui_Button(i18n._("Export to file"))) {
                     self.exportEvents(surface);
                 }
             }
@@ -114,7 +115,7 @@ pub const Stream = struct {
 
         // Events Table
         if (events.empty()) {
-            cimgui.c.ImGui_Text("Waiting for events...");
+            cimgui.c.ImGui_Text(i18n._("Waiting for events..."));
         } else {
             // TODO: Eventually
             // eventTable(events);
@@ -132,15 +133,15 @@ pub const Stream = struct {
             defer cimgui.c.ImGui_EndTable();
 
             cimgui.c.ImGui_TableSetupColumn(
-                "Seq",
+                i18n._("Seq"),
                 cimgui.c.ImGuiTableColumnFlags_WidthFixed,
             );
             cimgui.c.ImGui_TableSetupColumn(
-                "Kind",
+                i18n._("Kind"),
                 cimgui.c.ImGuiTableColumnFlags_WidthFixed,
             );
             cimgui.c.ImGui_TableSetupColumn(
-                "Description",
+                i18n._("Description"),
                 cimgui.c.ImGuiTableColumnFlags_WidthStretch,
             );
 
@@ -256,7 +257,7 @@ pub const Stream = struct {
                             cimgui.c.ImGui_TableNextRow();
                             {
                                 _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-                                cimgui.c.ImGui_Text("Scroll Region");
+                                cimgui.c.ImGui_Text(i18n._("Scroll Region"));
                             }
                             {
                                 _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -299,7 +300,7 @@ pub const Stream = struct {
         )) {
             defer cimgui.c.ImGui_EndPopup();
 
-            cimgui.c.ImGui_Text("Changed filter settings will only affect future events.");
+            cimgui.c.ImGui_Text(i18n._("Changed filter settings will only affect future events."));
 
             cimgui.c.ImGui_Separator();
 
@@ -330,9 +331,7 @@ pub const Stream = struct {
             cimgui.c.ImGui_Separator();
 
             cimgui.c.ImGui_Text(
-                "Filter by string. Empty displays all, \"abc\" finds lines\n" ++
-                    "containing \"abc\", \"abc,xyz\" finds lines containing \"abc\"\n" ++
-                    "or \"xyz\", \"-abc\" excludes lines containing \"abc\".",
+                i18n._("Filter by string. Empty displays all, \"abc\" finds lines\ncontaining \"abc\", \"abc,xyz\" finds lines containing \"abc\"\nor \"xyz\", \"-abc\" excludes lines containing \"abc\"."),
             );
             _ = cimgui.c.ImGuiTextFilter_Draw(
                 &handler.filter_text,
@@ -341,7 +340,7 @@ pub const Stream = struct {
             );
 
             cimgui.c.ImGui_Separator();
-            if (cimgui.c.ImGui_Button("Close")) {
+            if (cimgui.c.ImGui_Button(i18n._("Close"))) {
                 cimgui.c.ImGui_CloseCurrentPopup();
             }
         } // filter popup
@@ -442,15 +441,15 @@ pub fn eventTable(events: *const VTEvent.Ring) void {
     defer cimgui.c.ImGui_EndTable();
 
     cimgui.c.ImGui_TableSetupColumn(
-        "Seq",
+        i18n._("Seq"),
         cimgui.c.ImGuiTableColumnFlags_WidthFixed,
     );
     cimgui.c.ImGui_TableSetupColumn(
-        "Kind",
+        i18n._("Kind"),
         cimgui.c.ImGuiTableColumnFlags_WidthFixed,
     );
     cimgui.c.ImGui_TableSetupColumn(
-        "Description",
+        i18n._("Description"),
         cimgui.c.ImGuiTableColumnFlags_WidthStretch,
     );
 

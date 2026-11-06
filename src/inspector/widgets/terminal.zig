@@ -1,3 +1,4 @@
+const i18n = @import("../i18n.zig");
 const std = @import("std");
 const builtin = @import("builtin");
 const assert = @import("../../quirks.zig").inlineAssert;
@@ -44,23 +45,23 @@ pub const Info = struct {
 
         // Draw our detached state that draws regardless of if
         // we're open or not.
-        if (self.misc_header.window("Terminal Misc")) |visible| {
+        if (self.misc_header.window(i18n._("Terminal Misc###Terminal Misc"))) |visible| {
             defer self.misc_header.windowEnd();
             if (visible) miscTable(t);
         }
-        if (self.layout_header.window("Terminal Layout")) |visible| {
+        if (self.layout_header.window(i18n._("Terminal Layout###Terminal Layout"))) |visible| {
             defer self.layout_header.windowEnd();
             if (visible) layoutTable(t);
         }
-        if (self.mouse_header.window("Terminal Mouse")) |visible| {
+        if (self.mouse_header.window(i18n._("Terminal Mouse###Terminal Mouse"))) |visible| {
             defer self.mouse_header.windowEnd();
             if (visible) mouseTable(t);
         }
-        if (self.color_header.window("Terminal Color")) |visible| {
+        if (self.color_header.window(i18n._("Terminal Color###Terminal Color"))) |visible| {
             defer self.color_header.windowEnd();
             if (visible) colorTable(t, &self.show_palette);
         }
-        if (self.modes_header.window("Terminal Modes")) |visible| {
+        if (self.modes_header.window(i18n._("Terminal Modes###Terminal Modes"))) |visible| {
             defer self.modes_header.windowEnd();
             if (visible) modesTable(t);
         }
@@ -69,7 +70,7 @@ pub const Info = struct {
         if (self.show_palette) {
             defer cimgui.c.ImGui_End();
             if (cimgui.c.ImGui_Begin(
-                "256-Color Palette",
+                i18n._("256-Color Palette###256-Color Palette"),
                 &self.show_palette,
                 cimgui.c.ImGuiWindowFlags_NoFocusOnAppearing,
             )) {
@@ -91,9 +92,9 @@ pub const Info = struct {
             var title_buf: [128]u8 = undefined;
             const title = std.fmt.bufPrintZ(
                 &title_buf,
-                "Screen: {t}",
-                .{entry.key},
-            ) catch "Screen";
+                "{s}: {t}",
+                .{ i18n._("Screen"), entry.key },
+            ) catch i18n._("Screen");
 
             // Setup our next window so it has some size to it.
             const viewport = cimgui.c.ImGui_GetMainViewport();
@@ -130,11 +131,11 @@ pub const Info = struct {
         // Show our screens up top.
         screensTable(t, &self.screens);
 
-        if (self.misc_header.header("Misc")) miscTable(t);
-        if (self.layout_header.header("Layout")) layoutTable(t);
-        if (self.mouse_header.header("Mouse")) mouseTable(t);
-        if (self.color_header.header("Color")) colorTable(t, &self.show_palette);
-        if (self.modes_header.header("Modes")) modesTable(t);
+        if (self.misc_header.header(i18n._("Misc"))) miscTable(t);
+        if (self.layout_header.header(i18n._("Layout"))) layoutTable(t);
+        if (self.mouse_header.header(i18n._("Mouse"))) mouseTable(t);
+        if (self.color_header.header(i18n._("Color"))) colorTable(t, &self.show_palette);
+        if (self.modes_header.header(i18n._("Modes"))) modesTable(t);
     }
 };
 
@@ -157,8 +158,8 @@ fn screensTable(
     )) return;
     defer cimgui.c.ImGui_EndTable();
 
-    cimgui.c.ImGui_TableSetupColumn("Screen", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
-    cimgui.c.ImGui_TableSetupColumn("Status", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Screen"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
+    cimgui.c.ImGui_TableSetupColumn(i18n._("Status"), cimgui.c.ImGuiTableColumnFlags_WidthFixed);
     cimgui.c.ImGui_TableSetupColumn("", cimgui.c.ImGuiTableColumnFlags_WidthFixed);
 
     // Custom header row to include help marker before "Screen"
@@ -168,18 +169,15 @@ fn screensTable(
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
             cimgui.c.ImGui_PushStyleVarImVec2(cimgui.c.ImGuiStyleVar_FramePadding, .{ .x = 0, .y = 0 });
             widgets.helpMarker(
-                "A terminal can have multiple screens, only one of which is active at " ++
-                    "a time. Each screen has its own grid, contents, and other state. " ++
-                    "This section allows you to inspect the different screens managed by " ++
-                    "the terminal.",
+                i18n._("A terminal can have multiple screens, only one of which is active at a time. Each screen has its own grid, contents, and other state. This section allows you to inspect the different screens managed by the terminal."),
             );
             cimgui.c.ImGui_PopStyleVar();
             cimgui.c.ImGui_SameLineEx(0.0, cimgui.c.ImGui_GetStyle().*.ItemInnerSpacing.x);
-            cimgui.c.ImGui_TableHeader("Screen");
+            cimgui.c.ImGui_TableHeader(i18n._("Screen"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-            cimgui.c.ImGui_TableHeader("Status");
+            cimgui.c.ImGui_TableHeader(i18n._("Status"));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(2);
@@ -194,24 +192,27 @@ fn screensTable(
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("%s", @tagName(key).ptr);
+            cimgui.c.ImGui_Text("%s", switch (key) {
+                .primary => i18n._("primary").ptr,
+                .alternate => i18n._("alternate").ptr,
+            });
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             if (is_active) {
                 cimgui.c.ImGui_TextColored(
                     .{ .x = 0.4, .y = 1.0, .z = 0.4, .w = 1.0 },
-                    "active",
+                    i18n._("active"),
                 );
             } else if (is_initialized) {
                 cimgui.c.ImGui_TextColored(
                     .{ .x = 0.6, .y = 0.6, .z = 0.6, .w = 1.0 },
-                    "initialized",
+                    i18n._("initialized"),
                 );
             } else {
                 cimgui.c.ImGui_TextColored(
                     .{ .x = 0.4, .y = 0.4, .z = 0.4, .w = 1.0 },
-                    "(not initialized)",
+                    i18n._("(not initialized)"),
                 );
             }
         }
@@ -221,7 +222,7 @@ fn screensTable(
             defer cimgui.c.ImGui_PopID();
             cimgui.c.ImGui_BeginDisabled(!is_initialized);
             defer cimgui.c.ImGui_EndDisabled();
-            if (cimgui.c.ImGui_Button("View")) {
+            if (cimgui.c.ImGui_Button(i18n._("View"))) {
                 if (!map.contains(key)) {
                     map.put(key, .empty);
                 }
@@ -243,9 +244,9 @@ fn miscTable(t: *Terminal) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Working Directory");
+            cimgui.c.ImGui_Text(i18n._("Working Directory"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("The current working directory reported by the shell.");
+            widgets.helpMarker(i18n._("The current working directory reported by the shell."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -256,7 +257,7 @@ fn miscTable(t: *Terminal) void {
                     t.pwd.items.ptr,
                 );
             } else {
-                cimgui.c.ImGui_TextDisabled("(none)");
+                cimgui.c.ImGui_TextDisabled(i18n._("(none)"));
             }
         }
     }
@@ -265,9 +266,9 @@ fn miscTable(t: *Terminal) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Focused");
+            cimgui.c.ImGui_Text(i18n._("Focused"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("Whether the terminal itself is currently focused.");
+            widgets.helpMarker(i18n._("Whether the terminal itself is currently focused."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -280,16 +281,16 @@ fn miscTable(t: *Terminal) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Previous Char");
+            cimgui.c.ImGui_Text(i18n._("Previous Char"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("The previously printed character, used only for the REP sequence.");
+            widgets.helpMarker(i18n._("The previously printed character, used only for the REP sequence."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             if (t.previous_char) |c| {
                 cimgui.c.ImGui_Text("U+%04X", @as(u32, c));
             } else {
-                cimgui.c.ImGui_TextDisabled("(none)");
+                cimgui.c.ImGui_TextDisabled(i18n._("(none)"));
             }
         }
     }
@@ -308,9 +309,9 @@ fn layoutTable(t: *Terminal) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Grid");
+            cimgui.c.ImGui_Text(i18n._("Grid"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("The size of the terminal grid in columns and rows.");
+            widgets.helpMarker(i18n._("The size of the terminal grid in columns and rows."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -326,14 +327,14 @@ fn layoutTable(t: *Terminal) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Pixels");
+            cimgui.c.ImGui_Text(i18n._("Pixels"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("The size of the terminal grid in pixels.");
+            widgets.helpMarker(i18n._("The size of the terminal grid in pixels."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             cimgui.c.ImGui_Text(
-                "%dw x %dh",
+                i18n._("%dw x %dh"),
                 t.width_px,
                 t.height_px,
             );
@@ -344,9 +345,9 @@ fn layoutTable(t: *Terminal) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Scroll Region");
+            cimgui.c.ImGui_Text(i18n._("Scroll Region"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("The scrolling region boundaries (top, bottom, left, right).");
+            widgets.helpMarker(i18n._("The scrolling region boundaries (top, bottom, left, right)."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -427,9 +428,9 @@ fn mouseTable(t: *Terminal) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Event Mode");
+            cimgui.c.ImGui_Text(i18n._("Event Mode"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("The mouse event reporting mode set by the application.");
+            widgets.helpMarker(i18n._("The mouse event reporting mode set by the application."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -441,9 +442,9 @@ fn mouseTable(t: *Terminal) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Format");
+            cimgui.c.ImGui_Text(i18n._("Format"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("The mouse event encoding format.");
+            widgets.helpMarker(i18n._("The mouse event encoding format."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -455,9 +456,9 @@ fn mouseTable(t: *Terminal) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Shape");
+            cimgui.c.ImGui_Text(i18n._("Shape"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("The current mouse cursor shape set by the application.");
+            widgets.helpMarker(i18n._("The current mouse cursor shape set by the application."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -469,14 +470,14 @@ fn mouseTable(t: *Terminal) void {
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Shift Capture");
+            cimgui.c.ImGui_Text(i18n._("Shift Capture"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("XTSHIFTESCAPE state for capturing shift in mouse protocol.");
+            widgets.helpMarker(i18n._("XTSHIFTESCAPE state for capturing shift in mouse protocol."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
             if (t.flags.mouse_shift_capture == .null) {
-                cimgui.c.ImGui_TextDisabled("(unset)");
+                cimgui.c.ImGui_TextDisabled(i18n._("(unset)"));
             } else {
                 cimgui.c.ImGui_Text("%s", @tagName(t.flags.mouse_shift_capture).ptr);
             }
@@ -490,9 +491,7 @@ fn colorTable(
     show_palette: *bool,
 ) void {
     cimgui.c.ImGui_TextWrapped(
-        "Color state for the terminal. Note these colors only apply " ++
-            "to the palette and unstyled colors. Many modern terminal " ++
-            "applications use direct RGB colors which are not reflected here.",
+        i18n._("Color state for the terminal. Note these colors only apply to the palette and unstyled colors. Many modern terminal applications use direct RGB colors which are not reflected here."),
     );
     cimgui.c.ImGui_Separator();
 
@@ -507,9 +506,9 @@ fn colorTable(
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Background");
+            cimgui.c.ImGui_Text(i18n._("Background"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("Unstyled cell background color.");
+            widgets.helpMarker(i18n._("Unstyled cell background color."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -524,9 +523,9 @@ fn colorTable(
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Foreground");
+            cimgui.c.ImGui_Text(i18n._("Foreground"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("Unstyled cell foreground color.");
+            widgets.helpMarker(i18n._("Unstyled cell foreground color."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -541,9 +540,9 @@ fn colorTable(
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Cursor");
+            cimgui.c.ImGui_Text(i18n._("Cursor"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("Cursor coloring set by escape sequences.");
+            widgets.helpMarker(i18n._("Cursor coloring set by escape sequences."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
@@ -558,13 +557,13 @@ fn colorTable(
         cimgui.c.ImGui_TableNextRow();
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-            cimgui.c.ImGui_Text("Palette");
+            cimgui.c.ImGui_Text(i18n._("Palette"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("The 256-color palette.");
+            widgets.helpMarker(i18n._("The 256-color palette."));
         }
         {
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
-            if (cimgui.c.ImGui_Button("View")) {
+            if (cimgui.c.ImGui_Button(i18n._("View"))) {
                 show_palette.* = true;
             }
         }
@@ -583,8 +582,8 @@ fn modesTable(t: *Terminal) void {
 
     {
         cimgui.c.ImGui_TableSetupColumn("", cimgui.c.ImGuiTableColumnFlags_NoResize);
-        cimgui.c.ImGui_TableSetupColumn("Number", cimgui.c.ImGuiTableColumnFlags_PreferSortAscending);
-        cimgui.c.ImGui_TableSetupColumn("Name", cimgui.c.ImGuiTableColumnFlags_WidthStretch);
+        cimgui.c.ImGui_TableSetupColumn(i18n._("Number"), cimgui.c.ImGuiTableColumnFlags_PreferSortAscending);
+        cimgui.c.ImGui_TableSetupColumn(i18n._("Name"), cimgui.c.ImGuiTableColumnFlags_WidthStretch);
         cimgui.c.ImGui_TableHeadersRow();
     }
 
@@ -640,9 +639,9 @@ fn dynamicRGB(
     if (rgb.override) |c| {
         cimgui.c.ImGui_TableNextRow();
         _ = cimgui.c.ImGui_TableSetColumnIndex(0);
-        cimgui.c.ImGui_Text("override:");
+        cimgui.c.ImGui_Text(i18n._("override:"));
         cimgui.c.ImGui_SameLine();
-        widgets.helpMarker("Overridden color set by escape sequences.");
+        widgets.helpMarker(i18n._("Overridden color set by escape sequences."));
 
         _ = cimgui.c.ImGui_TableSetColumnIndex(1);
         var col = [3]f32{
@@ -661,9 +660,9 @@ fn dynamicRGB(
     _ = cimgui.c.ImGui_TableSetColumnIndex(0);
     if (rgb.default) |c| {
         if (rgb.override != null) {
-            cimgui.c.ImGui_Text("default:");
+            cimgui.c.ImGui_Text(i18n._("default:"));
             cimgui.c.ImGui_SameLine();
-            widgets.helpMarker("Default color from configuration.");
+            widgets.helpMarker(i18n._("Default color from configuration."));
 
             _ = cimgui.c.ImGui_TableSetColumnIndex(1);
         }
@@ -679,7 +678,7 @@ fn dynamicRGB(
             cimgui.c.ImGuiColorEditFlags_None,
         );
     } else {
-        cimgui.c.ImGui_TextDisabled("(unset)");
+        cimgui.c.ImGui_TextDisabled(i18n._("(unset)"));
     }
 
     return false;

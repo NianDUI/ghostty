@@ -10,6 +10,7 @@ const builtin = @import("builtin");
 const cimgui = @import("dcimgui");
 const Surface = @import("../Surface.zig");
 const font = @import("../font/main.zig");
+const global = @import("../global.zig");
 const terminal = @import("../terminal/main.zig");
 const inspector = @import("main.zig");
 const widgets = @import("widgets.zig");
@@ -52,6 +53,35 @@ pub fn setup() void {
             &font_config,
             null,
         );
+
+        // The embedded monospace font has no CJK glyphs. Merge a system
+        // fallback so translated labels can be rendered. ImGui loads glyphs
+        // on demand, so we don't need to rasterize the entire CJK range.
+        const fallback_paths: []const [:0]const u8 = switch (builtin.os.tag) {
+            .macos => &.{
+                "/System/Library/Fonts/Hiragino Sans GB.ttc",
+                "/System/Library/Fonts/STHeiti Light.ttc",
+            },
+            .linux, .freebsd => &.{
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+                "/usr/local/share/fonts/noto/NotoSansCJK-Regular.ttc",
+            },
+            else => &.{},
+        };
+        for (fallback_paths) |path| {
+            std.Io.Dir.accessAbsolute(global.io(), path, .{}) catch continue;
+            var fallback_config: cimgui.c.ImFontConfig = undefined;
+            cimgui.ext.ImFontConfig_ImFontConfig(&fallback_config);
+            fallback_config.MergeMode = true;
+            if (cimgui.c.ImFontAtlas_AddFontFromFileTTF(
+                io.Fonts,
+                path.ptr,
+                font_size,
+                &fallback_config,
+                null,
+            ) != null) break;
+        }
     }
 }
 

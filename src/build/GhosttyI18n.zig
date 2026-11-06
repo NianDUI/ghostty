@@ -91,26 +91,26 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
         xgettext.addFileInput(b.path(path));
     }
 
-    {
-        // Iterate over all of the files underneath `src/apprt/gtk`. We store
+    for ([_][]const u8{ "src/apprt/gtk", "src/inspector" }) |source_dir| {
+        // Iterate over the GTK and shared inspector sources. We store
         // them in an array so that they can be sorted into a determininistic
         // order. That will minimize code churn as directory walking is not
         // guaranteed to happen in any particular order.
 
-        var gtk_files: std.ArrayListUnmanaged([]const u8) = .empty;
+        var source_files: std.ArrayListUnmanaged([]const u8) = .empty;
         defer {
-            for (gtk_files.items) |item| b.allocator.free(item);
-            gtk_files.deinit(b.allocator);
+            for (source_files.items) |item| b.allocator.free(item);
+            source_files.deinit(b.allocator);
         }
 
-        var gtk_dir = try b.build_root.handle.openDir(
+        var source_handle = try b.build_root.handle.openDir(
             b.graph.io,
-            "src/apprt/gtk",
+            source_dir,
             .{ .iterate = true },
         );
-        defer gtk_dir.close(b.graph.io);
+        defer source_handle.close(b.graph.io);
 
-        var walk = try gtk_dir.walk(b.allocator);
+        var walk = try source_handle.walk(b.allocator);
         defer walk.deinit();
         while (try walk.next(b.graph.io)) |src| {
             switch (src.kind) {
@@ -123,12 +123,12 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
                 else => continue,
             }
 
-            try gtk_files.append(b.allocator, try b.allocator.dupe(u8, src.path));
+            try source_files.append(b.allocator, try b.allocator.dupe(u8, src.path));
         }
 
         std.mem.sort(
             []const u8,
-            gtk_files.items,
+            source_files.items,
             {},
             struct {
                 fn lt(_: void, lhs: []const u8, rhs: []const u8) bool {
@@ -137,8 +137,8 @@ fn createUpdateStep(b: *std.Build) !*std.Build.Step {
             }.lt,
         );
 
-        for (gtk_files.items) |item| {
-            const path = b.pathJoin(&.{ "src/apprt/gtk", item });
+        for (source_files.items) |item| {
+            const path = b.pathJoin(&.{ source_dir, item });
             // The arguments to xgettext must be the relative path in the build root
             // or the resulting files will contain the absolute path. This will
             // cause a lot of churn because not everyone has the Ghostty code
