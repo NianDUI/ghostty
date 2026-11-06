@@ -3,13 +3,40 @@ import SwiftUI
 struct AboutView: View {
     @Environment(\.openURL) var openURL
 
+    #if XGHOSTTY
+    private let githubURL = URL(string: "https://github.com/NianDUI/ghostty")
+    #else
     private let githubURL = URL(string: "https://github.com/ghostty-org/ghostty")
+    #endif
     private let docsURL = URL(string: "https://ghostty.org/docs")
 
-    /// Read the commit from the bundle.
-    private var build: String? { Bundle.main.infoDictionary?["CFBundleVersion"] as? String }
-    private var commit: String? { Bundle.main.infoDictionary?["GhosttyCommit"] as? String }
-    private var version: String? { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String }
+    /// Use the linked library's version, including for local Xcode builds whose
+    /// bundle metadata still contains the project defaults (0.1 / 1).
+    private let version = Ghostty.info.version
+
+    private var commit: String? {
+        if let metadata = version.split(separator: "+", maxSplits: 1).dropFirst().first,
+           metadata.range(of: #"^[0-9a-f]{7,40}$"#, options: .regularExpression) != nil,
+           metadata.contains(where: { $0 != "0" }) {
+            return String(metadata)
+        }
+
+        // Release builds may supply the commit separately from the core version.
+        guard let commit = Bundle.main.infoDictionary?["GhosttyCommit"] as? String,
+              !commit.isEmpty else { return nil }
+        return commit
+    }
+
+    private var appVersion: String? {
+        guard let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
+              !version.isEmpty, version != "0.1" else { return nil }
+        return version
+    }
+
+    private var releaseBuild: String? {
+        guard appVersion != nil else { return nil }
+        return Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+    }
 
     private enum VersionConfig {
         case stable(version: String)
@@ -101,12 +128,17 @@ struct AboutView: View {
                     case .none:
                         EmptyView()
                     }
-                    if let build {
-                        PropertyRow(label: "Build", text: build)
+                    if let commit {
+                        PropertyRow(label: "Build", text: commit,
+                                    url: githubURL?.appendingPathComponent("/commit/\(commit)"))
                     }
-                    if let commit, commit != "",
-                       let url = githubURL?.appendingPathComponent("/commits/\(commit)") {
-                        PropertyRow(label: "Commit", text: commit, url: url)
+                    #if XGHOSTTY
+                    if let appVersion {
+                        PropertyRow(label: "App Version", text: appVersion)
+                    }
+                    #endif
+                    if let releaseBuild {
+                        PropertyRow(label: "Release Build", text: releaseBuild)
                     }
                 }
                 .frame(maxWidth: .infinity)
