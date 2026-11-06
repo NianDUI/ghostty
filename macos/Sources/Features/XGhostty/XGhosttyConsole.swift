@@ -2510,6 +2510,7 @@ class XGhosttyConsoleController: NSWindowController {
         let wasInSearch = searchFieldHasFocus()
         for (k, t) in tabs { t.scroll.isHidden = (k != tabId) }
         currentTabId = tabId
+        syncTabOcclusionState()
         // 焦点在搜索框时切 tab 焦点留在搜索框（浮层挂 surfaceContainer、不随 tab 隐藏，原地不动即保留；
         // 真换 surface 时由 migrateSearchOverlay 按 wasInSearch 收尾），否则焦点给终端。
         if let sv = tabs[tabId]?.surface, !wasInSearch { window?.makeFirstResponder(sv) }
@@ -2523,6 +2524,15 @@ class XGhosttyConsoleController: NSWindowController {
         updateExitBar()           // 切到的 tab 若是尸体则显横幅，否则隐藏
         // 搜索浮层随切 tab 跟随当前会话 / 每会话独立（按设置开关，见 migrateSearchOverlay 注释）。
         migrateSearchOverlay(from: oldSurface, refocusSearch: wasInSearch)
+    }
+
+    /// 只让当前且窗口可见的终端保留渲染资源；切回时由 core 重建画面缓冲区。
+    private func syncTabOcclusionState() {
+        let windowVisible = window?.occlusionState.contains(.visible) ?? false
+        for (id, tab) in tabs {
+            guard let surface = tab.surface.surface else { continue }
+            ghostty_surface_set_occlusion(surface, windowVisible && id == currentTabId)
+        }
     }
 
     /// 在 tabOrder 内相对当前标签移动（delta>0 向后、<0 向前），首尾环绕。⌘⇧]/⌘⇧[ 与 ⌃Tab/⌃⇧Tab 共用。
@@ -3616,6 +3626,11 @@ extension XGhosttyConsoleController: NSWindowDelegate {
     /// 系统在窗口激活时会重置标题栏外观 → 重新染成终端背景色，保持标题栏与窗口同色。
     func windowDidBecomeKey(_ notification: Notification) {
         applyTitlebarTheme()
+        syncTabOcclusionState()
+    }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        syncTabOcclusionState()
     }
 
     func windowDidResize(_ notification: Notification) {
