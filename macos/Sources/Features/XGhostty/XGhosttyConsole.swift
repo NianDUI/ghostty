@@ -790,6 +790,7 @@ private final class OpenTab {
     var exited = false                  // ssh 已断开/登录失败的「尸体 tab」
     var connected = false               // 真正登录成功（本地 shell 创建即真；ssh 等 OSC7 pwd；sftp 等 sftp> 提示符）
     var exitCancellable: AnyCancellable?
+    var clipboardConfirmationCancellable: AnyCancellable?
     var connectCancellable: AnyCancellable?   // ssh 首次 pwd（登录成功信号）订阅
     /// ⌘T 复制 ssh 会话时，等登录就绪后 cd 的一次性订阅。
     var pendingCancellable: AnyCancellable?
@@ -925,6 +926,7 @@ class XGhosttyConsoleController: NSWindowController {
     private let layoutStore = LayoutStore.shared
     private var layoutSaveWork: DispatchWorkItem?   // 布局保存防抖
     private var titlePwdCancellable: AnyCancellable?   // 标题栏跟随当前终端目录
+    private var clipboardConfirmation: ClipboardConfirmationController?
 
     private var treeHosting: NSHostingView<SessionTreeView>!
     private let surfaceContainer = NSView()
@@ -2167,6 +2169,14 @@ class XGhosttyConsoleController: NSWindowController {
                     }
             }
             tabs[tabId] = tab
+            // Confirmation callbacks originate inside libghostty. Defer UI work
+            // until the callback returns, and keep the subscription tab-owned.
+            tab.clipboardConfirmationCancellable = sv.$pendingClipboardConfirmation
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self, weak sv] request in
+                    guard let self, let sv, self.tabs[tabId]?.surface === sv else { return }
+                    self.onConfirmClipboardRequest(request, for: sv)
+                }
             // 默认追加到末尾；⌘T 复制时插到当前标签右侧（insertAfter）。
             if let after = insertAfter, let idx = tabOrder.firstIndex(of: after) {
                 tabOrder.insert(tabId, at: idx + 1)
@@ -2339,6 +2349,8 @@ class XGhosttyConsoleController: NSWindowController {
 
     func closeTab(_ tabId: UUID) {
         guard let tab = tabs[tabId] else { return }
+        tab.clipboardConfirmationCancellable = nil
+        cancelPendingClipboardConfirmation(for: tab.surface)
         SessionLogStore.shared.stop(tabId: tabId, surface: tab.surface)   // 撤回调 + flush 关日志
         if let expect = tab.expect {                                      // 撤 expect 订阅 + 解除武装
             tab.surface.xghosttyRemoveOutputSink(key: expect)
@@ -2507,6 +2519,9 @@ class XGhosttyConsoleController: NSWindowController {
 
     private func select(_ tabId: UUID) {
         let oldSurface = currentSurface   // 切换前的 surface（搜索浮层迁移用，须在 currentTabId 改前取）
+        if currentTabId != tabId, let oldSurface {
+            cancelPendingClipboardConfirmation(for: oldSurface)
+        }
         let wasInSearch = searchFieldHasFocus()
         for (k, t) in tabs { t.scroll.isHidden = (k != tabId) }
         currentTabId = tabId
@@ -2524,6 +2539,7 @@ class XGhosttyConsoleController: NSWindowController {
         updateExitBar()           // 切到的 tab 若是尸体则显横幅，否则隐藏
         // 搜索浮层随切 tab 跟随当前会话 / 每会话独立（按设置开关，见 migrateSearchOverlay 注释）。
         migrateSearchOverlay(from: oldSurface, refocusSearch: wasInSearch)
+        presentPendingClipboardConfirmation()
     }
 
     /// 只让当前且窗口可见的终端保留渲染资源；切回时由 core 重建画面缓冲区。
@@ -3609,6 +3625,74 @@ extension XGhosttyConsoleController: NSSplitViewDelegate {
     }
 }
 
+// MARK: - Clipboard Confirmation
+
+extension XGhosttyConsoleController: ClipboardConfirmationViewDelegate {
+    private func onConfirmClipboardRequest(
+        _ request: Ghostty.ClipboardConfirmationRequest?,
+        for target: Ghostty.SurfaceView
+    ) {
+        guard let request else {
+            guard target.pendingClipboardConfirmation == nil,
+                  clipboardConfirmation?.confirmation.surface === target else { return }
+            dismissClipboardConfirmation()
+            return
+        }
+        guard target.pendingClipboardConfirmation === request else { return }
+
+        if let confirmation = clipboardConfirmation {
+            guard confirmation.confirmation.surface === target else { return }
+            confirmation.replaceConfirmation(with: request)
+            return
+        }
+
+        // Background tabs retain their request until selected. Never bring a
+        // window forward or replace an unrelated editor sheet to show it.
+        guard target === currentSurface, let window,
+              window.isKeyWindow, window.attachedSheet == nil else { return }
+        let confirmation = ClipboardConfirmationController(confirmation: request, delegate: self)
+        clipboardConfirmation = confirmation
+        window.beginSheet(confirmation.window!)
+    }
+
+    private func presentPendingClipboardConfirmation() {
+        // Also defer requests surfaced by focus changes, outside C callbacks.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let surface = self.currentSurface,
+                  let request = surface.pendingClipboardConfirmation else { return }
+            self.onConfirmClipboardRequest(request, for: surface)
+        }
+    }
+
+    private func dismissClipboardConfirmation() {
+        guard let confirmation = clipboardConfirmation else { return }
+        clipboardConfirmation = nil
+        if let sheet = confirmation.window { window?.endSheet(sheet) }
+    }
+
+    private func cancelPendingClipboardConfirmation(for surface: Ghostty.SurfaceView) {
+        if clipboardConfirmation?.confirmation.surface === surface {
+            dismissClipboardConfirmation()
+        }
+        surface.pendingClipboardConfirmation = nil
+    }
+
+    func clipboardConfirmationComplete(_ action: ClipboardConfirmationView.Action, remember: Bool) {
+        guard let confirmation = clipboardConfirmation?.confirmation else { return }
+        dismissClipboardConfirmation()
+        switch action {
+        case .cancel:
+            confirmation.cancel()
+        case .confirm:
+            confirmation.complete(remember: remember)
+        }
+        if let surface = confirmation.surface,
+           surface.pendingClipboardConfirmation === confirmation {
+            surface.pendingClipboardConfirmation = nil
+        }
+    }
+}
+
 // MARK: - 多窗口生命周期
 
 extension XGhosttyConsoleController: NSWindowDelegate {
@@ -3627,6 +3711,11 @@ extension XGhosttyConsoleController: NSWindowDelegate {
     func windowDidBecomeKey(_ notification: Notification) {
         applyTitlebarTheme()
         syncTabOcclusionState()
+        presentPendingClipboardConfirmation()
+    }
+
+    func windowDidEndSheet(_ notification: Notification) {
+        presentPendingClipboardConfirmation()
     }
 
     func windowDidChangeOcclusionState(_ notification: Notification) {

@@ -55,12 +55,35 @@ class ClipboardConfirmationController: NSWindowController {
             window.title = LocalizedString.text("Authorize Clipboard Access")
         }
 
-        window.contentView = NSHostingView(rootView: ClipboardConfirmationView(
+        // A sheet has its own appearance and SwiftUI paints over the window
+        // background. Pass the terminal theme through both layers, as the
+        // other terminal settings sheets do.
+        let parent = confirmation.surface?.window
+        let background = parent?.backgroundColor
+            ?? confirmation.surface.map { NSColor($0.derivedConfig.backgroundColor) }
+            ?? .windowBackgroundColor
+        let appearance = parent?.effectiveAppearance
+            ?? NSAppearance(named: background.isLightColor ? .aqua : .darkAqua)
+        let isDark = appearance?.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let previewBackground = background.blended(withFraction: 0.05, of: isDark ? .white : .black)
+            ?? background
+        window.appearance = appearance
+        window.backgroundColor = background
+
+        let hostingView = NSHostingView(rootView: ClipboardConfirmationView(
             contents: confirmation.contents,
             request: confirmation.kind,
             canRemember: confirmation.canRemember,
             previewImage: confirmation.previewImage,
+            backgroundColor: Color(nsColor: background),
+            previewBackgroundColor: Color(nsColor: previewBackground),
             delegate: delegate
-        ))
+        ).environment(\.colorScheme, isDark ? .dark : .light))
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = background.cgColor
+        window.contentView = hostingView
+        let size = NSSize(width: 560, height: hostingView.fittingSize.height)
+        window.setContentSize(size)
+        window.contentMinSize = NSSize(width: 480, height: size.height)
     }
 }

@@ -14,15 +14,15 @@ struct ClipboardConfirmationView: View {
         static func text(_ action: Action, _ reason: Ghostty.ClipboardRequest) -> String {
             switch (action, reason) {
             case (.cancel, .paste):
-                return "Cancel"
+                return LocalizedString.text("Cancel")
             case (.cancel, .osc_52_read), (.cancel, .osc_52_write),
                  (.cancel, .kitty_read), (.cancel, .kitty_write):
-                return "Deny"
+                return LocalizedString.text("Deny")
             case (.confirm, .paste):
-                return "Paste"
+                return LocalizedString.text("Paste")
             case (.confirm, .osc_52_read), (.confirm, .osc_52_write),
                  (.confirm, .kitty_read), (.confirm, .kitty_write):
-                return "Allow"
+                return LocalizedString.text("Allow")
             }
         }
     }
@@ -41,6 +41,10 @@ struct ClipboardConfirmationView: View {
     /// place of most of the text area when present.
     var previewImage: NSImage?
 
+    /// Supplied by the controller so the sheet matches its terminal window.
+    var backgroundColor: Color = Color(nsColor: .windowBackgroundColor)
+    var previewBackgroundColor: Color = Color(nsColor: .textBackgroundColor)
+
     /// Optional delegate to get results. If this is nil, then this view will never close on its own.
     weak var delegate: ClipboardConfirmationViewDelegate?
 
@@ -51,46 +55,62 @@ struct ClipboardConfirmationView: View {
     @State private var cursorHiddenCount: UInt = 0
 
     var body: some View {
-        VStack {
-            HStack {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 12) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundColor(.yellow)
-                    .font(.system(size: 42))
-                    .padding()
-                    .frame(alignment: .center)
+                    .font(.system(size: 24))
 
-                Text(request.text())
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding()
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(LocalizedString.text(request == .paste
+                        ? "Confirm Paste" : "Authorize Clipboard Access"))
+                        .font(.headline)
+                    Text(request.text())
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             if let previewImage {
                 Image(nsImage: previewImage)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.horizontal)
+                    .frame(maxWidth: .infinity, minHeight: 180, maxHeight: 260)
+                    .padding(12)
+                    .background(previewBackgroundColor, in: RoundedRectangle(cornerRadius: 8))
             } else {
-                TextEditor(text: .constant(contents))
-                    .focusable(false)
-                    .font(.system(.body, design: .monospaced))
+                ScrollView([.horizontal, .vertical]) {
+                    Text(verbatim: contents)
+                        .font(.system(size: 12, design: .monospaced))
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: true, vertical: true)
+                        .frame(minHeight: 196, alignment: .topLeading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(12)
+                }
+                .frame(height: 220)
+                .background(previewBackgroundColor, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.1)))
             }
 
             if canRemember {
-                Toggle("Remember this choice for the session", isOn: $remember)
-                    .padding(.top, 4)
+                Toggle(LocalizedString.text("Remember this choice for the session"), isOn: $remember)
+                    .font(.callout)
             }
 
-            HStack {
+            HStack(spacing: 8) {
                 Spacer()
                 Button(Action.text(.cancel, request)) { onCancel() }
                     .keyboardShortcut(.cancelAction)
                 Button(Action.text(.confirm, request)) { onPaste() }
                     .keyboardShortcut(.defaultAction)
-                Spacer()
             }
-            .padding(.bottom)
         }
+        .padding(20)
+        .frame(minWidth: 480, idealWidth: 560, maxWidth: .infinity)
+        .background(backgroundColor)
         .onAppear {
             // I can't find a better way to handle this. There is no API to detect
             // if the cursor is hidden and OTHER THINGS do unhide the cursor. So we

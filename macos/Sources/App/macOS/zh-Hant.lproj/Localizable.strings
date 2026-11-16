@@ -125,6 +125,12 @@
 /* === Clipboard confirmation window titles === */
 "Warning: Potentially Unsafe Paste" = "警告：可能不安全的貼上";
 "Authorize Clipboard Access" = "授權剪貼簿存取";
+"Confirm Paste" = "確認貼上";
+"Deny" = "拒絕";
+"Remember this choice for the session" = "在本次工作階段記住此選擇";
+"Pasting this text to the terminal may be dangerous as it looks like some commands may be executed." = "這段文字包含換行，貼到終端機後可能直接執行命令。請確認內容後再繼續。";
+"An application is attempting to read from the clipboard.\nThe current clipboard contents are shown below." = "應用程式正在要求讀取剪貼簿。\n請確認下方內容是否允許其存取。";
+"An application is attempting to write to the clipboard.\nThe content to write is shown below." = "應用程式正在要求寫入剪貼簿。\n請確認是否允許寫入下方內容。";
 
 /* === Permission remember-decision checkbox === */
 "Remember my decision for %d seconds" = "在 %d 秒內記住我的決定";

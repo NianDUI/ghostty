@@ -29,19 +29,19 @@ extension Ghostty {
         func text() -> String {
             switch self {
             case .paste:
-                return """
+                return LocalizedString.text("""
                 Pasting this text to the terminal may be dangerous as it looks like some commands may be executed.
-                """
+                """)
             case .osc_52_read, .kitty_read:
-                return """
+                return LocalizedString.text("""
                 An application is attempting to read from the clipboard.
                 The current clipboard contents are shown below.
-                """
+                """)
             case .osc_52_write, .kitty_write:
-                return """
+                return LocalizedString.text("""
                 An application is attempting to write to the clipboard.
                 The content to write is shown below.
-                """
+                """)
             }
         }
 
